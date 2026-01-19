@@ -1,0 +1,5 @@
+{
+  "name": "360data-solutions BI - AI-Powered Analytics Platform",
+  "description": "A comprehensive Business Intelligence platform that connects to BigQuery and other data warehouses, offering AI-driven reporting and dashboard generation based on your live data.",
+  "requestFramePermissions": []
+}
