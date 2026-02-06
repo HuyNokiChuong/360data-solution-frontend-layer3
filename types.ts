@@ -1,5 +1,5 @@
 
-export type WarehouseType = 'BigQuery' | 'Snowflake' | 'Redshift' | 'PostgreSQL';
+export type WarehouseType = 'BigQuery' | 'Snowflake' | 'Redshift' | 'PostgreSQL' | 'Excel' | 'GoogleSheets';
 export type UserRole = 'Admin' | 'Editor' | 'Viewer';
 
 export interface User {
@@ -20,6 +20,8 @@ export interface Connection {
   status: 'Connected' | 'Error' | 'Syncing';
   createdAt: string;
   tableCount: number;
+  projectId?: string;
+  serviceAccountKey?: string;
 }
 
 export interface SyncedTable {
@@ -30,7 +32,7 @@ export interface SyncedTable {
   rowCount: number;
   status: 'Active' | 'Disabled';
   lastSync: string;
-  schema: string[];
+  schema: { name: string, type: string }[];
 }
 
 export interface ReportSession {
@@ -51,18 +53,18 @@ export interface ChatMessage {
 
 export interface KPIConfig {
   label: string;
-  value: string;
+  value: string | number;
   trend: string;
+  comparisonContext?: string; // e.g., "vs Last Month"
+  status?: 'increase' | 'decrease' | 'neutral';
 }
 
-export interface DashboardConfig {
+
+export interface StrategicInsight {
   title: string;
-  summary: string;
-  charts: ChartConfig[];
-  insights?: string[];
-  actions?: ActionItem[];
-  kpis?: KPIConfig[];
-  suggestions?: string[];
+  analysis: string; // Detailed explanation of what the data says
+  recommendation: string; // Strategic advice
+  priority?: 'High' | 'Medium' | 'Low';
 }
 
 export interface ActionItem {
@@ -71,13 +73,38 @@ export interface ActionItem {
   impact: string;
 }
 
+
+export interface ChartInsight {
+  analysis: string; // What happened?
+  trend: string; // Why it happened? (Key Drivers)
+  action: string; // What to do next?
+  highlight?: {
+    index?: number; // Index of the data point to highlight
+    value?: string | number; // Specific value to highlight
+    label: string; // Annotation text
+    type?: 'positive' | 'negative' | 'neutral' | 'critical'; // Sentiment type for styling
+  }[];
+}
+
 export interface ChartConfig {
   type: 'bar' | 'line' | 'pie' | 'area' | 'metric';
   title: string;
   data: any[];
   dataKeys: string[];
   xAxisKey: string;
-  insight?: string;
+  insight?: string | ChartInsight; // Updated to support structured insight
   sql?: string;
-  mockLabels?: string[]; // Thêm trường này để nhận diện nhãn dữ liệu từ AI
+  limit?: number; // User preference for Top N items
+  mockLabels?: string[];
+}
+
+
+export interface DashboardConfig {
+  title: string;
+  summary: string;
+  charts: ChartConfig[];
+  insights?: StrategicInsight[]; // Changed from string[] to StrategicInsight[]
+  actions?: ActionItem[];
+  kpis?: KPIConfig[];
+  suggestions?: string[];
 }

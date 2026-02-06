@@ -79,12 +79,18 @@ export const DISCOVERABLE_TABLES = [
 ];
 
 export const AI_MODELS = [
-  { id: 'gemini-3-flash-preview', provider: 'Google', name: 'Gemini 3 Flash', label: 'Fast', description: 'Cân bằng hoàn hảo giữa tốc độ và trí tuệ.', icon: 'fa-solid fa-bolt-lightning', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
-  { id: 'gemini-3-pro-preview', provider: 'Google', name: 'Gemini 3 Pro', label: 'Genius', description: 'Tối ưu cho phân tích dữ liệu phức tạp và suy luận sâu.', icon: 'fa-solid fa-brain-circuit', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true }
+  { id: 'gemini-2.0-flash', provider: 'Google', name: 'Gemini 2.0 Flash', label: 'Ultra Fast', description: 'Model thế hệ mới nhất, tốc độ phản hồi cực nhanh và phân tích thông minh.', icon: 'fa-solid fa-bolt-lightning', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
+  { id: 'gemini-1.5-pro', provider: 'Google', name: 'Gemini 1.5 Pro', label: 'Complex Analysis', description: 'Tối ưu cho các bài toán phân tích sâu, suy luận đa tầng lập luận.', icon: 'fa-solid fa-brain-circuit', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
+  { id: 'gpt-4o', provider: 'OpenAI', name: 'GPT-4o', label: 'Most Advanced', description: 'Model mạnh mẽ nhất của OpenAI, xuất sắc trong việc hiểu ngữ cảnh và tạo code.', icon: 'fa-solid fa-sparkles', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
+  { id: 'gpt-4o-mini', provider: 'OpenAI', name: 'GPT-4o Mini', label: 'Fast & Efficient', description: 'Phiên bản nhỏ gọn, nhanh chóng và tiết kiệm chi phí nhưng vẫn cực kỳ thông minh.', icon: 'fa-solid fa-bolt', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
+  { id: 'claude-3-5-sonnet-20240620', provider: 'Anthropic', name: 'Claude 3.5 Sonnet', label: 'Smartest Claude', description: 'Đạt điểm số cao nhất trong các bài test logic và lập trình hiện nay.', icon: 'fa-solid fa-microchip', brandIcon: 'fas fa-robot text-amber-500', isFree: false },
+  { id: 'claude-3-opus-20240229', provider: 'Anthropic', name: 'Claude 3 Opus', label: 'Deep Reasoning', description: 'Phù hợp cho các tác vụ suy luận cực kỳ phức tạp và đòi hỏi độ chính xác tuyệt đối.', icon: 'fa-solid fa-scroll', brandIcon: 'fas fa-robot text-amber-500', isFree: false }
 ];
 
 export const WAREHOUSE_OPTIONS = [
   { id: 'BigQuery', name: 'Google BigQuery', icon: <i className="fab fa-google text-blue-500 mr-2"></i> },
   { id: 'Snowflake', name: 'Snowflake', icon: <i className="fas fa-snowflake text-blue-400 mr-2"></i> },
-  { id: 'PostgreSQL', name: 'PostgreSQL', icon: <i className="fas fa-database text-indigo-500 mr-2"></i> }
+  { id: 'PostgreSQL', name: 'PostgreSQL', icon: <i className="fas fa-database text-indigo-500 mr-2"></i> },
+  { id: 'Excel', name: 'Excel File', icon: <i className="fas fa-file-excel text-green-600 mr-2"></i> },
+  { id: 'GoogleSheets', name: 'Google Sheets', icon: <i className="fas fa-file-csv text-green-500 mr-2"></i> }
 ];

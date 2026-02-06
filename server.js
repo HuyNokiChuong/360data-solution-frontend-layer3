@@ -1,11 +1,13 @@
 
 const express = require('express');
+require('dotenv').config();
 const path = require('path');
 const esbuild = require('esbuild');
 const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
 /**
  * Middleware xử lý transpile file .tsx và .ts sang JavaScript (ESM).
@@ -24,8 +26,20 @@ app.get(['/*.tsx', '/*.ts'], async (req, res) => {
             target: 'es2022',
             loader: { '.tsx': 'tsx', '.ts': 'ts' },
             // Giữ lại các thư viện để Browser load qua importmap (esm.sh)
-            external: ['react', 'react-dom', 'recharts', '@google/genai'],
-            sourcemap: 'inline'
+            external: ['react', 'react-dom', 'recharts', '@google/genai', 'react-grid-layout', 'react-resizable'],
+            sourcemap: 'inline',
+            define: {
+                'process.env.API_KEY': JSON.stringify(API_KEY || ''),
+                'process.env.GEMINI_API_KEY': JSON.stringify(API_KEY || ''),
+                'process.env.GOOGLE_CLIENT_ID': JSON.stringify(process.env.GOOGLE_CLIENT_ID || ''),
+                'process': JSON.stringify({
+                    env: {
+                        API_KEY: API_KEY || '',
+                        GEMINI_API_KEY: API_KEY || '',
+                        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || ''
+                    }
+                })
+            }
         });
         res.type('application/javascript').send(result.outputFiles[0].text);
     } catch (err) {
@@ -48,4 +62,15 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server is listening on port ${PORT}`);
+    if (process.env.GOOGLE_CLIENT_ID) {
+        console.log(`✅ GOOGLE_CLIENT_ID is loaded: ${process.env.GOOGLE_CLIENT_ID.substring(0, 10)}...`);
+    } else {
+        console.error(`❌ GOOGLE_CLIENT_ID is missing in .env file!`);
+    }
+
+    if (API_KEY) {
+        console.log(`✅ GEMINI_API_KEY is loaded: ${API_KEY.substring(0, 10)}...`);
+    } else {
+        console.error(`❌ GEMINI_API_KEY / API_KEY is missing in .env file!`);
+    }
 });
