@@ -41,7 +41,7 @@ const App: React.FC = () => {
   }, [theme]);
 
   const [isRegistering, setIsRegistering] = useState(false);
-  const [pendingUser, setPendingUser] = useState<{ name: string, email: string } | null>(null);
+  const [pendingUser, setPendingUser] = useState<User | null>(null);
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('auth_user');
@@ -237,12 +237,9 @@ const App: React.FC = () => {
         role: 'Admin',
         status: 'Active',
         joinedAt: new Date().toISOString(),
-        currentLevel: 'Founder / CEO',
-        department: 'Engineering / IT',
-        industry: 'Technology / SaaS',
+        jobTitle: 'System Administrator',
         companySize: 'Enterprise',
-        phoneNumber: '+1000000000',
-        registrationType: 'Khách đăng ký'
+        phoneNumber: '+1000000000'
       };
       setTimeout(() => {
         setLoading(false);
@@ -265,13 +262,30 @@ const App: React.FC = () => {
 
       if (isRegistering) {
         if (workspaceUsers.length > 0) {
-          const firstAdmin = workspaceUsers.find(u => u.role === 'Admin');
           setAuthError(`Workspace for ${d} already exists.`);
           return;
         }
 
+        const phoneNumber = formData.get('phoneNumber') as string;
+        const level = formData.get('level') as string;
+        const department = formData.get('department') as string;
+        const industry = formData.get('industry') as string;
+        const companySize = formData.get('companySize') as string;
+
         // START ONBOARDING FLOW
-        setPendingUser({ name, email });
+        setPendingUser({
+          id: Date.now().toString(),
+          name,
+          email,
+          phoneNumber,
+          level,
+          department,
+          industry,
+          companySize,
+          role: 'Admin',
+          status: 'Pending',
+          joinedAt: new Date().toISOString()
+        });
         navigate('/onboarding');
       } else {
         const user = workspaceUsers.find(u => u.email === email);
@@ -291,15 +305,17 @@ const App: React.FC = () => {
     const savedUsersJson = localStorage.getItem(`${d}_users`);
     let workspaceUsers: User[] = savedUsersJson ? JSON.parse(savedUsersJson) : [];
 
+    const userToSave: User = { ...finalUser, status: 'Active' };
+
     // If updating existing user
-    if (workspaceUsers.some(u => u.id === finalUser.id)) {
-      workspaceUsers = workspaceUsers.map(u => u.id === finalUser.id ? finalUser : u);
+    if (workspaceUsers.some(u => u.id === userToSave.id)) {
+      workspaceUsers = workspaceUsers.map(u => u.id === userToSave.id ? userToSave : u);
     } else {
-      workspaceUsers.push(finalUser);
+      workspaceUsers.push(userToSave);
     }
 
     localStorage.setItem(`${d}_users`, JSON.stringify(workspaceUsers));
-    setCurrentUser(finalUser);
+    setCurrentUser(userToSave);
     setIsAuthenticated(true);
     setPendingUser(null);
     navigate('/connections');
@@ -358,7 +374,7 @@ const App: React.FC = () => {
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-600/10 blur-[150px] rounded-full"></div>
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-blue-600/10 blur-[150px] rounded-full"></div>
 
-        <div className="w-full max-w-md relative z-10 animate-in fade-in zoom-in duration-500">
+        <div className={`w-full ${isRegistering ? 'max-w-4xl' : 'max-w-xl'} relative z-10 animate-in fade-in zoom-in duration-500 transition-all duration-500`}>
           <div className="text-center mb-10">
             <div className="w-20 h-20 bg-indigo-600 rounded-[2rem] flex items-center justify-center text-white text-4xl mx-auto mb-6 shadow-2xl shadow-indigo-600/30 rotate-3 hover:rotate-0 transition-transform cursor-pointer">
               <i className="fas fa-bolt"></i>
@@ -367,22 +383,108 @@ const App: React.FC = () => {
             <p className="text-slate-500 font-medium tracking-wide">AI-Powered Data Intelligence</p>
           </div>
 
-          <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-3xl p-10 rounded-[3rem] border border-slate-200 dark:border-white/5 shadow-2xl shadow-black/5 dark:shadow-black/50">
+          <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-3xl p-10 md:p-16 rounded-[3rem] border border-slate-200 dark:border-white/5 shadow-2xl shadow-black/5 dark:shadow-black/50">
             <h2 className="text-2xl font-black text-slate-900 dark:text-white mb-8 tracking-tight">
               {isRegistering ? 'Create New Workspace' : 'System Access'}
             </h2>
 
             <form onSubmit={handleAuth} className="space-y-5">
               {isRegistering && (
-                <div className="animate-in slide-in-from-top-4">
-                  <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Full Name</label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700"
-                    placeholder="Enter your name"
-                  />
+                <div className="space-y-4 animate-in slide-in-from-top-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Full Name</label>
+                      <input
+                        type="text"
+                        name="name"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                        placeholder="Huy Nguyen"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Phone Number</label>
+                      <input
+                        type="tel"
+                        name="phoneNumber"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                        placeholder="+84 90..."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Current Level</label>
+                      <select
+                        name="level"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all text-sm appearance-none"
+                      >
+                        <option value="" disabled selected>Select Level</option>
+                        <option value="Intern">Intern</option>
+                        <option value="Junior">Junior</option>
+                        <option value="Senior">Senior</option>
+                        <option value="Lead">Lead</option>
+                        <option value="Manager">Manager</option>
+                        <option value="Director">Director</option>
+                        <option value="C-Suite">C-Suite / Founder</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Department</label>
+                      <select
+                        name="department"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all text-sm appearance-none"
+                      >
+                        <option value="" disabled selected>Select Dept</option>
+                        <option value="Engineering">Engineering</option>
+                        <option value="Data">Data & Analytics</option>
+                        <option value="Product">Product</option>
+                        <option value="Sales">Sales</option>
+                        <option value="Marketing">Marketing</option>
+                        <option value="Operations">Operations</option>
+                        <option value="Finance">Finance</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Industry</label>
+                      <select
+                        name="industry"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all text-sm appearance-none"
+                      >
+                        <option value="" disabled selected>Select Industry</option>
+                        <option value="Technology">Technology</option>
+                        <option value="Finance">Finance</option>
+                        <option value="Healthcare">Healthcare</option>
+                        <option value="E-commerce">E-commerce</option>
+                        <option value="Education">Education</option>
+                        <option value="Manufacturing">Manufacturing</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Company Size</label>
+                      <select
+                        name="companySize"
+                        required
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all text-sm appearance-none"
+                      >
+                        <option value="" disabled selected>Select Size</option>
+                        <option value="1-10">1-10 employees</option>
+                        <option value="11-50">11-50 employees</option>
+                        <option value="51-200">51-200 employees</option>
+                        <option value="201-500">201-500 employees</option>
+                        <option value="500+">500+ employees</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
               )}
               {authError && (
@@ -416,7 +518,7 @@ const App: React.FC = () => {
                 disabled={loading}
                 className="w-full bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black text-lg tracking-tight hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-95 mt-4 disabled:opacity-50"
               >
-                {loading ? <i className="fas fa-circle-notch animate-spin"></i> : (isRegistering ? 'Initialize Hub' : 'Enter Workspace')}
+                {loading ? <i className="fas fa-circle-notch animate-spin"></i> : (isRegistering ? 'Submit Registration' : 'Enter Workspace')}
               </button>
             </form>
 
@@ -475,16 +577,9 @@ const App: React.FC = () => {
             <Route path="/" element={<Navigate to="/connections" replace />} />
 
             <Route path="/onboarding" element={
-              pendingUser || (currentUser && !currentUser.currentLevel)
+              pendingUser || (currentUser && !currentUser.jobTitle)
                 ? <Onboarding
-                  currentUser={currentUser || {
-                    id: Date.now().toString(),
-                    name: pendingUser!.name,
-                    email: pendingUser!.email,
-                    role: 'Admin',
-                    status: 'Active',
-                    joinedAt: new Date().toISOString().split('T')[0]
-                  }}
+                  currentUser={pendingUser || currentUser!}
                   onUpdateUser={handleOnboardingComplete}
                 />
                 : <Navigate to="/connections" replace />

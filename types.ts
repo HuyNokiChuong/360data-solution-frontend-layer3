@@ -9,13 +9,12 @@ export interface User {
   role: UserRole;
   status: 'Active' | 'Pending' | 'Disabled';
   joinedAt: string;
-  registrationType?: string;
-  currentLevel?: string;
+  jobTitle?: string;
+  level?: string;
   department?: string;
   industry?: string;
-  companySize?: string;
   phoneNumber?: string;
-  jobTitle?: string; // Kept for backward compatibility
+  companySize?: string;
 }
 
 export interface Connection {

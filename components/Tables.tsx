@@ -226,7 +226,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
   };
 
   return (
-    <div className="p-10 max-w-7xl mx-auto h-full overflow-y-auto custom-scrollbar relative">
+    <div className="p-10 max-w-[1600px] mx-auto h-full overflow-y-auto custom-scrollbar relative">
       <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
           <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight mb-2">Entity Registry</h2>
@@ -431,7 +431,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
       {
         previewTable && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-slate-900/80 dark:bg-black/90 backdrop-blur-xl animate-in fade-in duration-300">
-            <div className="w-full max-w-6xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="w-full max-w-7xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
               {/* Modal Header */}
               <div className="px-10 py-8 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] flex justify-between items-center">
                 <div className="flex items-center gap-5">

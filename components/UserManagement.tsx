@@ -76,7 +76,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
   };
 
   return (
-    <div className="p-10 max-w-7xl mx-auto relative h-full overflow-y-auto custom-scrollbar">
+    <div className="p-10 max-w-[1600px] mx-auto relative h-full overflow-y-auto custom-scrollbar">
       {/* Toast Notification */}
       {showToast && (
         <div className="fixed top-10 right-10 z-[120] animate-in slide-in-from-right-10 fade-in duration-300">
@@ -108,7 +108,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">User Details</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Access Role</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Role & Dept</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Level</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Status</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Joined</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Actions</th>
@@ -129,12 +130,29 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                     </div>
                   </td>
                   <td className="px-8 py-6">
-                    <span className={`px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest border ${user.role === 'Admin' ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20' :
-                      user.role === 'Editor' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                        'bg-slate-800 text-slate-400 border-slate-700'
-                      }`}>
-                      {user.role}
+                    <div className="flex flex-col gap-1.5">
+                      <span className={`w-fit px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border ${user.role === 'Admin' ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20' :
+                        user.role === 'Editor' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                          'bg-slate-800 text-slate-400 border-slate-700'
+                        }`}>
+                        {user.role}
+                      </span>
+                      {user.department && (
+                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 pl-1 italic">
+                          {user.department}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-8 py-6">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      {user.level || '—'}
                     </span>
+                    {user.companySize && (
+                      <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-0.5">
+                        {user.companySize} Size
+                      </div>
+                    )}
                   </td>
                   <td className="px-8 py-6">
                     <div className="flex items-center gap-3">
