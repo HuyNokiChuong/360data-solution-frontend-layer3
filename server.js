@@ -24,9 +24,37 @@ app.get(['/*.tsx', '/*.ts'], async (req, res) => {
             write: false,
             format: 'esm',
             target: 'es2022',
-            loader: { '.tsx': 'tsx', '.ts': 'ts' },
-            // Giữ lại các thư viện để Browser load qua importmap (esm.sh)
-            external: ['react', 'react-dom', 'recharts', '@google/genai', 'react-grid-layout', 'react-resizable'],
+            loader: {
+                '.tsx': 'tsx',
+                '.ts': 'ts',
+                '.css': 'css',
+                '.json': 'json',
+                '.png': 'file',
+                '.jpg': 'file',
+                '.svg': 'file',
+                '.woff': 'file',
+                '.woff2': 'file'
+            },
+            // Alias hỗ trợ import @/*
+            alias: {
+                '@': __dirname
+            },
+            // Giữ lại các thư viện để Browser load qua các script tags/importmaps
+            external: [
+                'react',
+                'react-dom',
+                'react/jsx-runtime',
+                'react/jsx-dev-runtime',
+                'recharts',
+                '@google/genai',
+                'react-grid-layout',
+                'react-resizable',
+                'react-router-dom',
+                '@dnd-kit/core',
+                '@dnd-kit/sortable',
+                '@dnd-kit/utilities',
+                'lucide-react'
+            ],
             sourcemap: 'inline',
             define: {
                 'process.env.API_KEY': JSON.stringify(API_KEY || ''),
