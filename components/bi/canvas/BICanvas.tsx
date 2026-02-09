@@ -3,8 +3,7 @@
 // ============================================
 
 import React, { useMemo, useState } from 'react';
-import RGL from 'react-grid-layout';
-const WidthProvider = (RGL as any).WidthProvider;
+import RGL, { WidthProvider } from 'react-grid-layout';
 import { BIDashboard, BIWidget } from '../types';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useFilterStore } from '../store/filterStore';
@@ -524,7 +523,6 @@ const BICanvas: React.FC<BICanvasProps> = ({
                 layout={layout}
                 cols={12}
                 rowHeight={60}
-                width={1200}
                 onLayoutChange={handleLayoutChange}
                 onDragStart={() => setIsDragging(true)}
                 onDragStop={() => setIsDragging(false)}
