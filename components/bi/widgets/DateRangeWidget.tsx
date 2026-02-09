@@ -36,20 +36,44 @@ const DateRangeWidget: React.FC<DateRangeWidgetProps> = ({
     const { getActiveDashboard } = useDashboardStore();
 
     // Local state for dates (before apply)
-    const [startDate, setStartDate] = useState<string>('');
-    const [endDate, setEndDate] = useState<string>('');
+    const [startDate, setStartDate] = useState<string>(() => {
+        if (widget.filters && widget.filters.length > 0) {
+            const f = widget.filters[0];
+            if (f.operator === 'between' || f.operator === 'greaterOrEqual') {
+                return f.value || '';
+            }
+        }
+        return '';
+    });
+    const [endDate, setEndDate] = useState<string>(() => {
+        if (widget.filters && widget.filters.length > 0) {
+            const f = widget.filters[0];
+            if (f.operator === 'between' || f.operator === 'lessOrEqual') {
+                return f.operator === 'between' ? f.value2 : f.value;
+            }
+        }
+        return '';
+    });
 
     const startInputRef = React.useRef<HTMLInputElement>(null);
     const endInputRef = React.useRef<HTMLInputElement>(null);
+
+    const { updateWidget } = useDashboardStore();
 
     // Use useEffect to apply filters automatically when dates change
     React.useEffect(() => {
         if (!widget.slicerField) return;
 
         const timer = setTimeout(() => {
+            const dashboard = getActiveDashboard();
+            if (!dashboard) return;
+
             // Clear filter if both dates are empty
             if (!startDate && !endDate) {
                 removeCrossFilter(widget.id);
+                if (widget.filters && widget.filters.length > 0) {
+                    updateWidget(dashboard.id, widget.id, { filters: [] });
+                }
                 return;
             }
 
@@ -79,21 +103,30 @@ const DateRangeWidget: React.FC<DateRangeWidgetProps> = ({
                 enabled: true
             };
 
-            const dashboard = getActiveDashboard();
-            if (dashboard) {
-                const allWidgets = dashboard.pages && dashboard.pages.length > 0
-                    ? dashboard.pages.flatMap(p => p.widgets)
-                    : dashboard.widgets;
+            const allWidgets = dashboard.pages && dashboard.pages.length > 0
+                ? dashboard.pages.flatMap(p => p.widgets)
+                : dashboard.widgets;
 
-                const affectedIds = allWidgets
-                    .filter(w => w.id !== widget.id)
-                    .map(w => w.id);
-                addCrossFilter(widget.id, [filter], affectedIds);
+            const affectedIds = allWidgets
+                .filter(w => w.id !== widget.id)
+                .map(w => w.id);
+
+            addCrossFilter(widget.id, [filter], affectedIds);
+
+            // Sync with dashboard store for persistence
+            const currentFilter = widget.filters?.[0];
+            const isDifferent = !currentFilter ||
+                currentFilter.operator !== operator ||
+                currentFilter.value !== value ||
+                currentFilter.value2 !== value2;
+
+            if (isDifferent) {
+                updateWidget(dashboard.id, widget.id, { filters: [filter] });
             }
         }, 500); // Debounce 500ms to allow typing
 
         return () => clearTimeout(timer);
-    }, [startDate, endDate, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter]);
+    }, [startDate, endDate, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter, updateWidget, widget.filters]);
 
     const handleClear = () => {
         setStartDate('');

@@ -237,9 +237,12 @@ const App: React.FC = () => {
         role: 'Admin',
         status: 'Active',
         joinedAt: new Date().toISOString(),
-        jobTitle: 'System Administrator',
+        currentLevel: 'Founder / CEO',
+        department: 'Engineering / IT',
+        industry: 'Technology / SaaS',
         companySize: 'Enterprise',
-        phoneNumber: '+1000000000'
+        phoneNumber: '+1000000000',
+        registrationType: 'Khách đăng ký'
       };
       setTimeout(() => {
         setLoading(false);
@@ -472,7 +475,7 @@ const App: React.FC = () => {
             <Route path="/" element={<Navigate to="/connections" replace />} />
 
             <Route path="/onboarding" element={
-              pendingUser || (currentUser && !currentUser.jobTitle)
+              pendingUser || (currentUser && !currentUser.currentLevel)
                 ? <Onboarding
                   currentUser={currentUser || {
                     id: Date.now().toString(),

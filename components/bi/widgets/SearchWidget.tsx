@@ -36,15 +36,28 @@ const SearchWidget: React.FC<SearchWidgetProps> = ({
     const { getActiveDashboard } = useDashboardStore();
 
     // Local state
-    const [searchTerm, setSearchTerm] = useState('');
+    const [searchTerm, setSearchTerm] = useState(() => {
+        if (widget.filters && widget.filters.length > 0) {
+            return widget.filters[0].value || '';
+        }
+        return '';
+    });
+
+    const { updateWidget } = useDashboardStore();
 
     // Use useEffect to apply filters automatically when searchTerm changes
     React.useEffect(() => {
         if (!widget.slicerField) return;
 
+        const dashboard = getActiveDashboard();
+        if (!dashboard) return;
+
         // If search term is empty, remove filter
         if (!searchTerm) {
             removeCrossFilter(widget.id);
+            if (widget.filters && widget.filters.length > 0) {
+                updateWidget(dashboard.id, widget.id, { filters: [] });
+            }
             return;
         }
 
@@ -56,18 +69,21 @@ const SearchWidget: React.FC<SearchWidgetProps> = ({
             enabled: true
         };
 
-        const dashboard = getActiveDashboard();
-        if (dashboard) {
-            const allWidgets = dashboard.pages && dashboard.pages.length > 0
-                ? dashboard.pages.flatMap(p => p.widgets)
-                : dashboard.widgets;
+        const allWidgets = dashboard.pages && dashboard.pages.length > 0
+            ? dashboard.pages.flatMap(p => p.widgets)
+            : dashboard.widgets;
 
-            const affectedIds = allWidgets
-                .filter(w => w.id !== widget.id)
-                .map(w => w.id);
-            addCrossFilter(widget.id, [filter], affectedIds);
+        const affectedIds = allWidgets
+            .filter(w => w.id !== widget.id)
+            .map(w => w.id);
+
+        addCrossFilter(widget.id, [filter], affectedIds);
+
+        // Sync with dashboard store for persistence
+        if (widget.filters?.[0]?.value !== searchTerm) {
+            updateWidget(dashboard.id, widget.id, { filters: [filter] });
         }
-    }, [searchTerm, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter]);
+    }, [searchTerm, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter, updateWidget, widget.filters]);
 
     const handleClear = () => {
         setSearchTerm('');

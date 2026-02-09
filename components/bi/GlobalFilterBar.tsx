@@ -50,31 +50,38 @@ const GlobalFilterBar: React.FC<GlobalFilterBarProps> = ({ dashboard }) => {
                             <i className={`fas fa-chevron-down text-[8px] transition-transform ${openFilterId === widget.id ? 'rotate-180' : ''}`}></i>
                         </button>
 
-                        {/* Dropdown Content */}
-                        {openFilterId === widget.id && (
-                            <>
-                                <div
-                                    className="fixed inset-0 z-[110]"
-                                    onClick={() => setOpenFilterId(null)}
-                                />
-                                <div className="absolute top-full left-0 mt-2 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-indigo-500/30 rounded-2xl shadow-xl dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-[120] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                                    <div className="px-3 py-2 border-b border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between">
-                                        <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">{widget.title}</span>
-                                        <button
-                                            onClick={() => updateWidget(dashboard.id, widget.id, { isGlobalFilter: false })}
-                                            className="text-slate-400 dark:text-slate-600 hover:text-red-500 p-1 transition-colors"
-                                            title={t('bi.move_to_canvas')}
-                                        >
-                                            <i className="fas fa-external-link-alt text-[8px]"></i>
-                                        </button>
-                                    </div>
-                                    <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
-                                        {widget.type === 'slicer' && <SlicerWidget widget={widget} isGlobalMode />}
-                                        {widget.type === 'date-range' && <DateRangeWidget widget={widget} isGlobalMode />}
-                                        {widget.type === 'search' && <SearchWidget widget={widget} isGlobalMode />}
-                                    </div>
+                        {/* Dropdown Content - Always rendered but hidden if not open to allow filter hydration */}
+                        <div className={openFilterId === widget.id ? "block" : "hidden"}>
+                            <div
+                                className="fixed inset-0 z-[110]"
+                                onClick={() => setOpenFilterId(null)}
+                            />
+                            <div className="absolute top-full left-0 mt-2 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-indigo-500/30 rounded-2xl shadow-xl dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-[120] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                                <div className="px-3 py-2 border-b border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-slate-900/50 flex items-center justify-between">
+                                    <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">{widget.title}</span>
+                                    <button
+                                        onClick={() => updateWidget(dashboard.id, widget.id, { isGlobalFilter: false })}
+                                        className="text-slate-400 dark:text-slate-600 hover:text-red-500 p-1 transition-colors"
+                                        title={t('bi.move_to_canvas')}
+                                    >
+                                        <i className="fas fa-external-link-alt text-[8px]"></i>
+                                    </button>
                                 </div>
-                            </>
+                                <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
+                                    {widget.type === 'slicer' && <SlicerWidget widget={widget} isGlobalMode />}
+                                    {widget.type === 'date-range' && <DateRangeWidget widget={widget} isGlobalMode />}
+                                    {widget.type === 'search' && <SearchWidget widget={widget} isGlobalMode />}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Headless Hydration: If the dropdown is NOT open, we still need to mount the widget to run its useEffect */}
+                        {openFilterId !== widget.id && (
+                            <div className="hidden">
+                                {widget.type === 'slicer' && <SlicerWidget widget={widget} isGlobalMode />}
+                                {widget.type === 'date-range' && <DateRangeWidget widget={widget} isGlobalMode />}
+                                {widget.type === 'search' && <SearchWidget widget={widget} isGlobalMode />}
+                            </div>
                         )}
                     </div>
                 ))}

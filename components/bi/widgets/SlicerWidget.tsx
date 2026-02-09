@@ -40,7 +40,13 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
     const { getActiveDashboard } = useDashboardStore();
 
     // Local state for current selection (before applying)
-    const [selectedValues, setSelectedValues] = useState<any[]>([]);
+    const [selectedValues, setSelectedValues] = useState<any[]>(() => {
+        if (widget.filters && widget.filters.length > 0) {
+            const f = widget.filters[0];
+            return Array.isArray(f.value) ? f.value : (f.value !== undefined ? [f.value] : []);
+        }
+        return [];
+    });
     const [searchQuery, setSearchQuery] = useState('');
 
     // Switch to useDirectQuery
@@ -87,12 +93,21 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
         }
     };
 
+    const { updateWidget } = useDashboardStore();
+
     // Use useEffect to apply filters automatically when selectedValues change
     React.useEffect(() => {
         if (!widget.slicerField) return;
 
+        const dashboard = getActiveDashboard();
+        if (!dashboard) return;
+
         if (selectedValues.length === 0) {
             removeCrossFilter(widget.id);
+            // Also clear from widget persistent state if it was there
+            if (widget.filters && widget.filters.length > 0) {
+                updateWidget(dashboard.id, widget.id, { filters: [] });
+            }
             return;
         }
 
@@ -104,18 +119,25 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
             enabled: true
         };
 
-        const dashboard = getActiveDashboard();
-        if (dashboard) {
-            const allWidgets = dashboard.pages && dashboard.pages.length > 0
-                ? dashboard.pages.flatMap(p => p.widgets)
-                : dashboard.widgets;
+        const allWidgets = dashboard.pages && dashboard.pages.length > 0
+            ? dashboard.pages.flatMap(p => p.widgets)
+            : dashboard.widgets;
 
-            const affectedIds = allWidgets
-                .filter(w => w.id !== widget.id)
-                .map(w => w.id);
-            addCrossFilter(widget.id, [filter], affectedIds);
+        const affectedIds = allWidgets
+            .filter(w => w.id !== widget.id)
+            .map(w => w.id);
+
+        addCrossFilter(widget.id, [filter], affectedIds);
+
+        // Sync with dashboard store for persistence
+        // Only update if the values are actually different to avoid cycles
+        const currentStoredValue = widget.filters?.[0]?.value;
+        const newVal = selectedValues.length > 1 ? selectedValues : selectedValues[0];
+
+        if (JSON.stringify(currentStoredValue) !== JSON.stringify(newVal)) {
+            updateWidget(dashboard.id, widget.id, { filters: [filter] });
         }
-    }, [selectedValues, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter]);
+    }, [selectedValues, widget.id, widget.slicerField, getActiveDashboard, addCrossFilter, removeCrossFilter, updateWidget, widget.filters]);
 
     const handleClear = () => {
         setSelectedValues([]);

@@ -12,8 +12,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     const [step, setStep] = useState(1);
     const [loading, setLoading] = useState(false);
     const [formData, setFormData] = useState({
-        jobTitle: '',
-        phoneNumber: '',
+        registrationType: 'Khách đăng ký',
+        name: currentUser.name || '',
+        email: currentUser.email || '',
+        phoneNumber: currentUser.phoneNumber || '',
+        currentLevel: '',
+        department: '',
+        industry: '',
         companySize: ''
     });
 
@@ -23,7 +28,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     const [canResend, setCanResend] = useState(false);
 
     useEffect(() => {
-        if (step === 4 && timeLeft > 0) {
+        if (step === 2 && timeLeft > 0) {
             const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
             return () => clearTimeout(timer);
         } else if (timeLeft === 0) {
@@ -36,21 +41,59 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         '11-50 employees',
         '51-200 employees',
         '201-500 employees',
-        '500+ employees'
+        '501-1000 employees',
+        '1000+ employees'
     ];
 
-    const roles = [
+    const levels = [
         'Founder / CEO',
-        'CTO / VP of Engineering',
-        'Data Scientist / Analyst',
-        'Product Manager',
-        'Software Engineer',
-        'Marketing / Growth',
+        'C-Level / VP',
+        'Director / Head',
+        'Manager / Lead',
+        'Senior Specialist',
+        'Staff / Associate',
         'Other'
     ];
 
-    const handleSelectOption = (key: string, value: string) => {
+    const departments = [
+        'Data & Analytics',
+        'Engineering / IT',
+        'Marketing',
+        'Sales / Business Development',
+        'Finance / Accounting',
+        'Operations',
+        'Product Management',
+        'Human Resources',
+        'Legal / Compliance',
+        'Other'
+    ];
+
+    const industries = [
+        'Technology / SaaS',
+        'Retail / E-commerce',
+        'Financial Services',
+        'Healthcare / Biotech',
+        'Manufacturing',
+        'Education',
+        'Media / Entertainment',
+        'Real Estate / Construction',
+        'Logistics / Supply Chain',
+        'Consulting / Services',
+        'Other'
+    ];
+
+    const handleInputChange = (key: string, value: string) => {
         setFormData(prev => ({ ...prev, [key]: value }));
+    };
+
+    const handleFormSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        // Validate all required fields
+        if (!formData.name || !formData.email || !formData.phoneNumber || !formData.currentLevel ||
+            !formData.department || !formData.industry || !formData.companySize) {
+            return; // Add proper error handling here if needed
+        }
+        setStep(2);
     };
 
     const handleVerifyAndSubmit = (e?: React.FormEvent) => {
@@ -66,21 +109,25 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
             // Save data
             const updatedUser: User = {
                 ...currentUser,
-                ...formData
+                name: formData.name,
+                email: formData.email,
+                phoneNumber: formData.phoneNumber,
+                currentLevel: formData.currentLevel,
+                department: formData.department,
+                industry: formData.industry,
+                companySize: formData.companySize,
+                registrationType: formData.registrationType,
+                status: 'Active'
             };
             onUpdateUser(updatedUser);
         }, 1500);
-    };
-
-    const nextStep = () => {
-        if (step < 4) setStep(step + 1);
     };
 
     const handleResendCode = () => {
         setCanResend(false);
         setTimeLeft(60);
         // Simulate resend API
-        console.log("Resending code...");
+        console.log("Resending code to:", formData.email);
     };
 
     const handleCodeChange = (index: number, value: string) => {
@@ -120,7 +167,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     };
 
     const getProgressWidth = () => {
-        return `${(step / 4) * 100}%`;
+        return `${(step / 2) * 100}%`;
     };
 
     return (
@@ -131,139 +178,147 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
 
             <div className="w-full max-w-2xl relative z-10">
                 {/* Progress Bar */}
-                <div className="w-full h-1 bg-slate-200 dark:bg-slate-800 rounded-full mb-12 overflow-hidden">
+                <div className="w-full h-1 bg-slate-200 dark:bg-slate-800 rounded-full mb-8 overflow-hidden">
                     <div
                         className="h-full bg-indigo-600 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(79,70,229,0.5)]"
                         style={{ width: getProgressWidth() }}
                     ></div>
                 </div>
 
-                <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-3xl p-10 md:p-14 rounded-[3rem] border border-slate-200 dark:border-white/5 shadow-2xl shadow-black/5 dark:shadow-black/50 animate-in fade-in zoom-in duration-500">
+                <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-3xl p-8 md:p-12 rounded-[2.5rem] border border-slate-200 dark:border-white/5 shadow-2xl shadow-black/5 dark:shadow-black/50 animate-in fade-in zoom-in duration-500">
 
                     {/* Header */}
-                    <div className="mb-10 text-center">
-                        <span className="text-xs font-black text-indigo-500 uppercase tracking-[0.2em] mb-3 block">
-                            Step {step} of 4
+                    <div className="mb-8 text-center">
+                        <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-3 block">
+                            Step {step} of 2
                         </span>
-                        <h2 className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white mb-4 tracking-tight">
-                            {step === 1 && "What is your primary role?"}
-                            {step === 2 && "How large is your organization?"}
-                            {step === 3 && "Let's stay in touch"}
-                            {step === 4 && "Verify your email"}
+                        <h2 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white mb-2 tracking-tight">
+                            {step === 1 ? "Complete your profile" : "Check your email"}
                         </h2>
-                        <p className="text-slate-500 font-medium text-lg">
-                            {step === 1 && "Help us tailor the experience to your needs."}
-                            {step === 2 && "We'll optimize the data capacity for your team."}
-                            {step === 3 && "Secure your account with verified contact info."}
-                            {step === 4 && (
-                                <span>
-                                    Enter the code sent to <span className="text-indigo-600 font-bold">{currentUser.email}</span>
-                                </span>
-                            )}
+                        <p className="text-slate-500 font-medium text-sm">
+                            {step === 1
+                                ? "Please provide your details to personalize your workspace."
+                                : `We've sent a 6-digit code to ${formData.email}`}
                         </p>
                     </div>
 
-                    {/* Step 1: Role */}
+                    {/* Step 1: Registration Form */}
                     {step === 1 && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-8 duration-300">
-                            {roles.map(role => (
-                                <button
-                                    key={role}
-                                    onClick={() => {
-                                        handleSelectOption('jobTitle', role);
-                                        setTimeout(nextStep, 200);
-                                    }}
-                                    className={`p-5 rounded-2xl border text-left transition-all group relative overflow-hidden ${formData.jobTitle === role
-                                        ? 'bg-indigo-600 border-indigo-600 text-white shadow-xl shadow-indigo-600/20'
-                                        : 'bg-white dark:bg-black/20 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-white/5'
-                                        }`}
-                                >
-                                    <span className={`text-base font-bold ${formData.jobTitle === role ? 'text-white' : 'text-slate-700 dark:text-slate-300'}`}>
-                                        {role}
-                                    </span>
-                                    {formData.jobTitle === role && (
-                                        <div className="absolute right-4 top-1/2 -translate-y-1/2">
-                                            <i className="fas fa-check-circle text-white/90"></i>
-                                        </div>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-
-                    {/* Step 2: Company Size */}
-                    {step === 2 && (
-                        <div className="space-y-4 animate-in slide-in-from-right-8 duration-300">
-                            {companySizes.map(size => (
-                                <button
-                                    key={size}
-                                    onClick={() => {
-                                        handleSelectOption('companySize', size);
-                                        setTimeout(nextStep, 200);
-                                    }}
-                                    className={`w-full p-6 rounded-2xl border text-left flex items-center justify-between transition-all group ${formData.companySize === size
-                                        ? 'bg-indigo-600 border-indigo-600 text-white shadow-xl shadow-indigo-600/20 scale-[1.02]'
-                                        : 'bg-white dark:bg-black/20 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-white/5'
-                                        }`}
-                                >
-                                    <div className="flex items-center gap-4">
-                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${formData.companySize === size
-                                            ? 'bg-white/20 text-white'
-                                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                                            }`}>
-                                            <i className="fas fa-building"></i>
-                                        </div>
-                                        <span className={`text-lg font-bold ${formData.companySize === size ? 'text-white' : 'text-slate-700 dark:text-slate-300'}`}>
-                                            {size}
-                                        </span>
+                        <form onSubmit={handleFormSubmit} className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {/* Type & Full Name */}
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Registration Type</label>
+                                        <input
+                                            type="text"
+                                            readOnly
+                                            value={formData.registrationType}
+                                            className="w-full bg-slate-100 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-500 cursor-not-allowed"
+                                        />
                                     </div>
-                                    {formData.companySize === size && (
-                                        <i className="fas fa-arrow-right text-white"></i>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-
-                    {/* Step 3: Phone Number */}
-                    {step === 3 && (
-                        <form onSubmit={(e) => { e.preventDefault(); nextStep(); }} className="animate-in slide-in-from-right-8 duration-300">
-                            <div className="mb-8">
-                                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-3 px-1">
-                                    Phone Number
-                                </label>
-                                <div className="relative">
-                                    <div className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400">
-                                        <i className="fas fa-phone"></i>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Full Name</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={formData.name}
+                                            onChange={(e) => handleInputChange('name', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                            placeholder="John Doe"
+                                        />
                                     </div>
-                                    <input
-                                        type="tel"
-                                        required
-                                        value={formData.phoneNumber}
-                                        onChange={(e) => handleSelectOption('phoneNumber', e.target.value)}
-                                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl pl-14 pr-6 py-5 text-lg font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:border-indigo-600 focus:outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700"
-                                        placeholder="+1 (555) 000-0000"
-                                        autoFocus
-                                    />
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Email Address</label>
+                                        <input
+                                            type="email"
+                                            required
+                                            value={formData.email}
+                                            onChange={(e) => handleInputChange('email', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                            placeholder="john@company.com"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Phone Number</label>
+                                        <input
+                                            type="tel"
+                                            required
+                                            value={formData.phoneNumber}
+                                            onChange={(e) => handleInputChange('phoneNumber', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                            placeholder="+84 ..."
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Selects */}
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Current Level</label>
+                                        <select
+                                            required
+                                            value={formData.currentLevel}
+                                            onChange={(e) => handleInputChange('currentLevel', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                        >
+                                            <option value="">Select Level</option>
+                                            {levels.map(l => <option key={l} value={l}>{l}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Department</label>
+                                        <select
+                                            required
+                                            value={formData.department}
+                                            onChange={(e) => handleInputChange('department', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                        >
+                                            <option value="">Select Department</option>
+                                            {departments.map(d => <option key={d} value={d}>{d}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Company Industry</label>
+                                        <select
+                                            required
+                                            value={formData.industry}
+                                            onChange={(e) => handleInputChange('industry', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                        >
+                                            <option value="">Select Industry</option>
+                                            {industries.map(i => <option key={i} value={i}>{i}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1">Company Size</label>
+                                        <select
+                                            required
+                                            value={formData.companySize}
+                                            onChange={(e) => handleInputChange('companySize', e.target.value)}
+                                            className="w-full bg-white dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-medium text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 focus:outline-none transition-all"
+                                        >
+                                            <option value="">Select Size</option>
+                                            {companySizes.map(s => <option key={s} value={s}>{s}</option>)}
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
 
                             <button
                                 type="submit"
-                                disabled={!formData.phoneNumber}
-                                className="w-full bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black text-lg tracking-tight hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+                                className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg tracking-tight hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-[0.98] mt-4"
                             >
-                                <span>Continue</span>
-                                <i className="fas fa-arrow-right"></i>
+                                Continue to Verification
                             </button>
                         </form>
                     )}
 
-                    {/* Step 4: Verification */}
-                    {step === 4 && (
-                        <div className="animate-in slide-in-from-right-8 duration-300">
+                    {/* Step 2: Verification */}
+                    {step === 2 && (
+                        <div className="animate-in fade-in slide-in-from-right-4 duration-300">
                             <form onSubmit={handleVerifyAndSubmit} className="space-y-8">
-                                <div className="flex justify-between gap-2" onPaste={handlePasteCode}>
+                                <div className="flex justify-between gap-2 md:gap-4 px-4" onPaste={handlePasteCode}>
                                     {verificationCode.map((digit, idx) => (
                                         <input
                                             key={idx}
@@ -273,7 +328,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                                             value={digit}
                                             onChange={(e) => handleCodeChange(idx, e.target.value)}
                                             onKeyDown={(e) => handleCodeKeyDown(idx, e)}
-                                            className="w-12 h-14 md:w-16 md:h-20 rounded-2xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 text-center text-3xl font-black text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all caret-indigo-500 shadow-sm"
+                                            className="w-full aspect-square md:w-16 md:h-20 rounded-2xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 text-center text-3xl font-black text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all shadow-sm"
                                             autoFocus={idx === 0}
                                         />
                                     ))}
@@ -282,11 +337,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                                 <button
                                     type="submit"
                                     disabled={loading || verificationCode.join('').length !== 6}
-                                    className="w-full bg-emerald-500 text-white py-5 rounded-[1.5rem] font-black text-lg tracking-tight hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+                                    className="w-full bg-emerald-500 text-white py-4 rounded-2xl font-black text-lg tracking-tight hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
                                 >
                                     {loading ? <i className="fas fa-circle-notch animate-spin"></i> : (
                                         <>
-                                            <span>Verify & Complete</span>
+                                            <span>Verify & Complete Registration</span>
                                             <i className="fas fa-check-circle"></i>
                                         </>
                                     )}
@@ -294,32 +349,29 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                             </form>
 
                             <div className="mt-8 flex flex-col items-center gap-3">
-                                <span className="text-slate-400 font-medium">
+                                <span className="text-slate-400 text-xs font-bold uppercase tracking-widest">
                                     {timeLeft > 0
-                                        ? `Resend code in 00:${timeLeft.toString().padStart(2, '0')}`
+                                        ? `Resend available in ${timeLeft}s`
                                         : "Didn't receive the code?"}
                                 </span>
                                 {timeLeft === 0 && (
                                     <button
                                         onClick={handleResendCode}
-                                        className="text-indigo-500 font-bold hover:text-indigo-400 transition-colors uppercase tracking-widest text-xs"
+                                        className="text-indigo-500 font-black hover:text-indigo-400 transition-colors uppercase tracking-widest text-[10px] bg-indigo-500/5 px-4 py-2 rounded-full border border-indigo-500/20"
                                     >
-                                        Resend Code
+                                        Resend Verification Code
                                     </button>
                                 )}
                             </div>
-                        </div>
-                    )}
 
-                    {/* Navigation Buttons for previous steps */}
-                    {step > 1 && (
-                        <button
-                            onClick={() => setStep(step - 1)}
-                            className="mt-8 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-sm font-bold flex items-center gap-2 mx-auto transition-colors"
-                        >
-                            <i className="fas fa-arrow-left text-xs"></i>
-                            Back
-                        </button>
+                            <button
+                                onClick={() => setStep(1)}
+                                className="mt-8 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-black uppercase tracking-widest flex items-center gap-2 mx-auto transition-colors"
+                            >
+                                <i className="fas fa-arrow-left text-[10px]"></i>
+                                Back to Edit Profile
+                            </button>
+                        </div>
                     )}
                 </div>
             </div>
