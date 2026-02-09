@@ -59,7 +59,8 @@ export type ChartType =
     | 'combo'
     | 'donut'
     | 'horizontalBar'
-    | 'stackedBar';
+    | 'stackedBar'
+    | 'area';
 
 export interface BIWidget {
     id: string;
@@ -74,6 +75,7 @@ export interface BIWidget {
 
     // Data configuration
     dataSourceId?: string;
+    dataSourceName?: string; // Backup for recovery if ID is lost
     chartType?: ChartType;
     dataset?: string; // Legacy support
 
@@ -96,8 +98,10 @@ export interface BIWidget {
     fontFamily?: string;
     showLegend?: boolean;
     legendPosition?: 'top' | 'bottom' | 'left' | 'right';
+    legendFontSize?: number;
     showGrid?: boolean;
     showLabels?: boolean;
+    labelMode?: 'value' | 'percent' | 'category' | 'categoricalValue' | 'categoricalPercent';
     borderRadius?: number;
     showShadow?: boolean;
 
@@ -135,6 +139,7 @@ export interface BIWidget {
 
     // Axis Formatting
     valueFormat?: string; // e.g. "standard", "currency", "compact", "percentage"
+    labelFormat?: string; // Specific format for labels if different from global
 
     // Pivot-specific
     pivotRows?: string[];
@@ -278,6 +283,7 @@ export interface DashboardPage {
     title: string;
     widgets: BIWidget[];
     dataSourceId?: string;
+    dataSourceName?: string;
 }
 
 export interface BIDashboard {
@@ -286,6 +292,7 @@ export interface BIDashboard {
     description?: string;
     folderId?: string;
     dataSourceId?: string;
+    dataSourceName?: string;
     enableCrossFilter?: boolean;
     widgets: BIWidget[]; // Still present for backward compatibility
     pages: DashboardPage[];
@@ -367,6 +374,7 @@ export interface DrillDownState {
     hierarchy: string[];
     currentLevel: number;
     breadcrumbs: { level: number; value: string }[];
+    mode?: 'drill' | 'expand'; // Power BI style: drill (replace) vs expand (additive)
 }
 
 // --------------------------------------------

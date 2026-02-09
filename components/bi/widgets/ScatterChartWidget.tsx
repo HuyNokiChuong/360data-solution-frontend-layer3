@@ -1,17 +1,18 @@
 
 import React, { useMemo } from 'react';
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ZAxis } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ZAxis, LabelList, Cell } from 'recharts';
 import { BIWidget, DrillDownState } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
-import { useAggregatedData } from '../hooks/useAggregatedData';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { formatValue } from '../engine/calculations';
+import { formatBIValue } from '../engine/utils';
 import BaseWidget from './BaseWidget';
 import CustomTooltip from './CustomTooltip';
 import { DrillDownService } from '../engine/DrillDownService';
 import EmptyChartState from './EmptyChartState';
-import { CHART_COLORS } from '../utils/chartColors';
+import { useChartColors } from '../utils/chartColors';
 import ChartLegend from './ChartLegend';
 
 interface ScatterChartWidgetProps {
@@ -25,6 +26,10 @@ interface ScatterChartWidgetProps {
     isDraggingOrResizing?: boolean;
     onClick?: (e: React.MouseEvent) => void;
 }
+
+import ChartContextMenu from './ChartContextMenu';
+import AIAnalysisModal from '../modals/AIAnalysisModal';
+import { analyzeChartTrend } from '../../../services/ai';
 
 const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     widget,
@@ -43,10 +48,65 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     const drillDownState = drillDowns[widget.id];
-    const xField = DrillDownService.getCurrentField(widget, drillDownState);
+    const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
+    const xField = (drillDownState?.mode === 'expand' && xFields.length > 1) ? '_combinedAxis' : (xFields[0] || '');
+    const { chartColors } = useChartColors();
 
     // NEW: Centralized Aggregation Hook
-    const { chartData, error } = useAggregatedData(widget);
+    const { chartData, error, isLoading } = useDirectQuery(widget);
+
+    // --- AI ANALYSIS STATE ---
+    const [contextMenu, setContextMenu] = React.useState<{ x: number, y: number } | null>(null);
+    const [isAIModalOpen, setIsAIModalOpen] = React.useState(false);
+    const [aiIsLoading, setAiIsLoading] = React.useState(false);
+    const [aiResult, setAiResult] = React.useState<string | null>(null);
+    const [aiError, setAiError] = React.useState<string | null>(null);
+
+    const handleContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleAnalyzeTrend = async (provider?: string, modelId?: string) => {
+        setIsAIModalOpen(true);
+
+        // If called without provider (initial click), just open modal and reset state
+        // The Modal's useEffect will trigger the actual analysis
+        if (!provider) {
+            setAiResult(null);
+            setAiError(null);
+            setAiIsLoading(false);
+            return;
+        }
+
+        setAiIsLoading(true);
+
+        try {
+            const context = `
+                Chart Type: ${widget.chartType}
+                Widget Filters: ${JSON.stringify(widget.filters || [])}
+                Dashboard Filters: ${JSON.stringify(allDashboardFilters.filter(f => f.sourceWidgetId !== widget.id))}
+                X-Axis (Independent): ${xField}
+                Y-Axis (Dependent): ${widget.yAxis?.[0]}
+                Z-Axis (Size): ${widget.yAxis?.[1] || 'None'}
+            `;
+            const result = await analyzeChartTrend(
+                widget.title || "Biểu đồ phân tán",
+                xField,
+                chartData,
+                widget.yAxis || [],
+                context,
+                { provider, modelId }
+            );
+            setAiResult(result);
+            setAiError(null);
+        } catch (err: any) {
+            setAiError(err.message || "Phân tích thất bại");
+        } finally {
+            setAiIsLoading(false);
+        }
+    };
+    // -------------------------
 
     const realDataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -59,22 +119,6 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
 
     const isFiltered = isWidgetFiltered(widget.id) || (drillDownState && drillDownState.currentLevel > 0);
 
-    const handleDrillUp = () => {
-        if (drillDownState) {
-            const newState = DrillDownService.drillUp(drillDownState);
-            setDrillDown(widget.id, newState);
-        }
-    };
-
-    const handleNextLevel = () => {
-        const currentState = drillDownState || DrillDownService.initDrillDown(widget);
-        if (currentState) {
-            const newState = DrillDownService.goToNextLevel(currentState);
-            if (newState) {
-                setDrillDown(widget.id, newState);
-            }
-        }
-    };
 
     const handleClick = (data: any) => {
         const payload = data?.activePayload?.[0]?.payload;
@@ -106,7 +150,12 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
         return field?.type === 'number' ? 'number' : 'category';
     }, [realDataSource, xField]);
 
-    const hasHierarchy = widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0;
+    // Get current cross-filter selection
+    const currentSelection = useMemo(() => {
+        const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
+        if (!cf) return undefined;
+        return cf.filters.find(f => f.field === xField)?.value;
+    }, [allDashboardFilters, widget.id, xField]);
 
     return (
         <BaseWidget
@@ -115,123 +164,139 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
             onDelete={onDelete}
             onDuplicate={onDuplicate}
             isSelected={isSelected}
-            isFiltered={isFiltered}
-            loading={realDataSource?.isLoadingPartial}
+            isFiltered={!!isFiltered}
+            loading={isLoading}
             loadingProgress={loadingProgress}
             error={error}
             onClick={onClick}
         >
-            <div className="absolute top-0 right-0 z-10 flex items-center gap-1 p-1">
-                {hasHierarchy && (
-                    <>
-                        <button
-                            onClick={handleDrillUp}
-                            disabled={!drillDownState || drillDownState.currentLevel === 0}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${drillDownState && drillDownState.currentLevel > 0
-                                ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'
-                                : 'bg-slate-800/50 text-slate-500 border-white/5 cursor-not-allowed'
-                                }`}
-                            title="Drill Up"
+            <div className="w-full h-full" onContextMenu={handleContextMenu}>
+                {chartData.length === 0 && !error ? (
+                    <EmptyChartState type="scatter" message="Select X and Y axes" onClickDataTab={onClickDataTab} onClick={onClick} />
+                ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <ScatterChart
+                            margin={{ top: 20, right: 30, left: 10, bottom: 10 }}
+                            onClick={handleClick}
                         >
-                            <i className="fas fa-arrow-up text-[8px]"></i>
-                        </button>
-                        <button
-                            onClick={handleNextLevel}
-                            disabled={drillDownState && drillDownState.currentLevel >= (widget.drillDownHierarchy?.length || 0) - 1}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${!(drillDownState && drillDownState.currentLevel >= (widget.drillDownHierarchy?.length || 0) - 1)
-                                ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'
-                                : 'bg-slate-800/50 text-slate-500 border-white/5 cursor-not-allowed'
-                                }`}
-                            title="Go to Next Level"
-                        >
-                            <i className="fas fa-chevron-down text-[8px]"></i>
-                        </button>
-                        {drillDownState && drillDownState.breadcrumbs.length > 0 && (
-                            <div className="ml-1 px-1.5 py-0.5 rounded bg-slate-800/80 text-indigo-300 text-[9px] border border-white/5 max-w-[150px] truncate">
-                                {drillDownState.breadcrumbs.map(bc => bc.value).join(' > ')}
-                            </div>
-                        )}
-                    </>
-                )}
-            </div>
-            {chartData.length === 0 && !error ? (
-                <EmptyChartState type="scatter" message="Select X and Y axes" onClickDataTab={onClickDataTab} onClick={onClick} />
-            ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart
-                        margin={{ top: 5, right: 5, bottom: 5, left: 0 }}
-                        onClick={handleClick}
-                    >
-                        {widget.showGrid !== false && (
-                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
-                        )}
+                            {widget.showGrid !== false && (
+                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
+                            )}
 
-                        <XAxis
-                            type={xFieldType}
-                            dataKey={xField}
-                            name={xField}
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => {
-                                if (xFieldType === 'number') return formatValue(val, widget.valueFormat || 'standard');
-                                return val;
-                            }}
-                            tick={{ fill: '#94a3b8', fontSize: 11 }}
-                            tickLine={{ stroke: '#475569' }}
-                        />
-
-                        <YAxis
-                            type="number"
-                            dataKey={widget.yAxis?.[0]}
-                            name={widget.yAxis?.[0]}
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => formatValue(val, widget.valueFormat || 'standard')}
-                            tick={{ fill: '#94a3b8', fontSize: 11 }}
-                            tickLine={{ stroke: '#475569' }}
-                            width={120}
-                        />
-
-                        {/* Optional Z-axis for bubble chart effect */}
-                        {widget.yAxis?.[1] && (
-                            <ZAxis
-                                type="number"
-                                dataKey={widget.yAxis[1]}
-                                range={[50, 400]}
-                                name={widget.yAxis[1]}
+                            <XAxis
+                                type={xFieldType}
+                                dataKey={xField}
+                                name={xField}
+                                stroke="#94a3b8"
+                                tickFormatter={(val) => {
+                                    if (xFieldType === 'number') return formatBIValue(val, widget.valueFormat || 'standard');
+                                    return val;
+                                }}
+                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
+                                tickLine={false}
+                                axisLine={false}
                             />
-                        )}
 
-                        <Tooltip
-                            content={<CustomTooltip
-                                aggregation={widget.aggregation}
-                                valueFormat={widget.valueFormat || 'standard'}
-                            />}
-                            cursor={{ strokeDasharray: '3 3' }}
-                        />
+                            <YAxis
+                                type="number"
+                                dataKey={widget.yAxis?.[0]}
+                                name={widget.yAxis?.[0]}
+                                stroke="#94a3b8"
+                                tickFormatter={(val) => formatBIValue(val, widget.valueFormat || 'standard')}
+                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
+                                tickLine={false}
+                                axisLine={false}
+                                width={120}
+                            />
 
-                        {widget.showLegend !== false && (
-                            <Legend
-                                layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
-                                align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                verticalAlign={(widget.legendPosition === 'top') ? 'top' : (widget.legendPosition === 'bottom' || !widget.legendPosition ? 'bottom' : 'middle')}
-                                content={<ChartLegend
-                                    widget={widget}
+                            {/* Optional Z-axis for bubble chart effect */}
+                            {widget.yAxis?.[1] && (
+                                <ZAxis
+                                    type="number"
+                                    dataKey={widget.yAxis[1]}
+                                    range={[50, 400]}
+                                    name={widget.yAxis[1]}
+                                />
+                            )}
+
+                            <Tooltip
+                                content={<CustomTooltip
+                                    aggregation={widget.aggregation}
+                                    valueFormat={widget.valueFormat || 'standard'}
+                                />}
+                                cursor={{ strokeDasharray: '3 3' }}
+                            />
+
+                            {widget.showLegend !== false && (
+                                <Legend
                                     layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                    fontSize={widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px'}
-                                />}
-                            />
-                        )}
+                                    verticalAlign={(widget.legendPosition === 'top') ? 'top' : (widget.legendPosition === 'bottom' || !widget.legendPosition ? 'bottom' : 'middle')}
+                                    content={<ChartLegend
+                                        widget={widget}
+                                        layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
+                                        align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
+                                        fontSize={widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px'}
+                                    />}
+                                />
+                            )}
 
-                        <Scatter
-                            name={widget.yAxis?.[0] || 'Value'}
-                            data={chartData}
-                            fill={widget.colors?.[0] || CHART_COLORS[0]}
-                            opacity={0.8}
-                        />
-                    </ScatterChart>
-                </ResponsiveContainer>
-            )}
-        </BaseWidget>
+                            <Scatter
+                                name={widget.yAxis?.[0] || 'Value'}
+                                data={chartData}
+                                fill={widget.colors?.[0] || chartColors[0]}
+                                opacity={0.8}
+                                onClick={(e: any) => {
+                                    if (onDataClick && e && e.payload) onDataClick(e.payload);
+                                }}
+                            >
+                                {chartData.map((entry, index) => {
+                                    const isActive = !currentSelection || entry[xField] === currentSelection;
+                                    return (
+                                        <Cell
+                                            key={`cell-${index}`}
+                                            fill={widget.colors?.[0] || chartColors[0]}
+                                            fillOpacity={isActive ? 0.8 : 0.2}
+                                        />
+                                    );
+                                })}
+                                {widget.showLabels !== false && (
+                                    <LabelList
+                                        dataKey={widget.yAxis?.[0]}
+                                        position="top"
+                                        fill="#94a3b8"
+                                        fontSize={10}
+                                        formatter={(val: any) => formatBIValue(val, widget.labelFormat || widget.valueFormat || 'standard')}
+                                        style={{ fontFamily: 'Outfit' }}
+                                    />
+                                )}
+                            </Scatter>
+                        </ScatterChart>
+                    </ResponsiveContainer>
+                )}
+
+                {/* AI Context Menu */}
+                {contextMenu && (
+                    <ChartContextMenu
+                        x={contextMenu.x}
+                        y={contextMenu.y}
+                        onClose={() => setContextMenu(null)}
+                        onAnalyze={handleAnalyzeTrend}
+                    />
+                )}
+
+                {/* AI Modal */}
+                <AIAnalysisModal
+                    isOpen={isAIModalOpen}
+                    onClose={() => setIsAIModalOpen(false)}
+                    isLoading={aiIsLoading}
+                    analysisResult={aiResult}
+                    error={aiError}
+                    title={widget.title || "Chart Analysis"}
+                    onReAnalyze={handleAnalyzeTrend}
+                />
+            </div>
+        </BaseWidget >
     );
 };
 

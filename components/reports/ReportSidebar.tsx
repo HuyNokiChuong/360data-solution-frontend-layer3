@@ -45,8 +45,51 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
         }
     };
 
+    const [width, setWidth] = React.useState(320);
+    const isResizingRef = React.useRef(false);
+
+    const startResizing = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isResizingRef.current = true;
+
+        const startX = e.clientX;
+        const startWidth = width;
+
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        const handleMouseMove = (mvEvent: MouseEvent) => {
+            if (!isResizingRef.current) return;
+            const currentX = mvEvent.clientX;
+            const deltaX = currentX - startX;
+            setWidth(Math.max(250, Math.min(600, startWidth + deltaX)));
+        };
+
+        const handleMouseUp = () => {
+            isResizingRef.current = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    };
+
     return (
-        <div className="w-80 border-r border-white/5 bg-[#020617] flex flex-col no-print h-full flex-shrink-0 relative">
+        <div
+            style={{ width }}
+            className="border-r border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-[#020617] flex flex-col no-print h-full flex-shrink-0 relative group transition-[width] duration-0 ease-linear"
+        >
+            {/* Resizer */}
+            <div
+                className="absolute top-0 -right-1 w-2 h-full cursor-col-resize z-[100] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                onMouseDown={startResizing}
+            />
+            {/* Visual Separator */}
+            <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
             <div className="p-8 pb-4">
                 <button
                     onClick={onNewSession}
@@ -57,7 +100,7 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
             </div>
 
             <div className="px-8 pb-4">
-                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5 pb-2">
+                <div className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest border-b border-slate-200 dark:border-white/5 pb-2">
                     History
                 </div>
             </div>
@@ -68,8 +111,8 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
                         key={s.id}
                         onClick={() => onSelectSession(s.id)}
                         className={`w-full text-left p-5 rounded-[1.5rem] border transition-all relative group cursor-pointer ${activeSessionId === s.id
-                            ? 'bg-indigo-600/10 border-indigo-500/30 text-white shadow-lg'
-                            : 'text-slate-500 border-transparent hover:bg-white/5 hover:text-slate-300'
+                            ? 'bg-indigo-600/10 border-indigo-500/30 text-indigo-600 dark:text-white shadow-lg'
+                            : 'text-slate-500 border-transparent hover:bg-white dark:hover:bg-white/5 hover:text-slate-950 dark:hover:text-slate-300'
                             }`}
                     >
                         {deletingId === s.id ? (
@@ -78,7 +121,7 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
                                 <div className="flex gap-2 w-full">
                                     <button
                                         onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
-                                        className="flex-1 py-1.5 bg-white/5 text-slate-400 rounded text-[10px] font-black uppercase hover:bg-white/10"
+                                        className="flex-1 py-1.5 bg-slate-200 dark:bg-white/5 text-slate-500 dark:text-slate-400 rounded text-[10px] font-black uppercase hover:bg-slate-300 dark:hover:bg-white/10"
                                     >
                                         Cancel
                                     </button>
@@ -100,7 +143,7 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
                                     onKeyDown={e => {
                                         if (e.key === 'Escape') setEditingId(null);
                                     }}
-                                    className="w-full bg-slate-950 border border-indigo-500 rounded px-2 py-1 text-xs text-white outline-none"
+                                    className="w-full bg-slate-100 dark:bg-slate-950 border border-indigo-500 rounded px-2 py-1 text-xs text-slate-900 dark:text-white outline-none"
                                 />
                                 <button type="submit" className="text-emerald-400 hover:text-emerald-300"><i className="fas fa-check"></i></button>
                             </form>
@@ -109,21 +152,21 @@ export const ReportSidebar: React.FC<ReportSidebarProps> = ({
                                 <div className="font-bold text-sm truncate uppercase tracking-tight mb-1 pr-8">{s.title || 'Untitled Session'}</div>
                                 <div className="flex justify-between items-center">
                                     <div className="text-[9px] font-black opacity-30 uppercase">{s.timestamp}</div>
-                                    <div className="text-[9px] font-black opacity-30 bg-white/5 px-2 py-0.5 rounded-full">{s.messages.length} msgs</div>
+                                    <div className="text-[9px] font-black opacity-30 bg-slate-200 dark:bg-white/5 px-2 py-0.5 rounded-full">{s.messages.length} msgs</div>
                                 </div>
 
                                 {/* Actions */}
                                 <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button
                                         onClick={(e) => handleStartEdit(e, s)}
-                                        className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-white bg-slate-900/50 rounded hover:bg-indigo-600 transition-colors"
+                                        className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white bg-slate-200 dark:bg-slate-900/50 rounded hover:bg-indigo-600 transition-colors"
                                         title="Rename"
                                     >
                                         <i className="fas fa-edit text-[10px]"></i>
                                     </button>
                                     <button
                                         onClick={(e) => handleDeleteClick(e, s.id)}
-                                        className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-red-400 bg-slate-900/50 rounded hover:bg-red-500/20 transition-colors"
+                                        className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-red-600 dark:hover:text-red-400 bg-slate-200 dark:bg-slate-900/50 rounded hover:bg-red-500/20 transition-colors"
                                         title="Delete"
                                     >
                                         <i className="fas fa-trash text-[10px]"></i>

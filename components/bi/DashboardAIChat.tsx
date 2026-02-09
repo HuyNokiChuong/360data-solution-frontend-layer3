@@ -4,12 +4,16 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { BIDashboard } from './types';
+import { DashboardConfig } from '../../types';
 import { analyzeDashboardContent } from '../../services/ai';
 
 interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
+    visualData?: DashboardConfig;
+    sqlTrace?: string;
+    executionTime?: number;
     timestamp: Date;
 }
 
@@ -111,7 +115,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
             const response = await analyzeDashboardContent(input.trim(), dashboard, history);
 
             const assistantMsg: Message = {
-                id: (Date.now() + 1).toString(),
+                id: `ai-${Date.now()}`,
                 role: 'assistant',
                 content: response,
                 timestamp: new Date()
@@ -120,10 +124,15 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
             setMessages(prev => [...prev, assistantMsg]);
         } catch (error: any) {
             console.error("Chat Error:", error);
+            const rawMsg = error.message || "Xin lỗi, đã có lỗi xảy ra.";
+            const isLeaked = rawMsg.toLowerCase().includes('leaked');
+
             setMessages(prev => [...prev, {
-                id: 'error',
+                id: `err-${Date.now()}`,
                 role: 'assistant',
-                content: `Error: ${error.message || "Xin lỗi, đã có lỗi xảy ra khi kết nối với AI Advisor."}`,
+                content: isLeaked
+                    ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
+                    : `Error: ${rawMsg}`,
                 timestamp: new Date()
             }]);
         } finally {
@@ -143,7 +152,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
         >
             {/* Chat Panel */}
             <div className={`
-                absolute bottom-16 right-0 w-[400px] h-[600px] bg-[#0f172a] border border-white/10 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.6)] 
+                absolute bottom-16 right-0 w-[600px] h-[700px] bg-[#0f172a] border border-white/10 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.6)] 
                 flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right
                 ${isOpen ? 'scale-100 opacity-100 translate-y-0' : 'scale-90 opacity-0 translate-y-4 pointer-events-none'}
             `}>
@@ -180,10 +189,10 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                         >
                             <div className={`
-                                max-w-[85%] p-3 rounded-2xl text-[12px] leading-relaxed
+                                max-w-[85%] p-4 rounded-3xl text-[12px] leading-relaxed
                                 ${msg.role === 'user'
-                                    ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-600/20'
-                                    : 'bg-slate-900 border border-white/10 text-slate-200 rounded-tl-none'
+                                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
+                                    : 'bg-slate-900 border border-white/10 text-slate-200'
                                 }
                             `}>
                                 <div className="whitespace-pre-wrap">{msg.content}</div>

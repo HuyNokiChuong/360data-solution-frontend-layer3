@@ -17,6 +17,7 @@ interface DashboardState {
     autoReloadInterval: number | string; // in minutes or cron expression, 0/'Off' means off
     autoReloadSchedule: string[]; // ['08:00', '17:00']
     lastReloadTimestamp: number | null;
+    isHydrated: boolean;
 
     // History for undo/redo
     history: BIDashboard[][];
@@ -34,7 +35,7 @@ interface DashboardState {
     alignWidgets: (direction: 'top' | 'bottom' | 'left' | 'right') => void;
 
     // Folder actions
-    createFolder: (name: string, parentId?: string) => void;
+    createFolder: (name: string, parentId?: string, createdBy?: string) => void;
     updateFolder: (id: string, updates: Partial<BIFolder>) => void;
     deleteFolder: (id: string) => void;
     shareFolder: (id: string, permissions: SharePermission[]) => void;
@@ -64,8 +65,8 @@ interface DashboardState {
     // Global filter actions
     addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => void;
     removeGlobalFilter: (dashboardId: string, filterId: string) => void;
-    syncDashboardDataSource: (dashboardId: string, dataSourceId: string) => void;
-    syncPageDataSource: (dashboardId: string, pageId: string, dataSourceId: string) => void;
+    syncDashboardDataSource: (dashboardId: string, dataSourceId: string, dataSourceName?: string) => void;
+    syncPageDataSource: (dashboardId: string, pageId: string, dataSourceId: string, dataSourceName?: string) => void;
     selectAll: () => void;
 
     // History actions
@@ -84,13 +85,42 @@ interface DashboardState {
 
 const getStorageKey = (domain: string | null) => domain ? `${domain}_bi_dashboard_data` : 'bi_dashboard_data';
 
-const saveToStorage = (folders: BIFolder[], dashboards: BIDashboard[], activeDashboardId: string | null, domain: string | null, autoReloadInterval: number | string, autoReloadSchedule: string[], lastReloadTimestamp: number | null) => {
+const saveToStorage = (state: DashboardState) => {
+    if (!state.isHydrated || !state.domain) {
+        // console.warn('Sync skipped: Store not hydrated or domain missing');
+        return;
+    }
+
     try {
-        localStorage.setItem(getStorageKey(domain), JSON.stringify({
-            folders, dashboards, activeDashboardId, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp
+        const storageKey = getStorageKey(state.domain);
+
+        // Safety check: don't save empty state if we previously had data
+        // This is a last-resort guard against race conditions
+        if (state.dashboards.length === 0 && state.folders.length === 0) {
+            const existing = localStorage.getItem(storageKey);
+            if (existing) {
+                const parsed = JSON.parse(existing);
+                if (parsed.dashboards?.length > 0 || parsed.folders?.length > 0) {
+                    console.warn('⚠️ Prevented overwriting non-empty storage with empty state');
+                    return;
+                }
+            }
+        }
+
+        localStorage.setItem(storageKey, JSON.stringify({
+            folders: state.folders,
+            dashboards: state.dashboards,
+            activeDashboardId: state.activeDashboardId,
+            autoReloadInterval: state.autoReloadInterval,
+            autoReloadSchedule: state.autoReloadSchedule,
+            lastReloadTimestamp: state.lastReloadTimestamp
         }));
     } catch (e) {
-        console.error('Failed to save dashboard data', e);
+        if (e instanceof Error && e.name === 'QuotaExceededError') {
+            console.error('🛑 LocalStorage quota exceeded for Dashboards');
+        } else {
+            console.error('Failed to save dashboard data', e);
+        }
     }
 };
 
@@ -108,25 +138,29 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     autoReloadInterval: 0,
     autoReloadSchedule: [],
     lastReloadTimestamp: null,
+    isHydrated: false,
 
     // Setters
     setDomain: (domain) => set({ domain }),
-    setAutoReloadInterval: (interval: number | string, schedule?: string[]) => set((state) => {
-        const newState = {
+
+    setAutoReloadInterval: (interval: number | string, schedule?: string[]) => {
+        set((state) => ({
             autoReloadInterval: interval,
             autoReloadSchedule: schedule || state.autoReloadSchedule
-        };
-        saveToStorage(state.folders, state.dashboards, state.activeDashboardId, state.domain, interval, schedule || state.autoReloadSchedule, state.lastReloadTimestamp);
-        return newState;
-    }),
-    setLastReloadTimestamp: (timestamp: number) => set((state) => {
-        saveToStorage(state.folders, state.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, timestamp);
-        return { lastReloadTimestamp: timestamp };
-    }),
-    setActiveDashboard: (id) => set((state) => {
-        saveToStorage(state.folders, state.dashboards, id, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { activeDashboardId: id, editingWidgetId: null, selectedWidgetIds: [] };
-    }),
+        }));
+        saveToStorage(get());
+    },
+
+    setLastReloadTimestamp: (timestamp: number) => {
+        set({ lastReloadTimestamp: timestamp });
+        saveToStorage(get());
+    },
+
+    setActiveDashboard: (id) => {
+        set({ activeDashboardId: id, editingWidgetId: null, selectedWidgetIds: [] });
+        saveToStorage(get());
+    },
+
     setEditingWidget: (id) => set({ editingWidgetId: id, selectedWidgetIds: id ? [id] : [] }),
 
     selectWidget: (id, multi = false) => set((state) => {
@@ -137,7 +171,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         const widgets = activePage ? activePage.widgets : (dashboard.widgets || []);
         const widget = widgets.find(w => w.id === id);
 
-        // If widget is part of a group, select all group members
         let idsToSelect = [id];
         if (widget?.groupId) {
             const groupMembers = widgets.filter(w => w.groupId === widget.groupId);
@@ -163,174 +196,186 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         };
     }),
 
-    clearSelection: () => set((state) => {
-        saveToStorage(state.folders, state.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { selectedWidgetIds: [], editingWidgetId: null };
-    }),
+    clearSelection: () => {
+        set({ selectedWidgetIds: [], editingWidgetId: null });
+        saveToStorage(get());
+    },
 
-    groupWidgets: () => set((state) => {
-        const { activeDashboardId, selectedWidgetIds } = state;
-        if (!activeDashboardId || selectedWidgetIds.length < 2) return state;
+    groupWidgets: () => {
+        set((state) => {
+            const { activeDashboardId, selectedWidgetIds } = state;
+            if (!activeDashboardId || selectedWidgetIds.length < 2) return state;
 
-        const groupId = `g-${Date.now()}`;
-
-        const newState = {
-            dashboards: state.dashboards.map(d => {
-                if (d.id === activeDashboardId) {
-                    if (d.pages && d.pages.length > 0) {
-                        const updatedPages = d.pages.map(p =>
-                            p.id === d.activePageId
-                                ? {
-                                    ...p,
-                                    widgets: p.widgets.map(w =>
-                                        selectedWidgetIds.includes(w.id) ? { ...w, groupId } : w
-                                    )
-                                }
-                                : p
-                        );
-                        const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
-                        return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
-                    } else {
-                        const updatedWidgets = (d.widgets || []).map(w => selectedWidgetIds.includes(w.id) ? { ...w, groupId } : w);
-                        return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+            const groupId = `g-${Date.now()}`;
+            return {
+                dashboards: state.dashboards.map(d => {
+                    if (d.id === activeDashboardId) {
+                        if (d.pages && d.pages.length > 0) {
+                            const updatedPages = d.pages.map(p =>
+                                p.id === d.activePageId
+                                    ? {
+                                        ...p,
+                                        widgets: p.widgets.map(w =>
+                                            selectedWidgetIds.includes(w.id) ? { ...w, groupId } : w
+                                        )
+                                    }
+                                    : p
+                            );
+                            const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
+                            return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
+                        } else {
+                            const updatedWidgets = (d.widgets || []).map(w => selectedWidgetIds.includes(w.id) ? { ...w, groupId } : w);
+                            return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                        }
                     }
-                }
-                return d;
-            })
-        };
-        saveToStorage(state.folders, newState.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return newState;
-    }),
-
-    alignWidgets: (direction) => set((state) => {
-        const { activeDashboardId, selectedWidgetIds } = state;
-        if (!activeDashboardId || selectedWidgetIds.length < 2) return state;
-
-        const dashboard = state.dashboards.find(d => d.id === activeDashboardId);
-        if (!dashboard) return state;
-
-        const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
-        const currentWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
-        const selectedWidgets = currentWidgets.filter(w => selectedWidgetIds.includes(w.id));
-
-        const updatedWidgets = [...currentWidgets];
-        if (direction === 'top') {
-            const minY = Math.min(...selectedWidgets.map(w => w.y));
-            updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, y: minY }; });
-        } else if (direction === 'bottom') {
-            const maxY = Math.max(...selectedWidgets.map(w => w.y + w.h));
-            updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, y: maxY - w.h }; });
-        } else if (direction === 'left') {
-            const minX = Math.min(...selectedWidgets.map(w => w.x));
-            updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, x: minX }; });
-        } else if (direction === 'right') {
-            const maxX = Math.max(...selectedWidgets.map(w => w.x + w.w));
-            updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, x: maxX - w.w }; });
-        }
-
-        const newState = {
-            dashboards: state.dashboards.map(d => {
-                if (d.id === activeDashboardId) {
-                    if (d.pages && d.pages.length > 0) {
-                        const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: updatedWidgets } : p);
-                        return { ...d, pages: updatedPages, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
-                    } else {
-                        return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
-                    }
-                }
-                return d;
-            })
-        };
-        saveToStorage(state.folders, newState.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return newState;
-    }),
-
-    ungroupWidgets: () => set((state) => {
-        const { activeDashboardId, selectedWidgetIds } = state;
-        if (!activeDashboardId || selectedWidgetIds.length === 0) return state;
-
-        const dashboard = state.dashboards.find(d => d.id === activeDashboardId);
-        if (!dashboard) return state;
-
-        const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
-        const currentWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
-
-        const groupIdsToDissolve = new Set<string>();
-        selectedWidgetIds.forEach(id => {
-            const w = currentWidgets.find(widget => widget.id === id);
-            if (w?.groupId) groupIdsToDissolve.add(w.groupId);
+                    return d;
+                })
+            };
         });
+        saveToStorage(get());
+    },
 
-        if (groupIdsToDissolve.size === 0) return state;
+    alignWidgets: (direction) => {
+        set((state) => {
+            const { activeDashboardId, selectedWidgetIds } = state;
+            if (!activeDashboardId || selectedWidgetIds.length < 2) return state;
 
-        const updatedWidgets = currentWidgets.map(w =>
-            w.groupId && groupIdsToDissolve.has(w.groupId) ? { ...w, groupId: undefined } : w
-        );
+            const dashboard = state.dashboards.find(d => d.id === activeDashboardId);
+            if (!dashboard) return state;
 
-        const newState = {
-            dashboards: state.dashboards.map(d => {
-                if (d.id === activeDashboardId) {
-                    if (d.pages && d.pages.length > 0) {
-                        const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: updatedWidgets } : p);
-                        return { ...d, pages: updatedPages, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
-                    } else {
-                        return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
-                    }
-                }
-                return d;
-            })
-        };
-        saveToStorage(state.folders, newState.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return newState;
-    }),
+            const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
+            const currentWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
+            const selectedWidgets = currentWidgets.filter(w => selectedWidgetIds.includes(w.id));
 
-    createFolder: (name, parentId) => set((state) => {
-        const newFolders = [
-            ...state.folders,
-            {
-                id: `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-                name,
-                parentId,
-                createdAt: new Date().toISOString(),
-                createdBy: 'current-user', // Mock
-                sharedWith: []
+            const updatedWidgets = [...currentWidgets];
+            if (direction === 'top') {
+                const minY = Math.min(...selectedWidgets.map(w => w.y));
+                updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, y: minY }; });
+            } else if (direction === 'bottom') {
+                const maxY = Math.max(...selectedWidgets.map(w => w.y + w.h));
+                updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, y: maxY - w.h }; });
+            } else if (direction === 'left') {
+                const minX = Math.min(...selectedWidgets.map(w => w.x));
+                updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, x: minX }; });
+            } else if (direction === 'right') {
+                const maxX = Math.max(...selectedWidgets.map(w => w.x + w.w));
+                updatedWidgets.forEach((w, i) => { if (selectedWidgetIds.includes(w.id)) updatedWidgets[i] = { ...w, x: maxX - w.w }; });
             }
-        ];
-        saveToStorage(newFolders, state.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { folders: newFolders };
-    }),
 
-    updateFolder: (id, updates) => set((state) => {
-        const newFolders = state.folders.map(f => f.id === id ? { ...f, ...updates } : f);
-        saveToStorage(newFolders, state.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { folders: newFolders };
-    }),
+            return {
+                dashboards: state.dashboards.map(d => {
+                    if (d.id === activeDashboardId) {
+                        if (d.pages && d.pages.length > 0) {
+                            const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: updatedWidgets } : p);
+                            return { ...d, pages: updatedPages, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                        } else {
+                            return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                        }
+                    }
+                    return d;
+                })
+            };
+        });
+        saveToStorage(get());
+    },
 
-    deleteFolder: (id) => set((state) => {
-        const getAllChildFolderIds = (parentId: string): string[] => {
-            const children = state.folders.filter(f => f.parentId === parentId);
-            let ids = children.map(c => c.id);
-            children.forEach(c => {
-                ids = [...ids, ...getAllChildFolderIds(c.id)];
+    ungroupWidgets: () => {
+        set((state) => {
+            const { activeDashboardId, selectedWidgetIds } = state;
+            if (!activeDashboardId || selectedWidgetIds.length === 0) return state;
+
+            const dashboard = state.dashboards.find(d => d.id === activeDashboardId);
+            if (!dashboard) return state;
+
+            const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
+            const currentWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
+
+            const groupIdsToDissolve = new Set<string>();
+            selectedWidgetIds.forEach(id => {
+                const w = currentWidgets.find(widget => widget.id === id);
+                if (w?.groupId) groupIdsToDissolve.add(w.groupId);
             });
-            return ids;
-        };
-        const folderIdsToDelete = [id, ...getAllChildFolderIds(id)];
-        const newFolders = state.folders.filter(f => !folderIdsToDelete.includes(f.id));
-        const newDashboards = state.dashboards.map(d =>
-            folderIdsToDelete.includes(d.folderId || '') ? { ...d, folderId: undefined } : d
-        );
-        saveToStorage(newFolders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { folders: newFolders, dashboards: newDashboards };
-    }),
 
-    shareFolder: (id, permissions) => set((state) => {
-        const newFolders = state.folders.map(f => f.id === id ? { ...f, sharedWith: permissions } : f);
-        saveToStorage(newFolders, state.dashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { folders: newFolders };
-    }),
+            if (groupIdsToDissolve.size === 0) return state;
 
-    createDashboard: (dashboard) => set((state) => {
+            const updatedWidgets = currentWidgets.map(w =>
+                w.groupId && groupIdsToDissolve.has(w.groupId) ? { ...w, groupId: undefined } : w
+            );
+
+            return {
+                dashboards: state.dashboards.map(d => {
+                    if (d.id === activeDashboardId) {
+                        if (d.pages && d.pages.length > 0) {
+                            const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: updatedWidgets } : p);
+                            return { ...d, pages: updatedPages, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                        } else {
+                            return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                        }
+                    }
+                    return d;
+                })
+            };
+        });
+        saveToStorage(get());
+    },
+
+    createFolder: (name, parentId, createdBy) => {
+        set((state) => ({
+            folders: [
+                ...state.folders,
+                {
+                    id: `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                    name,
+                    parentId,
+                    createdAt: new Date().toISOString(),
+                    createdBy: createdBy || 'current-user',
+                    sharedWith: createdBy ? [{
+                        userId: createdBy,
+                        permission: 'admin',
+                        sharedAt: new Date().toISOString()
+                    }] : []
+                }
+            ]
+        }));
+        saveToStorage(get());
+    },
+
+    updateFolder: (id, updates) => {
+        set((state) => ({
+            folders: state.folders.map(f => f.id === id ? { ...f, ...updates } : f)
+        }));
+        saveToStorage(get());
+    },
+
+    deleteFolder: (id) => {
+        set((state) => {
+            const getAllChildFolderIds = (parentId: string): string[] => {
+                const children = state.folders.filter(f => f.parentId === parentId);
+                let ids = children.map(c => c.id);
+                children.forEach(c => {
+                    ids = [...ids, ...getAllChildFolderIds(c.id)];
+                });
+                return ids;
+            };
+            const folderIdsToDelete = [id, ...getAllChildFolderIds(id)];
+            return {
+                folders: state.folders.filter(f => !folderIdsToDelete.includes(f.id)),
+                dashboards: state.dashboards.map(d =>
+                    folderIdsToDelete.includes(d.folderId || '') ? { ...d, folderId: undefined } : d
+                )
+            };
+        });
+        saveToStorage(get());
+    },
+
+    shareFolder: (id, permissions) => {
+        set((state) => ({
+            folders: state.folders.map(f => f.id === id ? { ...f, sharedWith: permissions } : f)
+        }));
+        saveToStorage(get());
+    },
+
+    createDashboard: (dashboard) => {
         const pageId = `pg-${Date.now()}`;
         const newDashboard: BIDashboard = {
             ...dashboard,
@@ -339,42 +384,54 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             updatedAt: new Date().toISOString(),
             widgets: [],
             pages: [{ id: pageId, title: 'Page 1', widgets: [] }],
-            activePageId: pageId
+            activePageId: pageId,
+            sharedWith: dashboard.createdBy ? [{
+                userId: dashboard.createdBy,
+                permission: 'admin',
+                sharedAt: new Date().toISOString()
+            }] : []
         };
-        const newDashboards = [...state.dashboards, newDashboard];
-        saveToStorage(state.folders, newDashboards, newDashboard.id, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, activeDashboardId: newDashboard.id };
-    }),
+        set((state) => ({
+            dashboards: [...state.dashboards, newDashboard],
+            activeDashboardId: newDashboard.id
+        }));
+        saveToStorage(get());
+    },
 
-    updateDashboard: (id, updates) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === id ? { ...d, ...updates, updatedAt: new Date().toISOString() } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+    updateDashboard: (id, updates) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === id ? { ...d, ...updates, updatedAt: new Date().toISOString() } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
-    deleteDashboard: (id) => set((state) => {
-        const newDashboards = state.dashboards.filter(d => d.id !== id);
-        const newActiveId = state.activeDashboardId === id ? null : state.activeDashboardId;
-        saveToStorage(state.folders, newDashboards, newActiveId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return {
-            dashboards: newDashboards,
-            activeDashboardId: newActiveId
-        };
-    }),
+    deleteDashboard: (id) => {
+        set((state) => {
+            const newDashboards = state.dashboards.filter(d => d.id !== id);
+            const newActiveId = state.activeDashboardId === id ? null : state.activeDashboardId;
+            return {
+                dashboards: newDashboards,
+                activeDashboardId: newActiveId
+            };
+        });
+        saveToStorage(get());
+    },
 
-    shareDashboard: (id, permissions) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === id ? { ...d, sharedWith: permissions, updatedAt: new Date().toISOString() } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+    shareDashboard: (id, permissions) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === id ? { ...d, sharedWith: permissions, updatedAt: new Date().toISOString() } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
-    duplicateDashboard: (id) => set((state) => {
+    duplicateDashboard: (id) => {
+        const state = get();
         const original = state.dashboards.find(d => d.id === id);
-        if (!original) return state;
+        if (!original) return;
 
         const suffix = Math.random().toString(36).substring(2, 7);
         const originalPages = original.pages && original.pages.length > 0
@@ -399,89 +456,95 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         duplicate.activePageId = duplicate.pages[0].id;
         duplicate.widgets = duplicate.pages[0].widgets;
 
-        const newDashboards = [...state.dashboards, duplicate];
-        saveToStorage(state.folders, newDashboards, duplicate.id, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, activeDashboardId: duplicate.id };
-    }),
+        set((state) => ({
+            dashboards: [...state.dashboards, duplicate],
+            activeDashboardId: duplicate.id
+        }));
+        saveToStorage(get());
+    },
 
-    addWidget: (dashboardId, widget) => set((state) => {
+    addWidget: (dashboardId, widget) => {
         const newWidget: BIWidget = {
+            showLegend: true,
+            legendPosition: 'bottom',
+            showGrid: true,
+            showLabels: false,
             ...widget,
             id: `w-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
         };
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId) {
-                const activePage = (d.pages || []).find(p => p.id === d.activePageId);
-                const pageDataSourceId = activePage?.dataSourceId;
-                const widgetWithDS = { ...newWidget, dataSourceId: newWidget.dataSourceId || pageDataSourceId || d.dataSourceId };
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId) {
+                    const activePage = (d.pages || []).find(p => p.id === d.activePageId);
+                    const pageDataSourceId = activePage?.dataSourceId;
+                    const widgetWithDS = { ...newWidget, dataSourceId: newWidget.dataSourceId || pageDataSourceId || d.dataSourceId };
 
-                if (d.pages && d.pages.length > 0) {
-                    const updatedPages = d.pages.map(p =>
-                        p.id === d.activePageId ? { ...p, widgets: [...p.widgets, widgetWithDS] } : p
-                    );
-                    const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
-                    return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
-                } else {
-                    const updatedWidgets = [...(d.widgets || []), widgetWithDS];
-                    return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+                    if (d.pages && d.pages.length > 0) {
+                        const updatedPages = d.pages.map(p =>
+                            p.id === d.activePageId ? { ...p, widgets: [...p.widgets, widgetWithDS] } : p
+                        );
+                        return { ...d, pages: updatedPages, widgets: updatedPages.find(page => page.id === d.activePageId)?.widgets || [], updatedAt: new Date().toISOString() };
+                    } else {
+                        return { ...d, widgets: [...(d.widgets || []), widgetWithDS], updatedAt: new Date().toISOString() };
+                    }
                 }
-            }
-            return d;
-        });
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, editingWidgetId: newWidget.id };
-    }),
+                return d;
+            }),
+            editingWidgetId: newWidget.id
+        }));
+        saveToStorage(get());
+    },
 
-    updateWidget: (dashboardId, widgetId, updates) => set((state) => {
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId) {
-                if (d.pages && d.pages.length > 0) {
-                    const updatedPages = d.pages.map(p => ({
-                        ...p,
-                        widgets: p.widgets.map(w => w.id === widgetId ? { ...w, ...updates } : w)
-                    }));
-                    const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
-                    return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
-                } else {
-                    const updatedWidgets = (d.widgets || []).map(w => w.id === widgetId ? { ...w, ...updates } : w);
-                    return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+    updateWidget: (dashboardId, widgetId, updates) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId) {
+                    if (d.pages && d.pages.length > 0) {
+                        const updatedPages = d.pages.map(p => ({
+                            ...p,
+                            widgets: p.widgets.map(w => w.id === widgetId ? { ...w, ...updates } : w)
+                        }));
+                        return { ...d, pages: updatedPages, widgets: updatedPages.find(page => page.id === d.activePageId)?.widgets || [], updatedAt: new Date().toISOString() };
+                    } else {
+                        return { ...d, widgets: (d.widgets || []).map(w => w.id === widgetId ? { ...w, ...updates } : w), updatedAt: new Date().toISOString() };
+                    }
                 }
-            }
-            return d;
-        });
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+                return d;
+            })
+        }));
+        saveToStorage(get());
+    },
 
-    deleteWidget: (dashboardId, widgetId) => set((state) => {
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId) {
-                if (d.pages && d.pages.length > 0) {
-                    const updatedPages = d.pages.map(p => ({
-                        ...p,
-                        widgets: p.widgets.filter(w => w.id !== widgetId)
-                    }));
-                    const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
-                    return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
-                } else {
-                    const updatedWidgets = (d.widgets || []).filter(w => w.id !== widgetId);
-                    return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+    deleteWidget: (dashboardId, widgetId) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId) {
+                    if (d.pages && d.pages.length > 0) {
+                        const updatedPages = d.pages.map(p => ({
+                            ...p,
+                            widgets: p.widgets.filter(w => w.id !== widgetId)
+                        }));
+                        return { ...d, pages: updatedPages, widgets: updatedPages.find(page => page.id === d.activePageId)?.widgets || [], updatedAt: new Date().toISOString() };
+                    } else {
+                        return { ...d, widgets: (d.widgets || []).filter(w => w.id !== widgetId), updatedAt: new Date().toISOString() };
+                    }
                 }
-            }
-            return d;
-        });
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, editingWidgetId: state.editingWidgetId === widgetId ? null : state.editingWidgetId };
-    }),
+                return d;
+            }),
+            editingWidgetId: state.editingWidgetId === widgetId ? null : state.editingWidgetId
+        }));
+        saveToStorage(get());
+    },
 
-    duplicateWidget: (dashboardId, widgetId) => set((state) => {
+    duplicateWidget: (dashboardId, widgetId) => {
+        const state = get();
         const dashboard = state.dashboards.find(d => d.id === dashboardId);
-        if (!dashboard) return state;
+        if (!dashboard) return;
 
         const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
         const currentWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
         const widget = currentWidgets.find(w => w.id === widgetId);
-        if (!widget) return state;
+        if (!widget) return;
 
         const duplicate: BIWidget = {
             ...widget,
@@ -490,41 +553,41 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             y: widget.y + 1
         };
 
-        const updatedWidgets = [...currentWidgets, duplicate];
-
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId) {
-                if (d.pages && d.pages.length > 0) {
-                    const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: updatedWidgets } : p);
-                    return { ...d, pages: updatedPages, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
-                } else {
-                    return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId) {
+                    if (d.pages && d.pages.length > 0) {
+                        const updatedPages = d.pages.map(p => p.id === d.activePageId ? { ...p, widgets: [...currentWidgets, duplicate] } : p);
+                        return { ...d, pages: updatedPages, widgets: updatedPages.find(page => page.id === d.activePageId)?.widgets || [], updatedAt: new Date().toISOString() };
+                    } else {
+                        return { ...d, widgets: [...currentWidgets, duplicate], updatedAt: new Date().toISOString() };
+                    }
                 }
-            }
-            return d;
-        });
+                return d;
+            }),
+            selectedWidgetIds: [duplicate.id],
+            editingWidgetId: duplicate.id
+        }));
+        saveToStorage(get());
+    },
 
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, selectedWidgetIds: [duplicate.id], editingWidgetId: duplicate.id };
-    }),
-
-    copySelectedWidgets: () => set((state) => {
+    copySelectedWidgets: () => {
+        const state = get();
         const dashboard = state.dashboards.find(d => d.id === state.activeDashboardId);
-        if (!dashboard || state.selectedWidgetIds.length === 0) return state;
+        if (!dashboard || state.selectedWidgetIds.length === 0) return;
         const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
         const widgets = activePage ? activePage.widgets : (dashboard.widgets || []);
 
         const widgetsToCopy = widgets
             .filter(w => state.selectedWidgetIds.includes(w.id))
             .map(w => ({ ...w }));
-        return { clipboard: widgetsToCopy };
-    }),
+        set({ clipboard: widgetsToCopy });
+    },
 
-    pasteWidgets: () => set((state) => {
+    pasteWidgets: () => {
+        const state = get();
         const { activeDashboardId, clipboard, dashboards } = state;
-        if (!activeDashboardId || clipboard.length === 0) return state;
-        const dashboard = dashboards.find(d => d.id === activeDashboardId);
-        if (!dashboard) return state;
+        if (!activeDashboardId || clipboard.length === 0) return;
 
         const timestamp = Date.now();
         const pastedWidgets: BIWidget[] = clipboard.map((w, idx) => ({
@@ -535,83 +598,87 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             groupId: w.groupId ? `g-pasted-${timestamp}-${w.groupId}` : undefined
         }));
 
-        const newDashboards = dashboards.map(d => {
-            if (d.id === activeDashboardId) {
-                if (d.pages && d.pages.length > 0) {
-                    const updatedPages = d.pages.map(p =>
-                        p.id === d.activePageId ? { ...p, widgets: [...p.widgets, ...pastedWidgets] } : p
-                    );
-                    const activeWidgets = updatedPages.find(page => page.id === d.activePageId)?.widgets || [];
-                    return { ...d, pages: updatedPages, widgets: activeWidgets, updatedAt: new Date().toISOString() };
-                } else {
-                    const updatedWidgets = [...(d.widgets || []), ...pastedWidgets];
-                    return { ...d, widgets: updatedWidgets, updatedAt: new Date().toISOString() };
+        set((state) => ({
+            dashboards: dashboards.map(d => {
+                if (d.id === activeDashboardId) {
+                    if (d.pages && d.pages.length > 0) {
+                        const updatedPages = d.pages.map(p =>
+                            p.id === d.activePageId ? { ...p, widgets: [...p.widgets, ...pastedWidgets] } : p
+                        );
+                        return { ...d, pages: updatedPages, widgets: updatedPages.find(page => page.id === d.activePageId)?.widgets || [], updatedAt: new Date().toISOString() };
+                    } else {
+                        return { ...d, widgets: [...(d.widgets || []), ...pastedWidgets], updatedAt: new Date().toISOString() };
+                    }
                 }
-            }
-            return d;
-        });
-
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return {
-            dashboards: newDashboards,
+                return d;
+            }),
             selectedWidgetIds: pastedWidgets.map(w => w.id),
             editingWidgetId: pastedWidgets.length === 1 ? pastedWidgets[0].id : null
-        };
-    }),
+        }));
+        saveToStorage(get());
+    },
 
-    addPage: (dashboardId, title = 'New Page') => set((state) => {
+    addPage: (dashboardId, title = 'New Page') => {
         const pageId = `pg-${Date.now()}`;
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId) {
-                const newPage = { id: pageId, title, widgets: [], dataSourceId: d.dataSourceId };
-                const currentPages = d.pages || [];
-                return {
-                    ...d,
-                    pages: [...currentPages, newPage],
-                    activePageId: pageId,
-                    widgets: [],
-                    updatedAt: new Date().toISOString()
-                };
-            }
-            return d;
-        });
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, selectedWidgetIds: [], editingWidgetId: null };
-    }),
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId) {
+                    const newPage = { id: pageId, title, widgets: [], dataSourceId: d.dataSourceId };
+                    const currentPages = d.pages || [];
+                    return {
+                        ...d,
+                        pages: [...currentPages, newPage],
+                        activePageId: pageId,
+                        widgets: [],
+                        updatedAt: new Date().toISOString()
+                    };
+                }
+                return d;
+            }),
+            selectedWidgetIds: [],
+            editingWidgetId: null
+        }));
+        saveToStorage(get());
+    },
 
-    updatePage: (dashboardId, pageId, updates) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? { ...d, pages: (d.pages || []).map(p => p.id === pageId ? { ...p, ...updates } : p), updatedAt: new Date().toISOString() } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+    updatePage: (dashboardId, pageId, updates) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? { ...d, pages: (d.pages || []).map(p => p.id === pageId ? { ...p, ...updates } : p), updatedAt: new Date().toISOString() } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
-    deletePage: (dashboardId, pageId) => set((state) => {
-        const newDashboards = state.dashboards.map(d => {
-            if (d.id === dashboardId && d.pages) {
-                const remainingPages = d.pages.filter(p => p.id !== pageId);
-                if (remainingPages.length === 0) return d;
-                const newActiveId = d.activePageId === pageId ? remainingPages[0].id : d.activePageId;
-                return {
-                    ...d,
-                    pages: remainingPages,
-                    activePageId: newActiveId,
-                    widgets: remainingPages.find(p => p.id === newActiveId)?.widgets || [],
-                    updatedAt: new Date().toISOString()
-                };
-            }
-            return d;
-        });
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, selectedWidgetIds: [], editingWidgetId: null };
-    }),
+    deletePage: (dashboardId, pageId) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d => {
+                if (d.id === dashboardId && d.pages) {
+                    const remainingPages = d.pages.filter(p => p.id !== pageId);
+                    if (remainingPages.length === 0) return d;
+                    const newActiveId = d.activePageId === pageId ? remainingPages[0].id : d.activePageId;
+                    return {
+                        ...d,
+                        pages: remainingPages,
+                        activePageId: newActiveId,
+                        widgets: remainingPages.find(p => p.id === newActiveId)?.widgets || [],
+                        updatedAt: new Date().toISOString()
+                    };
+                }
+                return d;
+            }),
+            selectedWidgetIds: [],
+            editingWidgetId: null
+        }));
+        saveToStorage(get());
+    },
 
-    duplicatePage: (dashboardId, pageId) => set((state) => {
+    duplicatePage: (dashboardId, pageId) => {
+        const state = get();
         const dashboard = state.dashboards.find(d => d.id === dashboardId);
-        if (!dashboard || !dashboard.pages) return state;
+        if (!dashboard || !dashboard.pages) return;
         const page = dashboard.pages.find(p => p.id === pageId);
-        if (!page) return state;
+        if (!page) return;
 
         const newPageId = `pg-${Date.now()}`;
         const duplicatedPage: DashboardPage = {
@@ -624,95 +691,107 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             }))
         };
 
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? {
-                ...d,
-                pages: [...d.pages, duplicatedPage],
-                activePageId: newPageId,
-                widgets: duplicatedPage.widgets,
-                updatedAt: new Date().toISOString()
-            } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, selectedWidgetIds: [], editingWidgetId: null };
-    }),
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? {
+                    ...d,
+                    pages: [...d.pages, duplicatedPage],
+                    activePageId: newPageId,
+                    widgets: duplicatedPage.widgets,
+                    updatedAt: new Date().toISOString()
+                } : d
+            ),
+            selectedWidgetIds: [],
+            editingWidgetId: null
+        }));
+        saveToStorage(get());
+    },
 
-    setActivePage: (dashboardId, pageId) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? { ...d, activePageId: pageId, widgets: (d.pages || []).find(p => p.id === pageId)?.widgets || [] } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards, selectedWidgetIds: [], editingWidgetId: null };
-    }),
+    setActivePage: (dashboardId, pageId) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? { ...d, activePageId: pageId, widgets: (d.pages || []).find(p => p.id === pageId)?.widgets || [] } : d
+            ),
+            selectedWidgetIds: [],
+            editingWidgetId: null
+        }));
+        saveToStorage(get());
+    },
 
-    addGlobalFilter: (dashboardId, filter) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? { ...d, globalFilters: [...(d.globalFilters || []), filter], updatedAt: new Date().toISOString() } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+    addGlobalFilter: (dashboardId, filter) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? { ...d, globalFilters: [...(d.globalFilters || []), filter], updatedAt: new Date().toISOString() } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
-    removeGlobalFilter: (dashboardId, filterId) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? { ...d, globalFilters: (d.globalFilters || []).filter(f => f.id !== filterId), updatedAt: new Date().toISOString() } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+    removeGlobalFilter: (dashboardId, filterId) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? { ...d, globalFilters: (d.globalFilters || []).filter(f => f.id !== filterId), updatedAt: new Date().toISOString() } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
-    syncDashboardDataSource: (dashboardId, dataSourceId) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? {
-                ...d,
-                dataSourceId,
-                // Only sync widgets not on pages or if pages don't exist
-                pages: (d.pages || []).map(p => ({
-                    ...p,
-                    dataSourceId: p.dataSourceId || dataSourceId, // Only update if page doesn't have one
-                    widgets: p.widgets.map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId }))
-                })),
-                widgets: (d.widgets || []).map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId })),
-                updatedAt: new Date().toISOString()
-            } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
-
-    syncPageDataSource: (dashboardId, pageId, dataSourceId) => set((state) => {
-        const newDashboards = state.dashboards.map(d =>
-            d.id === dashboardId ? {
-                ...d,
-                pages: (d.pages || []).map(p =>
-                    p.id === pageId ? {
+    syncDashboardDataSource: (dashboardId, dataSourceId, dataSourceName) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? {
+                    ...d,
+                    dataSourceId,
+                    dataSourceName,
+                    pages: (d.pages || []).map(p => ({
                         ...p,
-                        dataSourceId,
-                        widgets: p.widgets.map(w => ({ ...w, dataSourceId }))
-                    } : p
-                ),
-                updatedAt: new Date().toISOString()
-            } : d
-        );
-        saveToStorage(state.folders, newDashboards, state.activeDashboardId, state.domain, state.autoReloadInterval, state.autoReloadSchedule, state.lastReloadTimestamp);
-        return { dashboards: newDashboards };
-    }),
+                        dataSourceId: p.dataSourceId || dataSourceId,
+                        dataSourceName: p.dataSourceName || dataSourceName,
+                        widgets: p.widgets.map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId, dataSourceName: w.dataSourceName || dataSourceName }))
+                    })),
+                    widgets: (d.widgets || []).map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId, dataSourceName: w.dataSourceName || dataSourceName })),
+                    updatedAt: new Date().toISOString()
+                } : d
+            )
+        }));
+        saveToStorage(get());
+    },
+
+    syncPageDataSource: (dashboardId, pageId, dataSourceId, dataSourceName) => {
+        set((state) => ({
+            dashboards: state.dashboards.map(d =>
+                d.id === dashboardId ? {
+                    ...d,
+                    pages: (d.pages || []).map(p =>
+                        p.id === pageId ? {
+                            ...p,
+                            dataSourceId,
+                            dataSourceName,
+                            widgets: p.widgets.map(w => ({ ...w, dataSourceId, dataSourceName }))
+                        } : p
+                    ),
+                    updatedAt: new Date().toISOString()
+                } : d
+            )
+        }));
+        saveToStorage(get());
+    },
 
     undo: () => {
-        const { history, historyIndex, folders, domain, activeDashboardId, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp } = get();
+        const { history, historyIndex } = get();
         if (historyIndex > 0) {
             const newDashboards = history[historyIndex - 1];
-            saveToStorage(folders, newDashboards, activeDashboardId, domain, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp);
             set({ dashboards: newDashboards, historyIndex: historyIndex - 1 });
+            saveToStorage(get());
         }
     },
 
     redo: () => {
-        const { history, historyIndex, folders, domain, activeDashboardId, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp } = get();
+        const { history, historyIndex } = get();
         if (historyIndex < history.length - 1) {
             const newDashboards = history[historyIndex + 1];
-            saveToStorage(folders, newDashboards, activeDashboardId, domain, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp);
             set({ dashboards: newDashboards, historyIndex: historyIndex + 1 });
+            saveToStorage(get());
         }
     },
 
@@ -735,11 +814,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     loadFromStorage: (domain) => {
+        if (!domain) return;
         try {
-            const data = localStorage.getItem(getStorageKey(domain));
+            const storageKey = getStorageKey(domain);
+            const data = localStorage.getItem(storageKey);
+
             if (data) {
                 const parsed = JSON.parse(data);
-                const activeDashboardId = parsed.activeDashboardId || null;
+                const savedActiveDashboardId = parsed.activeDashboardId || null;
+
                 let migratedDashboards = (parsed.dashboards || []) as BIDashboard[];
                 migratedDashboards = migratedDashboards.map(d => {
                     if (!d.pages || d.pages.length === 0) {
@@ -753,6 +836,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     }
                     return d;
                 });
+
+                // Ensure activeDashboardId is valid, or pick the first one if one exists
+                const activeDashboardId = migratedDashboards.some(d => d.id === savedActiveDashboardId)
+                    ? savedActiveDashboardId
+                    : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null);
+
                 set({
                     folders: parsed.folders || [],
                     dashboards: migratedDashboards,
@@ -762,45 +851,42 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     domain,
                     autoReloadInterval: parsed.autoReloadInterval || 0,
                     autoReloadSchedule: parsed.autoReloadSchedule || [],
-                    lastReloadTimestamp: parsed.lastReloadTimestamp || null
+                    lastReloadTimestamp: parsed.lastReloadTimestamp || null,
+                    isHydrated: true
                 });
+                // console.log(`✅ Loaded ${migratedDashboards.length} dashboards for domain ${domain}`);
             } else {
                 set({
                     folders: [],
                     dashboards: [],
                     activeDashboardId: null,
-                    history: [],
-                    historyIndex: -1,
                     domain,
-                    autoReloadSchedule: [],
-                    lastReloadTimestamp: null
+                    isHydrated: true,
+                    history: [[]],
+                    historyIndex: 0
                 });
+                // console.log(`ℹ️ No dashboards found for domain ${domain}`);
             }
         } catch (e) {
             console.error('Failed to load dashboard data', e);
+            set({ isHydrated: true, domain }); // Still mark as hydrated to allow saving new data
         }
     },
 
     clearAll: () => {
-        const { domain, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp } = get();
-        saveToStorage([], [], null, domain, autoReloadInterval, autoReloadSchedule, lastReloadTimestamp);
         set({
             folders: [], dashboards: [], activeDashboardId: null, editingWidgetId: null,
             selectedWidgetIds: [], history: [], historyIndex: -1
         });
+        saveToStorage(get());
     },
 
-    selectAll: () => set((state) => {
+    selectAll: () => {
+        const state = get();
         const dashboard = state.dashboards.find(d => d.id === state.activeDashboardId);
-        if (!dashboard) return state;
-
+        if (!dashboard) return;
         const activePage = dashboard.pages?.find(p => p.id === dashboard.activePageId);
         const widgets = activePage ? activePage.widgets : (dashboard.widgets || []);
-        const allIds = widgets.map(w => w.id);
-
-        return {
-            selectedWidgetIds: allIds,
-            editingWidgetId: allIds.length > 0 ? allIds[allIds.length - 1] : null
-        };
-    })
+        set({ selectedWidgetIds: widgets.map(w => w.id) });
+    }
 }));

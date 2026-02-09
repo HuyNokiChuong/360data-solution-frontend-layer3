@@ -7,6 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import { formatBIValue } from '../engine/utils';
@@ -40,18 +41,41 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
 
     // Local state for current selection (before applying)
     const [selectedValues, setSelectedValues] = useState<any[]>([]);
+    const [searchQuery, setSearchQuery] = useState('');
 
-    const { uniqueValues } = useMemo(() => {
+    // Switch to useDirectQuery
+    const { data: directData, isLoading, error: directError } = useDirectQuery(widget);
+
+    const { uniqueValues, dataSource } = useMemo(() => {
         if (!widget.dataSourceId || !widget.slicerField) return { uniqueValues: [], dataSource: null };
         const ds = getDataSource(widget.dataSourceId);
         if (!ds) return { uniqueValues: [], dataSource: null };
 
-        const values = ds.data.map(row => row[widget.slicerField!]);
-        const unique = Array.from(new Set(values.filter(v => v !== null && v !== undefined)));
+        let values: any[] = [];
+
+        if (ds.type === 'bigquery') {
+            values = directData.map(row => row[widget.slicerField!]);
+        } else {
+            values = ds.data.map(row => row[widget.slicerField!]);
+        }
+
+        // Include null/undefined values, convert them to "(Blank)" for display
+        const mappedValues = values.map(v => (v === null || v === undefined) ? '(Blank)' : v);
+        const unique = Array.from(new Set(mappedValues));
         const sorted = unique.sort((a, b) => (a > b ? 1 : -1));
 
+
         return { uniqueValues: sorted, dataSource: ds };
-    }, [widget.dataSourceId, widget.slicerField, getDataSource]);
+    }, [widget.dataSourceId, widget.slicerField, getDataSource, directData]);
+
+    // Filter values based on search query
+    const filteredValues = useMemo(() => {
+        if (!searchQuery.trim()) return uniqueValues;
+        const query = searchQuery.toLowerCase();
+        return uniqueValues.filter(val =>
+            String(val).toLowerCase().includes(query)
+        );
+    }, [uniqueValues, searchQuery]);
 
     const handleSelect = (val: any) => {
         if (widget.multiSelect !== false) {
@@ -114,7 +138,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
     const renderList = () => {
         if (isDraggingOrResizing && uniqueValues.length > 50) {
             return (
-                <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-[10px] italic bg-slate-900/20 rounded-lg border border-white/5 m-1">
+                <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-[10px] italic bg-slate-100 dark:bg-slate-900/20 rounded-lg border border-slate-200 dark:border-white/5 m-1">
                     <i className="fas fa-list-ul mb-1 opacity-40"></i>
                     <span>{uniqueValues.length.toLocaleString()} items (Hidden during move)</span>
                 </div>
@@ -122,63 +146,97 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
         }
 
         return (
-            <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-0.5 mb-1 pr-1">
-                {widget.showSelectAll && widget.multiSelect !== false && uniqueValues.length > 0 && (
-                    <label
-                        className={`
-                        flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-all border border-dashed
-                        ${isAllSelected
-                                ? 'bg-indigo-600/10 border-indigo-500/30 text-indigo-300'
-                                : 'border-white/5 hover:bg-white/5 text-slate-400 hover:text-slate-200'
-                            }
-                    `}
-                        onClick={(e) => { e.stopPropagation(); handleSelectAll(e); }}
-                    >
-                        <div className={`
-                        w-3.5 h-3.5 rounded border flex items-center justify-center transition-all
-                        ${isAllSelected
-                                ? 'bg-indigo-600 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
-                                : 'bg-slate-900 border-white/10'
-                            }
-                    `}>
-                            {isAllSelected && <i className="fas fa-check text-[8px] text-white"></i>}
-                            {!isAllSelected && selectedValues.length > 0 && <div className="w-1.5 h-0.5 bg-indigo-400 rounded-sm"></div>}
+            <>
+                {/* Search Bar */}
+                {uniqueValues.length > 5 && (
+                    <div className="mb-2 px-1">
+                        <div className="relative">
+                            <i className="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500"></i>
+                            <input
+                                type="text"
+                                placeholder="Search..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg pl-7 pr-7 py-1.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:ring-1 focus:ring-indigo-500 outline-none"
+                            />
+                            {searchQuery && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setSearchQuery(''); }}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                                >
+                                    <i className="fas fa-times text-[10px]"></i>
+                                </button>
+                            )}
                         </div>
-                        <span className="text-xs font-bold uppercase tracking-wider">Select All</span>
-                    </label>
+                    </div>
                 )}
 
-                {uniqueValues.map(val => (
-                    <label
-                        key={String(val)}
-                        className={`
-                        flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-all
-                        ${selectedValues.includes(val)
-                                ? 'bg-indigo-600/20 text-indigo-300'
-                                : 'hover:bg-white/5 text-slate-400 hover:text-slate-200'
-                            }
-                    `}
-                        onClick={(e) => { e.stopPropagation(); }}
-                    >
-                        <div className={`
-                        w-3.5 h-3.5 rounded border flex items-center justify-center transition-all
-                        ${selectedValues.includes(val)
-                                ? 'bg-indigo-600 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
-                                : 'bg-slate-900 border-white/10'
-                            }
-                    `}>
-                            {selectedValues.includes(val) && <i className="fas fa-check text-[8px] text-white"></i>}
+                <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-0.5 mb-1 pr-1">
+                    {widget.showSelectAll && widget.multiSelect !== false && uniqueValues.length > 0 && (
+                        <label
+                            className={`
+                            flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-all border border-dashed
+                            ${isAllSelected
+                                    ? 'bg-indigo-600/10 border-indigo-500/30 text-indigo-300'
+                                    : 'border-white/5 hover:bg-white/5 text-slate-400 hover:text-slate-200'
+                                }
+                        `}
+                            onClick={(e) => { e.stopPropagation(); handleSelectAll(e); }}
+                        >
+                            <div className={`
+                            w-3.5 h-3.5 rounded border flex items-center justify-center transition-all
+                            ${isAllSelected
+                                    ? 'bg-indigo-600 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
+                                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/10'
+                                }
+                        `}>
+                                {isAllSelected && <i className="fas fa-check text-[8px] text-white"></i>}
+                                {!isAllSelected && selectedValues.length > 0 && <div className="w-1.5 h-0.5 bg-indigo-400 rounded-sm"></div>}
+                            </div>
+                            <span className="text-xs font-bold uppercase tracking-wider">Select All</span>
+                        </label>
+                    )}
+
+                    {filteredValues.length === 0 && searchQuery && (
+                        <div className="text-center py-4 text-slate-500 text-[10px]">
+                            <i className="fas fa-search mb-1 opacity-40"></i>
+                            <p>No results found for "{searchQuery}"</p>
                         </div>
-                        <span className="text-xs truncate">{formatBIValue(val)}</span>
-                        <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={selectedValues.includes(val)}
-                            onChange={() => handleSelect(val)}
-                        />
-                    </label>
-                ))}
-            </div>
+                    )}
+
+                    {filteredValues.map(val => (
+                        <label
+                            key={String(val)}
+                            className={`
+                            flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-all
+                            ${selectedValues.includes(val)
+                                    ? 'bg-indigo-500/10 dark:bg-indigo-600/20 text-indigo-600 dark:text-indigo-300'
+                                    : 'hover:bg-slate-100 dark:hover:bg-white/5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                }
+                        `}
+                            onClick={(e) => { e.stopPropagation(); }}
+                        >
+                            <div className={`
+                            w-3.5 h-3.5 rounded border flex items-center justify-center transition-all
+                            ${selectedValues.includes(val)
+                                    ? 'bg-indigo-600 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
+                                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/10'
+                                }
+                        `}>
+                                {selectedValues.includes(val) && <i className="fas fa-check text-[8px] text-white"></i>}
+                            </div>
+                            <span className="text-xs truncate">{formatBIValue(val)}</span>
+                            <input
+                                type="checkbox"
+                                className="hidden"
+                                checked={selectedValues.includes(val)}
+                                onChange={() => handleSelect(val)}
+                            />
+                        </label>
+                    ))}
+                </div>
+            </>
         );
     };
 
@@ -209,7 +267,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                                     setIsOpen(!isOpen);
                                     if (!isSelected && onClick) onClick(e);
                                 }}
-                                className="w-full flex items-center justify-between bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white hover:border-indigo-500/50 transition-all"
+                                className="w-full flex items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-1.5 text-xs text-slate-900 dark:text-white hover:border-indigo-500/50 transition-all"
                             >
                                 <span className="truncate">
                                     {selectedValues.length === 0 ? 'All' :
@@ -221,7 +279,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                             </button>
 
                             {isOpen && (
-                                <div className="absolute top-full left-0 right-0 mt-1 bg-[#0f172a] border border-indigo-500/30 rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.6)] z-[100] p-1.5 flex flex-col max-h-[400px] animate-in fade-in slide-in-from-top-2 duration-200">
+                                <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-indigo-500/30 rounded-xl shadow-2xl dark:shadow-[0_10px_40px_rgba(0,0,0,0.6)] z-[100] p-1.5 flex flex-col max-h-[400px] animate-in fade-in slide-in-from-top-2 duration-200">
                                     {renderList()}
                                     <div className="border-t border-white/5 pt-1 mt-1 flex justify-end">
                                         <button
@@ -251,6 +309,8 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
             onDelete={onDelete}
             onDuplicate={onDuplicate}
             isSelected={isSelected}
+            loading={isLoading}
+            error={directError || undefined}
             onClick={onClick}
             onAction={selectedValues.length > 0 ? {
                 icon: 'fa-filter-circle-xmark',

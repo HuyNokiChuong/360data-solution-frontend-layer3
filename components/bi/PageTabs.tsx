@@ -20,7 +20,7 @@ const DeleteConfirmationPopup: React.FC<{
     const { t } = useLanguageStore();
     return (
         <div
-            className="fixed z-[9999] bg-slate-900 border border-white/10 rounded-xl shadow-2xl p-4 w-64 animate-in fade-in zoom-in duration-200"
+            className="fixed z-[9999] bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl shadow-2xl p-4 w-64 animate-in fade-in zoom-in duration-200"
             style={{
                 bottom: '60px',
                 left: `${position.left}px`,
@@ -28,8 +28,8 @@ const DeleteConfirmationPopup: React.FC<{
             }}
             onClick={e => e.stopPropagation()}
         >
-            <div className="text-white text-xs font-bold mb-1">{t('bi.confirm_delete')}</div>
-            <div className="text-slate-400 text-[10px] mb-4">{t('bi.delete_page_desc').replace('{title}', title)}</div>
+            <div className="text-slate-900 dark:text-white text-xs font-bold mb-1">{t('bi.confirm_delete')}</div>
+            <div className="text-slate-500 dark:text-slate-400 text-[10px] mb-4">{t('bi.delete_page_desc').replace('{title}', title)}</div>
             <div className="flex gap-2">
                 <button
                     onClick={onConfirm}
@@ -39,7 +39,7 @@ const DeleteConfirmationPopup: React.FC<{
                 </button>
                 <button
                     onClick={onCancel}
-                    className="flex-1 bg-white/5 hover:bg-white/10 text-slate-300 text-[10px] font-black py-2 rounded-lg transition-colors"
+                    className="flex-1 bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-600 dark:text-slate-300 text-[10px] font-black py-2 rounded-lg transition-colors"
                 >
                     {t('bi.cancel_btn')}
                 </button>
@@ -81,7 +81,7 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
     }, []);
 
     return (
-        <div className="flex items-center gap-1 bg-slate-900 border-t border-white/5 px-4 h-10 select-none relative">
+        <div className="flex items-center gap-1 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-white/5 px-4 h-10 select-none relative transition-colors duration-300">
             <div className="flex items-center overflow-x-auto no-scrollbar max-w-full">
                 {dashboard.pages.map((page) => (
                     <div
@@ -97,9 +97,9 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
                                 pageTitle: page.title
                             });
                         }}
-                        className={`group relative flex items-center h-10 px-4 min-w-[100px] cursor-pointer transition-all border-r border-white/5 ${dashboard.activePageId === page.id
-                            ? 'bg-indigo-600/10 text-indigo-400 font-bold border-b-2 border-b-indigo-500'
-                            : 'text-slate-400 hover:bg-white/5'
+                        className={`group relative flex items-center h-10 px-4 min-w-[100px] cursor-pointer transition-all border-r border-slate-200 dark:border-white/5 ${dashboard.activePageId === page.id
+                            ? 'bg-indigo-50 dark:bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 font-bold border-b-2 border-b-indigo-500'
+                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white'
                             }`}
                         onClick={() => setActivePage(dashboard.id, page.id)}
                     >
@@ -110,7 +110,7 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
                                 onChange={(e) => setEditValue(e.target.value)}
                                 onBlur={() => submitRename(page.id)}
                                 onKeyDown={(e) => e.key === 'Enter' && submitRename(page.id)}
-                                className="bg-slate-800 text-white text-[11px] px-2 py-0.5 rounded outline-none w-full border border-indigo-500/50"
+                                className="bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-[11px] px-2 py-0.5 rounded outline-none w-full border border-indigo-500/50"
                             />
                         ) : (
                             <span className="text-[11px] uppercase tracking-wider truncate select-none">{page.title}</span>
@@ -144,7 +144,7 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
             <div className="flex items-center gap-1 ml-2 border-l border-white/5 pl-2">
                 <button
                     onClick={handleAddPage}
-                    className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-white/5 text-slate-400 hover:text-indigo-400 transition-all"
+                    className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 text-slate-400 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all font-bold"
                     title={t('bi.add_new_page')}
                 >
                     <i className="fas fa-plus text-xs"></i>
@@ -170,7 +170,7 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
                             }
                         }
                     }}
-                    className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-white/5 text-slate-400 hover:text-red-400 transition-all"
+                    className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 text-slate-400 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-all font-bold"
                     title="Delete active page (Shift+Click to delete others)"
                 >
                     <i className="fas fa-minus text-xs"></i>
@@ -180,19 +180,19 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
             {/* Context Menu */}
             {contextMenu && (
                 <div
-                    className="fixed z-[9999] bg-slate-900 border border-white/10 rounded-lg shadow-2xl py-1 min-w-[140px] animate-in fade-in zoom-in duration-100"
+                    className="fixed z-[9999] bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg shadow-2xl py-1 min-w-[140px] animate-in fade-in zoom-in duration-100"
                     style={{ bottom: window.innerHeight - contextMenu.y + 10, left: contextMenu.x }}
                     onClick={(e) => e.stopPropagation()}
                 >
                     <button
-                        className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/10 hover:text-white flex items-center gap-2"
+                        className="w-full text-left px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-white flex items-center gap-2"
                         onClick={() => handleRename(contextMenu.pageId, contextMenu.pageTitle)}
                     >
                         <i className="fas fa-edit text-[10px] w-4"></i>
                         Rename
                     </button>
                     <button
-                        className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/10 hover:text-white flex items-center gap-2"
+                        className="w-full text-left px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-white flex items-center gap-2"
                         onClick={() => {
                             duplicatePage(dashboard.id, contextMenu.pageId);
                             setContextMenu(null);
@@ -202,9 +202,9 @@ const PageTabs: React.FC<PageTabsProps> = ({ dashboard }) => {
                         Duplicate
                     </button>
                     {dashboard.pages.length > 1 && (
-                        <div className="border-t border-white/5 mt-1 pt-1">
+                        <div className="border-t border-slate-100 dark:border-white/5 mt-1 pt-1">
                             <button
-                                className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2"
+                                className="w-full text-left px-3 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 flex items-center gap-2"
                                 onClick={(e) => {
                                     const rect = (e.target as HTMLElement).getBoundingClientRect(); // Approximate position
                                     setDeleteRequest({

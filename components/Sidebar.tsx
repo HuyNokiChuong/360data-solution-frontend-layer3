@@ -1,6 +1,7 @@
-
 import React from 'react';
 import { useLanguageStore } from '../store/languageStore';
+import { useDataStore } from './bi/store/dataStore';
+import { useThemeStore } from '../store/themeStore';
 
 interface SidebarProps {
   activeTab: string;
@@ -9,10 +10,25 @@ interface SidebarProps {
   hasConnections: boolean;
   onToggleCollapse?: () => void;
   currentUser: import('../types').User;
+  width?: number; // Optional to preserve backward compatibility if needed, but we'll pass it
+  onWidthChange?: (width: number) => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, hasConnections, onToggleCollapse, currentUser }) => {
-  const { t } = useLanguageStore();
+const Sidebar: React.FC<SidebarProps> = ({
+  activeTab,
+  setActiveTab,
+  onLogout,
+  hasConnections,
+  onToggleCollapse,
+  currentUser,
+  width = 256,
+  onWidthChange
+}) => {
+  const { t, language, setLanguage } = useLanguageStore();
+  const { theme, toggleTheme } = useThemeStore();
+  const { systemLogs } = useDataStore();
+
+  const hasErrorLogs = systemLogs.some(l => l.type === 'error');
 
   const menuItems = [
     { id: 'connections', label: t('nav.connections'), icon: 'fa-link', restricted: false },
@@ -20,20 +36,68 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
     { id: 'reports', label: t('nav.reports'), icon: 'fa-chart-line', restricted: true },
     { id: 'bi', label: t('nav.bi'), icon: 'fa-chart-pie', restricted: true },
     { id: 'ai-config', label: t('nav.ai_config'), icon: 'fa-robot', restricted: false },
+    { id: 'logs', label: 'Logs', icon: 'fa-terminal', restricted: false, hasNotification: hasErrorLogs },
     { id: 'users', label: t('nav.users'), icon: 'fa-user-group', restricted: false, adminOnly: true },
   ];
 
   const visibleMenuItems = menuItems.filter(item => !item.adminOnly || currentUser.role === 'Admin');
 
+  const isResizingRef = React.useRef(false);
+
+  const startResizing = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isResizingRef.current = true;
+
+    const startX = e.clientX;
+    const startWidth = width;
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handleMouseMove = (mvEvent: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const currentX = mvEvent.clientX;
+      const deltaX = currentX - startX;
+      const newWidth = Math.max(200, Math.min(400, startWidth + deltaX));
+
+      if (onWidthChange) {
+        onWidthChange(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
   return (
-    <div className="w-64 bg-[#020617] text-slate-300 flex flex-col h-screen fixed left-0 top-0 border-r border-white/5 z-50">
+    <div
+      style={{ width }}
+      className="bg-white dark:bg-[#020617] text-slate-500 dark:text-slate-300 flex flex-col h-screen fixed left-0 top-0 border-r border-slate-200 dark:border-white/5 z-50 transition-colors duration-300 group"
+    >
+      {/* Resizer */}
+      <div
+        className="absolute top-0 -right-1 w-2 h-full cursor-col-resize z-[100] transition-opacity
+            bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+        onMouseDown={startResizing}
+      />
+      {/* Visual Separator Line - Always Visible on Hover */}
+      <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
       <div className="p-8 pb-4">
         <div className="flex items-center justify-between mb-6">
           <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
             <i className="fas fa-bolt text-white"></i>
           </div>
         </div>
-        <h1 className="text-lg font-black text-white tracking-tighter uppercase italic opacity-80">
+        <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tighter uppercase italic opacity-80">
           360data-solutions
         </h1>
       </div>
@@ -41,6 +105,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
       <nav className="flex-1 mt-4 px-4">
         {visibleMenuItems.map((item) => {
           const isLocked = item.restricted && !hasConnections;
+          const hasNotification = (item as any).hasNotification;
 
           return (
             <button
@@ -50,24 +115,26 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
               className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl mb-2 transition-all duration-200 relative group ${isLocked
                 ? 'opacity-40 cursor-not-allowed grayscale'
                 : activeTab === item.id
-                  ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20'
-                  : 'text-slate-500 hover:bg-white/5 hover:text-slate-200'
+                  ? 'bg-indigo-50 dark:bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20'
+                  : 'text-slate-500 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
             >
               <i className={`fas ${item.icon} w-5 text-lg`}></i>
               <span className="font-semibold">{item.label}</span>
 
               {isLocked ? (
-                <div className="ml-auto flex items-center justify-center w-6 h-6 bg-slate-800 rounded-lg group-hover:bg-slate-700 transition-colors">
-                  <i className="fas fa-lock text-[10px] text-slate-500"></i>
+                <div className="ml-auto flex items-center justify-center w-6 h-6 bg-slate-100 dark:bg-slate-800 rounded-lg group-hover:bg-slate-200 dark:group-hover:bg-slate-700 transition-colors">
+                  <i className="fas fa-lock text-[10px] text-slate-400 dark:text-slate-500"></i>
                 </div>
-              ) : activeTab === item.id && (
+              ) : activeTab === item.id ? (
                 <div className="ml-auto w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.8)]"></div>
-              )}
+              ) : hasNotification ? (
+                <div className="ml-auto w-2 h-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]"></div>
+              ) : null}
 
               {/* Tooltip for locked items */}
               {isLocked && (
-                <div className="absolute left-full ml-4 px-3 py-2 bg-slate-900 border border-white/10 rounded-lg text-[10px] font-black uppercase tracking-widest whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl">
+                <div className="absolute left-full ml-4 px-3 py-2 bg-slate-800 dark:bg-slate-900 border border-slate-700 dark:border-white/10 rounded-lg text-[10px] font-black uppercase tracking-widest whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl text-white">
                   {t('nav.locked_tooltip')}
                 </div>
               )}
@@ -77,12 +144,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
       </nav>
 
       <div className="px-6 py-6 mb-4">
-        <div className={`p-4 rounded-2xl border ${hasConnections ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-amber-500/5 border-amber-500/20'}`}>
+        <div className={`p-4 rounded-2xl border ${hasConnections ? 'bg-emerald-50 dark:bg-emerald-500/5 border-emerald-100 dark:border-emerald-500/20' : 'bg-amber-50 dark:bg-amber-500/5 border-amber-100 dark:border-amber-500/20'}`}>
           <div className="flex items-center gap-3 mb-2">
             <div className={`w-2 h-2 rounded-full ${hasConnections ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{t('sys.status')}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">{t('sys.status')}</span>
           </div>
-          <p className="text-[11px] font-medium text-slate-500 leading-tight">
+          <p className="text-[11px] font-medium text-slate-600 dark:text-slate-500 leading-tight">
             {hasConnections
               ? t('sys.active')
               : t('sys.pending')}
@@ -90,10 +157,27 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
         </div>
       </div>
 
-      <div className="p-6 border-t border-white/5 flex items-center justify-between">
+      <div className="px-6 mb-4 flex gap-2">
+        <button
+          onClick={() => setLanguage(language === 'en' ? 'vi' : 'en')}
+          className="flex-1 py-2 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-white transition-all flex items-center justify-center gap-2"
+        >
+          <i className="fas fa-globe"></i>
+          {language === 'en' ? 'English' : 'Tiếng Việt'}
+        </button>
+        <button
+          onClick={toggleTheme}
+          className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-yellow-400 transition-all"
+          title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
+        >
+          <i className={`fas ${theme === 'dark' ? 'fa-sun' : 'fa-moon'}`}></i>
+        </button>
+      </div>
+
+      <div className="p-6 border-t border-slate-100 dark:border-white/5 flex items-center justify-between">
         <button
           onClick={onLogout}
-          className="flex-1 flex items-center gap-4 px-4 py-3 rounded-xl text-slate-500 hover:bg-red-500/10 hover:text-red-400 transition-all text-left"
+          className="flex-1 flex items-center gap-4 px-4 py-3 rounded-xl text-slate-500 dark:text-slate-500 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-all text-left"
         >
           <i className="fas fa-sign-out-alt w-5"></i>
           <span className="font-semibold">{t('nav.sign_out')}</span>
@@ -102,7 +186,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, ha
         {onToggleCollapse && (
           <button
             onClick={onToggleCollapse}
-            className="ml-2 p-3 rounded-xl text-slate-500 hover:bg-white/5 hover:text-white transition-all"
+            className="ml-2 p-3 rounded-xl text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-all"
             title="Hide Sidebar"
           >
             <i className="fas fa-angles-left"></i>

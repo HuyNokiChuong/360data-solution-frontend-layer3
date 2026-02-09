@@ -7,9 +7,9 @@ import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { applyFilters } from '../engine/dataProcessing';
-import { aggregate } from '../engine/calculations';
-import { formatValue } from '../engine/calculations';
-import { useWidgetData } from '../hooks/useWidgetData';
+import { aggregate, formatValue } from '../engine/calculations';
+import { formatBIValue } from '../engine/utils';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
@@ -39,28 +39,45 @@ const CardWidget: React.FC<CardWidgetProps> = ({
     const { getDataSource } = useDataStore(); // Kept if needed
     const { crossFilters: allDashboardFilters, getFiltersForWidget, isWidgetFiltered } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
-    const widgetData = useWidgetData(widget);
+
+    // Switch to useDirectQuery
+    const { data: directData, isLoading, error: directError } = useDirectQuery(widget);
+    const widgetData = directData;
 
     const dataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
     }, [widget.dataSourceId, getDataSource]);
 
-    // Optimized memo dependencies - only re-calculate if data-relevant fields change
-    const dataRelevantProps = JSON.stringify({
-        metric: widget.metric,
-        yAxis: widget.yAxis,
-        values: widget.values,
-        measures: widget.measures,
-        filters: widget.filters,
-        enableCrossFilter: widget.enableCrossFilter,
-        comparisonValue: widget.comparisonValue
-    });
-
     const { value, comparisonValue, trend } = useMemo(() => {
         if (!widgetData || widgetData.length === 0) return { value: 0, comparisonValue: null, trend: 'neutral' };
 
+        const agg = widget.aggregation || 'sum';
+        const metricField = widget.yAxis?.[0] || widget.metric || widget.values?.[0] || widget.measures?.[0];
+        if (!metricField) return { value: 0, comparisonValue: null, trend: 'neutral' };
+
         let data = widgetData;
 
+        // If BIGQUERY, widgetData is already aggregated!
+        if (dataSource?.type === 'bigquery') {
+            const row = widgetData[0];
+            const mainValue = row ? row[metricField] : 0;
+
+            let comparisonDisp = null;
+            let finalTrend: 'up' | 'down' | 'neutral' = widget.trend || 'neutral';
+
+            if (widget.comparisonValue && row) {
+                const compValue = row[widget.comparisonValue];
+                if (typeof mainValue === 'number' && typeof compValue === 'number' && compValue !== 0) {
+                    const diff = mainValue - compValue;
+                    const pct = (diff / compValue) * 100;
+                    comparisonDisp = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+                    finalTrend = pct > 0 ? 'up' : pct < 0 ? 'down' : 'neutral';
+                }
+            }
+            return { value: mainValue, comparisonValue: comparisonDisp, trend: finalTrend };
+        }
+
+        // Local processing for non-BigQuery
         if (widget.filters && widget.filters.length > 0) {
             data = applyFilters(data, widget.filters);
         }
@@ -82,11 +99,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
             }
         }
 
-        const aggregation = widget.aggregation || 'sum';
-        const metricField = widget.yAxis?.[0] || widget.metric || widget.values?.[0] || widget.measures?.[0];
-        if (!metricField) return { value: 0, comparisonValue: null, trend: 'neutral' };
-
-        const mainValue = aggregate(data, metricField, aggregation);
+        const mainValue = aggregate(data, metricField, agg);
 
         // Calculate comparison if specified
         let comparisonDisp = null;
@@ -99,10 +112,10 @@ const CardWidget: React.FC<CardWidgetProps> = ({
             if (!isNaN(compNum)) {
                 compValue = compNum;
             } else {
-                compValue = aggregate(data, widget.comparisonValue, aggregation);
+                compValue = aggregate(data, widget.comparisonValue, agg);
             }
 
-            if (compValue !== 0) {
+            if (typeof mainValue === 'number' && typeof compValue === 'number' && compValue !== 0) {
                 const diff = mainValue - compValue;
                 const pct = (diff / compValue) * 100;
                 comparisonDisp = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
@@ -111,13 +124,13 @@ const CardWidget: React.FC<CardWidgetProps> = ({
         }
 
         return { value: mainValue, comparisonValue: comparisonDisp, trend: finalTrend };
-    }, [widgetData, dataRelevantProps, allDashboardFilters, activeDashboard?.globalFilters]);
+    }, [widgetData, dataSource?.type, allDashboardFilters, activeDashboard?.globalFilters, widget.comparisonValue, widget.metric, widget.yAxis, widget.values, widget.measures]);
 
     const isFiltered = isWidgetFiltered(widget.id);
 
     // Determine colors/icons based on trend
     const trendIcon = trend === 'up' ? 'fa-arrow-up' : trend === 'down' ? 'fa-arrow-down' : 'fa-minus';
-    const trendColor = trend === 'up' ? CHART_COLORS[4] : trend === 'down' ? CHART_COLORS[2] : '#94a3b8';
+    const trendColor = trend === 'up' ? '#10b981' : trend === 'down' ? '#ef4444' : '#94a3b8';
 
     const loadingProgress = useMemo(() => {
         if (!dataSource || !dataSource.totalRows || dataSource.totalRows === 0) return 0;
@@ -132,6 +145,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
                 onDelete={onDelete}
                 onDuplicate={onDuplicate}
                 isSelected={isSelected}
+                error={directError || undefined}
                 onClick={onClick}
             >
                 <EmptyChartState type="card" message="Select data source" onClickDataTab={onClickDataTab} onClick={onClick} />
@@ -164,18 +178,29 @@ const CardWidget: React.FC<CardWidgetProps> = ({
             onDuplicate={onDuplicate}
             isSelected={isSelected}
             isFiltered={isFiltered}
-            loading={dataSource?.isLoadingPartial}
-            loadingProgress={loadingProgress}
+            loading={isLoading}
+            error={directError || undefined}
             onClick={onClick}
         >
             <div className="flex flex-col justify-center h-full">
                 <div className="text-center">
                     {/* Main Value */}
                     <div
-                        className="text-4xl font-black text-white mb-2"
-                        style={{ fontSize: widget.fontSize ? `${widget.fontSize}px` : undefined }}
+                        className="font-black text-slate-900 dark:text-white mb-2 break-words"
+                        style={{
+                            fontSize: widget.fontSize ? `${widget.fontSize}px` : (() => {
+                                const formatted = formatBIValue(value, widget.valueFormat || 'standard');
+                                const len = formatted.length;
+                                if (len <= 12) return '2.25rem'; // text-4xl (36px)
+                                if (len <= 15) return '1.875rem'; // text-3xl (30px)
+                                if (len <= 20) return '1.5rem'; // text-2xl (24px)
+                                return '1.25rem'; // text-xl (20px)
+                            })(),
+                            fontFamily: 'Outfit',
+                            lineHeight: '1.2'
+                        }}
                     >
-                        {formatValue(value, widget.valueFormat || 'standard')}
+                        {formatBIValue(value, widget.valueFormat || 'standard')}
                     </div>
 
                     {/* Trend Indicator */}
@@ -187,8 +212,8 @@ const CardWidget: React.FC<CardWidgetProps> = ({
                     )}
 
                     {/* Subtitle */}
-                    <div className="text-xs text-slate-400 mt-2">
-                        {widget.metric || 'Total'}
+                    <div className="text-xs text-slate-400 mt-2 truncate max-w-full px-2">
+                        {widget.metric || widget.yAxis?.[0] || widget.measures?.[0] || 'Total'}
                     </div>
                 </div>
             </div>

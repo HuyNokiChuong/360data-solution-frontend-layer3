@@ -8,26 +8,33 @@ export const getAutoTitle = (widget: BIWidget): string => {
 
     // 1. Pivot / Table
     if (widget.type === 'pivot' || widget.type === 'table') {
-        const rows = widget.pivotRows?.[0];
-        const vals = widget.pivotValues?.map(v => v.field).join(', ');
+        const rows = widget.pivotRows?.join(', ') || '';
+        const vals = widget.pivotValues?.map(v => v.field).join(', ') || '';
+
         if (vals && rows) return `${vals} by ${rows}`;
         if (vals) return `${vals} Summary`;
+        if (rows) return `${rows} Breakdown`;
         return widget.type === 'pivot' ? 'Pivot Table' : 'Table';
     }
 
     // 2. Card
-    if (widget.type === 'card') {
-        const m = (widget as any).metric || (widget as any).measure || (widget as any).measures?.[0] || widget.yAxis?.[0];
-        return m ? `${m}` : 'New Card';
+    if (widget.type === 'card' || widget.type === 'gauge') {
+        const m = widget.yAxis?.[0] || (widget as any).metric || (widget as any).measure || (widget as any).measures?.[0];
+        const fieldName = typeof m === 'object' ? (m.field || m.label) : m;
+        return fieldName ? `${fieldName}` : (widget.type === 'card' ? 'New Card' : 'Gauge');
     }
 
-    // 3. Slicer
-    if (widget.type === 'slicer') {
-        return (widget as any).slicerField ? `${(widget as any).slicerField} Filter` : 'Slicer';
+    // 3. Filters
+    if (widget.type === 'slicer' || widget.type === 'date-range' || widget.type === 'search') {
+        const field = widget.slicerField || (widget as any).field;
+        if (widget.type === 'date-range') return field ? `${field} Period` : 'Date Range';
+        if (widget.type === 'search') return field ? `Search ${field}` : 'Search';
+        return field ? `${field} Filter` : 'Filter';
     }
 
     // 4. Charts (Bar, Line, Pie, etc.)
-    const x = Array.isArray(widget.xAxis) ? widget.xAxis[0] : widget.xAxis;
+    const xRaw = Array.isArray(widget.xAxis) ? widget.xAxis[0] : widget.xAxis;
+    const x = typeof xRaw === 'object' ? (xRaw.field || xRaw.label) : xRaw;
 
     // Handle Y-Axis (can be strings or objects)
     let yFields: any[] = [];
@@ -36,7 +43,7 @@ export const getAutoTitle = (widget: BIWidget): string => {
 
     const yList = yFields.map((y: any) => {
         if (typeof y === 'string') return y;
-        return y.field || '';
+        return y.field || y.label || '';
     }).filter(Boolean);
     const y = yList.join(' & ');
 
@@ -49,6 +56,12 @@ export const getAutoTitle = (widget: BIWidget): string => {
     }
 
     if (y) return `${y} Chart`;
+    if (x) return `${x} Analysis`;
+
+    // Generic fallbacks based on chart type if no fields yet
+    if (widget.chartType === 'bar' || widget.chartType === 'stackedBar') return 'Bar Chart';
+    if (widget.chartType === 'line') return 'Line Chart';
+    if (widget.chartType === 'pie') return 'Pie Chart';
 
     return 'New Chart';
 };

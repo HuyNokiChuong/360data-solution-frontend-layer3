@@ -83,7 +83,7 @@ const SearchWidget: React.FC<SearchWidgetProps> = ({
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder={`Search ${widget.slicerField || 'field'}...`}
-                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 pl-9 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 pl-9 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                 />
             </div>
         </div>

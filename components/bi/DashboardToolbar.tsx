@@ -24,6 +24,7 @@ interface DashboardToolbarProps {
     onAlign?: (direction: 'top' | 'bottom' | 'left' | 'right') => void;
     onStopAllJobs?: () => void;
     isSyncing?: boolean;
+    currentUserId?: string;
 }
 
 const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
@@ -43,7 +44,8 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     selectedCount = 0,
     onAlign,
     onStopAllJobs,
-    isSyncing = false
+    isSyncing = false,
+    currentUserId
 }) => {
     const { t } = useLanguageStore();
     const {
@@ -174,12 +176,13 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     if (!dashboard) return null;
 
     return (
-        <header className="h-14 border-b border-white/5 bg-slate-900/50 flex items-center justify-between px-4">
+        <header className="h-14 border-b border-slate-200 dark:border-white/5 bg-white dark:bg-slate-900/50 flex items-center justify-between px-4 transition-colors duration-300">
             <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2 group">
+                    {/* Only show back button? Or title edit? */}
                     <button
                         onClick={() => setActiveDashboard(null)}
-                        className="p-2 rounded hover:bg-white/10 text-slate-400"
+                        className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
                         title={t('bi.back_to_list')}
                     >
                         <i className="fas fa-arrow-left"></i>
@@ -196,28 +199,31 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                                     (e.target as HTMLInputElement).blur();
                                 }
                             }}
-                            className="bg-transparent border-none text-lg font-bold text-white outline-none focus:ring-0 min-w-[200px] hover:bg-white/5 rounded px-2 -ml-2 transition-colors focus:bg-white/10"
+                            disabled={dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission !== 'admin' && dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission !== 'edit' && dashboard.createdBy !== currentUserId}
+                            className="bg-transparent border-none text-lg font-bold text-slate-900 dark:text-white outline-none focus:ring-0 min-w-[200px] hover:bg-slate-50 dark:hover:bg-white/5 disabled:hover:bg-transparent rounded px-2 -ml-2 transition-colors focus:bg-slate-100 dark:focus:bg-white/10"
                         />
-                        <button
-                            className="ml-2 text-slate-500 hover:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Edit Title"
-                            onClick={(e) => {
-                                const input = e.currentTarget.previousElementSibling as HTMLInputElement;
-                                input?.focus();
-                            }}
-                        >
-                            <i className="fas fa-pen text-xs"></i>
-                        </button>
+                        {(dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || dashboard.createdBy === currentUserId) && (
+                            <button
+                                className="ml-2 text-slate-500 hover:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Edit Title"
+                                onClick={(e) => {
+                                    const input = e.currentTarget.previousElementSibling as HTMLInputElement;
+                                    input?.focus();
+                                }}
+                            >
+                                <i className="fas fa-pen text-xs"></i>
+                            </button>
+                        )}
                     </div>
                 </div>
 
-                <div className="h-6 w-px bg-white/10 mx-2"></div>
+                <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
 
                 <div className="flex items-center gap-1">
                     <button
                         onClick={undo}
                         disabled={!canUndo()}
-                        className={`p-2 rounded text-slate-400 transition-colors ${canUndo() ? 'hover:text-white hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
+                        className={`p-2 rounded text-slate-500 dark:text-slate-400 transition-colors ${canUndo() ? 'hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
                         title={`${t('bi.undo')} (Cmd+Z)`}
                     >
                         <i className="fas fa-undo"></i>
@@ -225,188 +231,22 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     <button
                         onClick={redo}
                         disabled={!canRedo()}
-                        className={`p-2 rounded text-slate-400 transition-colors ${canRedo() ? 'hover:text-white hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
+                        className={`p-2 rounded text-slate-500 dark:text-slate-400 transition-colors ${canRedo() ? 'hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
                         title={`${t('bi.redo')} (Cmd+Shift+Z)`}
                     >
                         <i className="fas fa-redo"></i>
                     </button>
-                    <div className="h-6 w-px bg-white/10 mx-2"></div>
-                    <div className="flex items-center gap-1">
-                        <button
-                            onClick={onReload}
-                            className="p-2 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors relative group"
-                            title={t('bi.reload_data')}
-                        >
-                            <i className="fas fa-sync-alt"></i>
-                            {nextReloadIn !== null && (
-                                <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-indigo-600 text-white text-[9px] font-bold rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                                    {Math.floor(nextReloadIn / 60)}m {nextReloadIn % 60}s
-                                </div>
-                            )}
-                        </button>
-                        {isSyncing && (
-                            <button
-                                onClick={onStopAllJobs}
-                                className="p-2 rounded text-red-500 hover:bg-red-500/10 transition-colors"
-                                title="Stop All Jobs"
-                            >
-                                <i className="fas fa-stop"></i>
-                            </button>
-                        )}
-                        {nextReloadIn !== null && (
-                            <span className="text-[10px] font-mono text-indigo-400 font-bold">
-                                {Math.floor(nextReloadIn / 60)}:{String(nextReloadIn % 60).padStart(2, '0')}
-                            </span>
-                        )}
-                        <div className="relative">
-                            <button
-                                onClick={() => setShowSettings(!showSettings)}
-                                className={`p-2 rounded transition-colors ${showSettings ? 'text-white bg-white/10' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
-                                title={t('bi.auto_reload_settings')}
-                            >
-                                <i className="fas fa-cog"></i>
-                            </button>
-
-                            {showSettings && (
-                                <div
-                                    ref={settingsRef}
-                                    className="absolute left-0 top-full mt-2 w-64 bg-slate-900 border border-white/10 rounded-lg shadow-2xl z-50 p-3 overflow-visible animate-in fade-in zoom-in duration-200"
-                                >
-                                    {/* Selection Toggle */}
-                                    <div className="flex p-1 bg-slate-800 rounded-lg mb-4 border border-white/5">
-                                        <button
-                                            onClick={() => setReloadMode('interval')}
-                                            className={`flex-1 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${reloadMode === 'interval' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                                        >
-                                            Interval
-                                        </button>
-                                        <button
-                                            onClick={() => setReloadMode('cron')}
-                                            className={`flex-1 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${reloadMode === 'cron' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                                        >
-                                            Cron
-                                        </button>
-                                    </div>
-
-                                    {reloadMode === 'interval' ? (
-                                        <>
-                                            <div className="text-[10px] font-bold text-slate-500 mb-2 uppercase tracking-wider">Sync Frequency</div>
-                                            <div className="grid grid-cols-4 gap-1 mb-4">
-                                                {[0, 15, 30, 60].map((mins) => (
-                                                    <button
-                                                        key={mins}
-                                                        onClick={() => setAutoReloadInterval(mins)}
-                                                        className={`px-2 py-1.5 rounded text-[10px] font-bold transition-all border ${autoReloadInterval === mins ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg shadow-indigo-500/20' : 'bg-slate-800 border-white/5 text-slate-400 hover:bg-white/5'}`}
-                                                    >
-                                                        {mins === 0 ? 'Off' : `${mins}m`}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <div className="text-[10px] font-bold text-slate-500 mb-2 uppercase tracking-wider">Cron Expression</div>
-                                            <div className="mb-3">
-                                                <input
-                                                    type="text"
-                                                    placeholder="* * * * *"
-                                                    value={typeof autoReloadInterval === 'string' ? autoReloadInterval : ''}
-                                                    onChange={(e) => setAutoReloadInterval(e.target.value)}
-                                                    className="w-full bg-slate-800 border-white/10 text-white text-[10px] rounded px-3 py-2 outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                                                />
-                                            </div>
-                                            <div className="bg-indigo-500/5 border border-indigo-500/10 rounded-lg p-3 mb-4">
-                                                <p className="text-[9px] text-slate-400 leading-relaxed mb-3">
-                                                    To fully customize scheduling, use the "cron" syntax. You can specify minute, hour, day of month, month, and day of week.
-                                                </p>
-                                                <div className="space-y-1.5">
-                                                    {[
-                                                        { exp: '0 * * * *', desc: 'Every hour' },
-                                                        { exp: '*/5 * * * *', desc: 'Every 5 mins' },
-                                                        { exp: '5 4 * * *', desc: '4:05 AM UTC' },
-                                                        { exp: '30 */4 * * *', desc: 'Min 30 every 4h' },
-                                                        { exp: '0 0 */2 * *', desc: 'Every other day' },
-                                                        { exp: '0 0 * * 1', desc: 'Every Monday' }
-                                                    ].map(item => (
-                                                        <div key={item.exp} className="flex items-center justify-between text-[8px]">
-                                                            <code className="text-indigo-400 font-bold bg-indigo-500/10 px-1 rounded">{item.exp}</code>
-                                                            <span className="text-slate-500 italic">{item.desc}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                                <p className="text-[8px] text-indigo-400/70 mt-3 font-medium flex items-center gap-1.5">
-                                                    <i className="fas fa-external-link-alt text-[7px]"></i>
-                                                    Use crontab.guru to generate syntax.
-                                                </p>
-                                            </div>
-                                        </>
-                                    )}
-
-                                    <div className="h-px bg-white/5 my-3"></div>
-
-                                    {/* Schedule management */}
-                                    <div className="text-[10px] font-bold text-slate-500 mb-2 uppercase tracking-wider">Fixed Time Syncs</div>
-                                    <div className="space-y-1 mb-3 max-h-32 overflow-y-auto custom-scrollbar pr-1">
-                                        {autoReloadSchedule.length === 0 ? (
-                                            <div className="text-[10px] text-slate-600 italic py-2 text-center">No fixed times set</div>
-                                        ) : (
-                                            autoReloadSchedule.sort().map(time => (
-                                                <div key={time} className="flex items-center justify-between bg-slate-800/50 rounded px-2 py-1 border border-white/5 group">
-                                                    <span className="text-xs font-mono text-indigo-400 font-bold">{time}</span>
-                                                    <button
-                                                        onClick={() => setAutoReloadInterval(autoReloadInterval, autoReloadSchedule.filter(t => t !== time))}
-                                                        className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                    >
-                                                        <i className="fas fa-times text-[10px]"></i>
-                                                    </button>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-
-                                    <div className="flex gap-2 mb-4">
-                                        <div className="relative flex-1">
-                                            <i className="far fa-clock absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-[10px]"></i>
-                                            <input
-                                                type="time"
-                                                className="w-full bg-slate-800 border-white/10 text-white text-[10px] rounded pl-7 pr-2 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500"
-                                                id="new-schedule-time"
-                                            />
-                                        </div>
-                                        <button
-                                            onClick={() => {
-                                                const input = document.getElementById('new-schedule-time') as HTMLInputElement;
-                                                if (input.value && !autoReloadSchedule.includes(input.value)) {
-                                                    setAutoReloadInterval(autoReloadInterval, [...autoReloadSchedule, input.value]);
-                                                    input.value = '';
-                                                }
-                                            }}
-                                            className="px-3 py-1.5 bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded text-[9px] font-black uppercase transition-all hover:bg-indigo-600 hover:text-white"
-                                        >
-                                            Add
-                                        </button>
-                                    </div>
-
-                                    <button
-                                        onClick={() => setShowSettings(false)}
-                                        className="w-full py-2.5 bg-indigo-600 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-600/40 hover:bg-indigo-500 active:scale-95"
-                                    >
-                                        Save & Close Settings
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    </div>
                 </div>
+
 
                 {/* Clear Filters Button */}
                 {hasActiveFilters && (
                     <>
-                        <div className="h-6 w-px bg-white/10 mx-2"></div>
+                        <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
                         <button
                             id="clear-filters-btn"
                             onClick={handleClearFilters}
-                            className="px-3 py-1.5 rounded-lg bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 text-xs font-bold transition-all flex items-center border border-orange-500/30"
+                            className="px-3 py-1.5 rounded-lg bg-orange-50 dark:bg-orange-600/20 hover:bg-orange-100 dark:hover:bg-orange-600/30 text-orange-600 dark:text-orange-400 text-xs font-bold transition-all flex items-center border border-orange-100 dark:border-orange-500/30 shadow-sm"
                             title={t('bi.clear_filters')}
                         >
                             <i className="fas fa-times-circle mr-2"></i>
@@ -418,33 +258,33 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
 
             <div className="flex items-center gap-3">
                 {/* Canvas Controls (Moved from bottom) */}
-                <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-xl border border-white/5 mr-2">
+                <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-xl border border-slate-200 dark:border-white/5 mr-2">
                     {/* View Modes */}
                     <div className="flex items-center rounded-lg p-0 gap-1">
                         <button
                             onClick={() => onSetPreviewMode?.('desktop')}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'desktop' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'desktop' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/5'}`}
                             title="Desktop View"
                         >
                             <i className="fas fa-desktop text-[10px]"></i>
                         </button>
                         <button
                             onClick={() => onSetPreviewMode?.('tablet')}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'tablet' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'tablet' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/5'}`}
                             title="Tablet View"
                         >
                             <i className="fas fa-tablet-alt text-[10px]"></i>
                         </button>
                         <button
                             onClick={() => onSetPreviewMode?.('mobile')}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'mobile' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${previewMode === 'mobile' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/5'}`}
                             title="Mobile View"
                         >
                             <i className="fas fa-mobile-alt text-[10px]"></i>
                         </button>
                     </div>
 
-                    <div className="w-px h-6 bg-white/10 mx-1"></div>
+                    <div className="w-px h-6 bg-slate-200 dark:bg-white/10 mx-1"></div>
 
                     {/* Alignment Controls - Only show when multiple selected */}
                     {selectedCount !== undefined && selectedCount > 1 && (
@@ -453,30 +293,30 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                                 <button onClick={() => onAlign?.('left')} className="w-7 h-7 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title="Align Left">
                                     <i className="fas fa-align-left text-[10px]"></i>
                                 </button>
-                                <button onClick={() => onAlign?.('top')} className="w-7 h-7 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title="Align Top">
+                                <button onClick={() => onAlign?.('top')} className="w-7 h-7 rounded-lg hover:bg-white/10 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white flex items-center justify-center" title="Align Top">
                                     <i className="fas fa-align-left rotate-90 text-[10px]"></i>
                                 </button>
                             </div>
-                            <div className="w-px h-6 bg-white/10 mx-1"></div>
+                            <div className="w-px h-6 bg-slate-200 dark:bg-white/10 mx-1"></div>
                         </>
                     )}
 
                     {/* Grid Toggle */}
                     <button
                         onClick={onToggleGrid}
-                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${showGrid ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${showGrid ? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/10'}`}
                         title="Toggle Grid"
                     >
                         <i className="fas fa-border-all text-[10px]"></i>
                     </button>
 
-                    <div className="w-px h-6 bg-white/10 mx-1"></div>
+                    <div className="w-px h-6 bg-slate-200 dark:bg-white/10 mx-1"></div>
 
                     {/* Zoom Controls */}
                     <div className="flex items-center gap-2">
                         <span
                             onClick={onZoomReset}
-                            className="text-[10px] font-black w-8 text-center cursor-pointer text-slate-300 hover:text-indigo-400 transition-colors select-none"
+                            className="text-[10px] font-black w-8 text-center cursor-pointer text-slate-500 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors select-none"
                             title="Reset Zoom"
                         >
                             {Math.round((zoom || 1) * 100)}%
@@ -484,13 +324,13 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                         <div className="flex items-center gap-0.5">
                             <button
                                 onClick={onZoomOut}
-                                className="w-6 h-6 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center transition-colors border border-white/5"
+                                className="w-6 h-6 rounded-md bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white flex items-center justify-center transition-colors border border-slate-200 dark:border-white/5"
                             >
                                 <i className="fas fa-minus text-[8px]"></i>
                             </button>
                             <button
                                 onClick={onZoomIn}
-                                className="w-6 h-6 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center transition-colors border border-white/5"
+                                className="w-6 h-6 rounded-md bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white flex items-center justify-center transition-colors border border-slate-200 dark:border-white/5"
                             >
                                 <i className="fas fa-plus text-[8px]"></i>
                             </button>
@@ -498,7 +338,7 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/50 border border-white/5 whitespace-nowrap">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 whitespace-nowrap shadow-sm">
                     {saveStatus === 'saving' ? (
                         <>
                             <i className="fas fa-circle-notch fa-spin text-indigo-400 text-[10px]"></i>
@@ -512,37 +352,39 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     )}
                 </div>
 
-                <div className="h-6 w-px bg-white/10 mx-2"></div>
+                <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
 
                 <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => setIsShareModalOpen(true)}
-                        className="p-2 rounded hover:bg-white/10 text-slate-400 hover:text-white"
-                        title="Share Dashboard"
-                    >
-                        <i className="fas fa-share-alt"></i>
-                    </button>
+                    {(dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || dashboard.createdBy === currentUserId) && (
+                        <button
+                            onClick={() => setIsShareModalOpen(true)}
+                            className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
+                            title="Share Dashboard"
+                        >
+                            <i className="fas fa-share-alt"></i>
+                        </button>
+                    )}
                     <button
                         onClick={() => onExport?.('pdf')}
-                        className="p-2 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                        className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
                         title={t('bi.export_pdf')}
                     >
                         <i className="fas fa-file-pdf"></i>
                     </button>
                     <button
                         onClick={() => onExport?.('png')}
-                        className="p-2 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                        className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
                         title={t('bi.export_image')}
                     >
                         <i className="fas fa-image"></i>
                     </button>
                 </div>
 
-                <div className="h-6 w-px bg-white/10 mx-2"></div>
+                <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
 
                 <button
                     onClick={onToggleVisualBuilder}
-                    className={`p-2 rounded hover:bg-white/10 transition-colors ${isVisualBuilderOpen ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'}`}
+                    className={`p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 transition-colors ${isVisualBuilderOpen ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/30' : 'text-slate-500 dark:text-slate-400'}`}
                     title={t('bi.toggle_visual_builder')}
                 >
                     <i className="fas fa-chart-bar"></i>

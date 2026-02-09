@@ -30,15 +30,29 @@ export class DataAssetService {
         this.activeSyncs.add(dsId);
 
         const tableName = ds.tableName || ds.name;
+        const gcsBucket = process.env.NEXT_PUBLIC_GCS_CACHE_BUCKET;
+        const logFile = `${tableName}/_sync_status.log`;
+
+        let logBuffer = `[${new Date().toISOString()}] SYNC START: ${tableName}\n`;
+
+        const logEntry = async (msg: string, type: 'info' | 'error' | 'success' = 'info') => {
+            const entry = `[${new Date().toISOString()}] [${type.toUpperCase()}] ${msg}\n`;
+            logBuffer += entry;
+            addLog({ type, message: msg, target: tableName });
+
+            // Persist to GCS immediately if bucket exists
+            if (gcsBucket) {
+                const { writeGCSFile } = await import('../../../services/bigquery');
+                writeGCSFile(token, gcsBucket, logFile, logBuffer).catch(() => { });
+            }
+        };
+
         const isRecovery = !ds.isLoaded && (ds.data?.length || 0) > 0;
 
-        addLog({
-            type: 'info',
-            message: isRecovery
-                ? `Phát hiện tiến trình ${tableName} bị gián đoạn. Đang kết nối lại và đồng bộ...`
-                : `Bắt đầu đồng bộ bảng ${tableName}...`,
-            target: tableName
-        });
+        await logEntry(isRecovery
+            ? `Phát hiện tiến trình ${tableName} bị gián đoạn. Đang kết nối lại và đồng bộ...`
+            : `Bắt đầu đồng bộ bảng ${tableName}...`
+        );
 
         try {
             // ONLY clear if it's NOT a recovery (fresh start)
@@ -54,88 +68,78 @@ export class DataAssetService {
                 syncError: null
             });
 
-            const gcsBucket = process.env.NEXT_PUBLIC_GCS_CACHE_BUCKET;
+            // METADATA ONLY SYNC
+            const { fetchTableSchema } = await import('../../../services/bigquery');
 
-            if (gcsBucket) {
-                const { fetchTableDataViaExport } = await import('../../../services/bigquery');
-                await fetchTableDataViaExport(
-                    token,
-                    connection.projectId || '',
-                    ds.datasetName || '',
-                    ds.tableName || '',
-                    gcsBucket,
-                    {
-                        signal: options.signal,
-                        onPartialResults: (rows, totalRows) => {
-                            appendTableData(dsId, rows, totalRows);
-                            if (options.onProgress) {
-                                options.onProgress(rows.length, totalRows);
-                            }
-                        }
-                    }
-                );
-            } else {
-                await fetchTableData(
-                    token,
-                    connection.projectId || '',
-                    ds.datasetName || '',
-                    ds.tableName || '',
-                    {
-                        signal: options.signal,
-                        limit: options.limit, // No default limit, fetch all unless specified
-                        onPartialResults: (rows, totalRows) => {
-                            appendTableData(dsId, rows, totalRows);
-                            if (options.onProgress) {
-                                options.onProgress(rows.length, totalRows);
-                            }
-                        }
-                    }
-                );
+            // 1. Fetch Schema
+            const schemaFields = await fetchTableSchema(
+                token,
+                connection.projectId || '',
+                ds.datasetName || '',
+                ds.tableName || ''
+            );
+
+            // 2. Fetch Row Count (using aggregation query for speed)
+            const { runQuery } = await import('../../../services/bigquery');
+            let totalRows = 0;
+            try {
+                const countQuery = `SELECT count(*) as count FROM \`${connection.projectId}.${ds.datasetName}.${ds.tableName}\``;
+                const countResult = await runQuery(token, connection.projectId || '', countQuery);
+                if (countResult && countResult.length > 0) {
+                    totalRows = countResult[0].count;
+                }
+            } catch (e) {
+                console.warn("Could not fetch row count", e);
             }
 
+            // 3. Update Data Source with Metadata ONLY
+            const normalizeType = (type: string): 'string' | 'number' | 'boolean' | 'date' => {
+                const lower = type.toLowerCase();
+                if (['integer', 'int64', 'float', 'float64', 'numeric', 'bignumeric'].includes(lower)) return 'number';
+                if (['boolean', 'bool'].includes(lower)) return 'boolean';
+                if (['date', 'datetime', 'timestamp', 'time'].includes(lower)) return 'date';
+                return 'string';
+            };
 
-            // Verify data integrity
-            const finalDs = useDataStore.getState().getDataSource(dsId);
-            const loadedCount = finalDs?.data?.length || 0;
-            const expectedTotal = finalDs?.totalRows || 0;
+            const normalizedSchema = schemaFields.map(f => ({
+                name: f.name,
+                type: normalizeType(f.type)
+            }));
 
-            // Allow a small margin of error? No, exact match required based on user request "100%"
-            // But only if we didn't specify a limit
-            if (!options.limit && expectedTotal > 0 && loadedCount < expectedTotal) {
-                // Double check if data is in a "capped" state due to memory limits? 
-                // For now, treat as error.
-                throw new Error(`Data verification failed: Loaded ${loadedCount} rows but expected ${expectedTotal}.`);
-            }
+            const { loadBigQueryTable } = useDataStore.getState();
+            loadBigQueryTable(
+                connection.id,
+                tableName,
+                ds.datasetName || '',
+                [], // Empty data
+                normalizedSchema,
+                totalRows
+            );
 
+            // Force state update to "ready"
             updateDataSource(dsId, {
                 syncStatus: 'ready',
                 lastSyncAt: new Date().toISOString(),
-                isLoaded: true,
-                isLoadingPartial: false // Clear loading state BEFORE save for faster UI response
+                isLoaded: true, // Mark as loaded so UI allows selection
+                isLoadingPartial: false,
+                data: [], // Ensure data is empty to save memory
+                totalRows: totalRows
             });
 
-            addLog({
-                type: 'success',
-                message: `Đồng bộ thành công bảng ${tableName}`,
-                target: tableName
-            });
+            await logEntry(`Đã kết nối bảng ${tableName}. Metadata ready. Rows: ${totalRows}`, 'success');
 
-            // Persist to IndexedDB after successful sync - DO NOT await to prevent blocking the worker queue
+            // Persist to IndexedDB (Metadata only)
             const { commitDataToStorage } = useDataStore.getState();
             commitDataToStorage(dsId).catch(err => console.error('Background save failed', err));
         } catch (error: any) {
             console.error(`Sync failed for ${ds.name}:`, error);
 
-            addLog({
-                type: 'error',
-                message: `Lỗi đồng bộ bảng ${tableName}: ${error.message}`,
-                target: tableName
-            });
+            await logEntry(`Lỗi kết nối bảng ${tableName}: ${error.message}`, 'error');
 
             updateDataSource(dsId, {
                 syncStatus: 'error',
                 syncError: error.message,
-                isLoadingPartial: false // Ensure loading state is cleared even on error
+                isLoadingPartial: false
             });
             throw error;
         } finally {

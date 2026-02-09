@@ -64,6 +64,8 @@ const BIMain: React.FC<BIMainProps> = ({
         createFolder,
         createDashboard,
         updateDashboard,
+        syncDashboardDataSource,
+        syncPageDataSource,
         addWidget,
         updateWidget,
         selectedWidgetIds,
@@ -80,8 +82,17 @@ const BIMain: React.FC<BIMainProps> = ({
         lastReloadTimestamp
     } = useDashboardStore();
 
-    const { dataSources, selectedDataSourceId, clearAllBigQueryData } = useDataStore();
+    const { dataSources, selectedDataSourceId, clearAllBigQueryData, setGoogleToken, setConnections } = useDataStore();
     const { clearAllFilters } = useFilterStore();
+
+    // Sync external props to local store for hooks to consume
+    useEffect(() => {
+        setGoogleToken(initialGoogleToken || null);
+    }, [initialGoogleToken, setGoogleToken]);
+
+    useEffect(() => {
+        setConnections(connections);
+    }, [connections, setConnections]);
 
     const [reloadTrigger, setReloadTrigger] = useState(0);
     const [metadataReloadTrigger, setMetadataReloadTrigger] = useState(0);
@@ -293,6 +304,49 @@ const BIMain: React.FC<BIMainProps> = ({
 
     const [leftPanelOpen, setLeftPanelOpen] = useState(true);
     const [rightPanelOpen, setRightPanelOpen] = useState(true);
+    const [leftPanelWidth, setLeftPanelWidth] = useState(256); // Default 256px (w-64)
+    const [rightPanelWidth, setRightPanelWidth] = useState(320); // Default 320px (w-80)
+    const isResizingRef = useRef<'left' | 'right' | null>(null);
+
+    const startResizing = (panel: 'left' | 'right') => (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isResizingRef.current = panel;
+
+        // Capture initial state
+        const startX = e.clientX;
+        const startWidth = panel === 'left' ? leftPanelWidth : rightPanelWidth;
+
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        const handleMouseMove = (mvEvent: MouseEvent) => {
+            if (!isResizingRef.current) return;
+
+            const currentX = mvEvent.clientX;
+            const deltaX = currentX - startX;
+
+            if (isResizingRef.current === 'left') {
+                const newWidth = Math.max(200, Math.min(800, startWidth + deltaX));
+                setLeftPanelWidth(newWidth);
+            } else {
+                const newWidth = Math.max(250, Math.min(800, startWidth - deltaX));
+                setRightPanelWidth(newWidth);
+            }
+        };
+
+        const handleMouseUp = () => {
+            isResizingRef.current = null;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    };
+
     const [leftPanelTab, setLeftPanelTab] = useState<'data' | 'folders'>('folders');
     const googleToken = initialGoogleToken;
 
@@ -336,7 +390,7 @@ const BIMain: React.FC<BIMainProps> = ({
     const [zoom, setZoom] = useState(1);
     const [showGrid, setShowGrid] = useState(true);
     const [previewMode, setPreviewMode] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
-    const [activeVisualTab, setActiveVisualTab] = useState<'visualizations' | 'data' | 'format' | 'filters'>('visualizations');
+    const [activeVisualTab, setActiveVisualTab] = useState<'visualizations' | 'data' | 'format' | 'calculations'>('visualizations');
     const loadingTablesRef = useRef<Set<string>>(new Set());
     const abortControllerRef = useRef<AbortController | null>(null);
     const tableAbortControllers = useRef<Map<string, AbortController>>(new Map());
@@ -442,11 +496,11 @@ const BIMain: React.FC<BIMainProps> = ({
                 const isDateField = field.type === 'date';
 
                 const getTimeHierarchy = (fieldName: string) => [
-                    `${fieldName}.__year`,
-                    `${fieldName}.__half`,
-                    `${fieldName}.__quarter`,
-                    `${fieldName}.__month`,
-                    `${fieldName}.__day`
+                    `${fieldName}___year`,
+                    `${fieldName}___half`,
+                    `${fieldName}___quarter`,
+                    `${fieldName}___month`,
+                    `${fieldName}___day`
                 ];
 
                 if (targetSlot === 'xAxis-hierarchy') {
@@ -546,7 +600,7 @@ const BIMain: React.FC<BIMainProps> = ({
 
                 if (isDefaultTitle) {
                     const newTitle = getAutoTitle(nextWidgetState as BIWidget);
-                    if (newTitle !== 'New Chart' && newTitle !== 'Pivot Table' && newTitle !== 'New Card' && newTitle !== 'Table') {
+                    if (newTitle && newTitle !== 'New Chart' && newTitle !== '' && newTitle !== currentTitle) {
                         updates.title = newTitle;
                     }
                 }
@@ -762,7 +816,7 @@ const BIMain: React.FC<BIMainProps> = ({
             const requiredIds = new Set<string>();
             const isManualReload = lastReloadTriggerRef.current !== reloadTrigger;
 
-            // If manual reload or dashboard is empty (Connect Your Data screen), sync EVERYTHING in parallel
+            // If manual reload or dashboard is empty (Start Building screen), sync EVERYTHING in parallel
             if (isManualReload || dashboard.widgets.length === 0) {
                 const { dataSources } = useDataStore.getState();
                 dataSources.filter(ds => ds.type === 'bigquery').forEach(ds => requiredIds.add(ds.id));
@@ -886,7 +940,7 @@ const BIMain: React.FC<BIMainProps> = ({
     }, [activeDashboardId, selectedDataSourceId, initialGoogleToken, connections, reloadTrigger]);
 
     const handleCreateFolder = (name: string, parentId?: string) => {
-        createFolder(name, parentId);
+        createFolder(name, parentId, currentUser.id);
     };
 
     const handleCreateDashboard = (folderId?: string) => {
@@ -896,6 +950,38 @@ const BIMain: React.FC<BIMainProps> = ({
             widgets: [],
             createdBy: currentUser.id
         });
+    };
+
+    const handleSelectDataSource = (dsId: string) => {
+        if (activeDashboard) {
+            // Sync to active page if exists, otherwise to dashboard
+            if (activeDashboard.pages && activeDashboard.activePageId) {
+                const updatedPages = activeDashboard.pages.map(p =>
+                    p.id === activeDashboard.activePageId ? { ...p, dataSourceId: dsId } : p
+                );
+                updateDashboard(activeDashboard.id, { pages: updatedPages, dataSourceId: dsId });
+                syncPageDataSource(activeDashboard.id, activeDashboard.activePageId, dsId);
+            } else {
+                updateDashboard(activeDashboard.id, { dataSourceId: dsId });
+                syncDashboardDataSource(activeDashboard.id, dsId);
+            }
+            setSelectedDataSource(dsId);
+            setActiveVisualTab('data');
+        }
+    };
+
+    const handleClearDataSource = () => {
+        if (activeDashboard) {
+            if (activeDashboard.pages && activeDashboard.activePageId) {
+                const updatedPages = activeDashboard.pages.map(p =>
+                    p.id === activeDashboard.activePageId ? { ...p, dataSourceId: undefined } : p
+                );
+                updateDashboard(activeDashboard.id, { pages: updatedPages, dataSourceId: undefined });
+            } else {
+                updateDashboard(activeDashboard.id, { dataSourceId: undefined });
+            }
+            setSelectedDataSource(null);
+        }
     };
 
     const handleAddWidget = (type: string) => {
@@ -952,16 +1038,42 @@ const BIMain: React.FC<BIMainProps> = ({
         else if (format === 'png') ExportService.exportToPNG('bi-canvas-export', activeDashboard.title);
     };
 
+    const isHydrated = useDashboardStore(state => state.isHydrated);
+    const isDataHydrated = useDataStore(state => state.isHydrated);
+
+    if (domain && (!isHydrated || !isDataHydrated)) {
+        return (
+            <div className="flex h-screen items-center justify-center bg-white dark:bg-[#020617] text-slate-900 dark:text-white transition-colors duration-300">
+                <div className="text-center">
+                    <i className="fas fa-circle-notch fa-spin text-4xl text-indigo-500 mb-4"></i>
+                    <p className="text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest text-xs animate-pulse">Initializing Dashboard Engine...</p>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <div className="flex h-screen bg-[#020617] text-white">
+        <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+        >
+            <div className="flex h-screen bg-white dark:bg-[#020617] text-slate-900 dark:text-white transition-colors duration-300">
                 {/* Left Sidebar */}
                 {leftPanelOpen ? (
-                    <div className="w-64 border-r border-white/5 bg-slate-950 flex flex-col relative group">
+                    <div style={{ width: leftPanelWidth }} className="border-r border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear">
+                        {/* Resizer */}
+                        <div
+                            className="absolute top-0 -right-1 w-2 h-full cursor-col-resize z-[100] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                            onMouseDown={startResizing('left')}
+                        />
+                        {/* Visual Separator */}
+                        <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
+
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setLeftPanelOpen(false)}
-                            className="absolute -right-3 bottom-6 w-6 h-10 bg-slate-800 border border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-white transition-all z-50 shadow-xl hover:bg-slate-700 font-black"
+                            className="absolute -right-3 bottom-6 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-50 shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 font-black"
                             title={t('bi.collapse_left_panel')}
                         >
                             <i className="fas fa-chevron-left text-[10px]"></i>
@@ -971,12 +1083,14 @@ const BIMain: React.FC<BIMainProps> = ({
                             <BISidebar
                                 folders={folders}
                                 dashboards={dashboards}
+                                currentUserId={currentUser.id}
                                 activeDashboardId={activeDashboardId}
                                 onSelectDashboard={setActiveDashboard}
                                 onCreateFolder={handleCreateFolder}
                                 onCreateDashboard={handleCreateDashboard}
                                 onReloadDataSource={handleReloadDataSource}
                                 onStopDataSource={handleStopSync}
+                                onSelectDataSource={handleSelectDataSource}
                             />
                         </div>
                     </div>
@@ -1013,6 +1127,7 @@ const BIMain: React.FC<BIMainProps> = ({
                             )}
                             <DashboardToolbar
                                 dashboardId={activeDashboard.id}
+                                currentUserId={currentUser.id}
                                 onExport={handleExport}
                                 onToggleVisualBuilder={() => setRightPanelOpen(!rightPanelOpen)}
                                 isVisualBuilderOpen={rightPanelOpen}
@@ -1032,7 +1147,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                 onAlign={(dir) => useDashboardStore.getState().alignWidgets(dir)}
                             />
 
-                            <div className="flex-1 relative overflow-hidden bg-[#0f172a] flex flex-col">
+                            <div className="flex-1 relative overflow-hidden bg-slate-50 dark:bg-[#020617]/50 flex flex-col">
                                 {/* Filter Bar at the top */}
                                 <GlobalFilterBar dashboard={activeDashboard} />
 
@@ -1063,42 +1178,8 @@ const BIMain: React.FC<BIMainProps> = ({
                                                 dataSources={dataSources}
                                                 onReloadDataSource={handleReloadDataSource}
                                                 onStopDataSource={handleStopSync}
-                                                onSelectDataSource={(dsId) => {
-                                                    const { updateDashboard, dashboards, activeDashboardId } = useDashboardStore.getState();
-                                                    if (activeDashboardId) {
-                                                        const d = dashboards.find(dash => dash.id === activeDashboardId);
-                                                        if (d) {
-                                                            // Sync to active page if exists, otherwise to dashboard
-                                                            if (d.pages && d.activePageId) {
-                                                                const updatedPages = d.pages.map(p =>
-                                                                    p.id === d.activePageId ? { ...p, dataSourceId: dsId } : p
-                                                                );
-                                                                updateDashboard(d.id, { pages: updatedPages, dataSourceId: dsId });
-                                                            } else {
-                                                                updateDashboard(d.id, { dataSourceId: dsId });
-                                                            }
-                                                            setSelectedDataSource(dsId);
-                                                            setActiveVisualTab('data');
-                                                        }
-                                                    }
-                                                }}
-                                                onClearDataSource={() => {
-                                                    const { updateDashboard, dashboards, activeDashboardId } = useDashboardStore.getState();
-                                                    if (activeDashboardId) {
-                                                        const d = dashboards.find(dash => dash.id === activeDashboardId);
-                                                        if (d) {
-                                                            if (d.pages && d.activePageId) {
-                                                                const updatedPages = d.pages.map(p =>
-                                                                    p.id === d.activePageId ? { ...p, dataSourceId: undefined } : p
-                                                                );
-                                                                updateDashboard(d.id, { pages: updatedPages, dataSourceId: undefined });
-                                                            } else {
-                                                                updateDashboard(d.id, { dataSourceId: undefined });
-                                                            }
-                                                            setSelectedDataSource(null);
-                                                        }
-                                                    }
-                                                }}
+                                                onSelectDataSource={handleSelectDataSource}
+                                                onClearDataSource={handleClearDataSource}
                                                 setActiveVisualTab={setActiveVisualTab}
                                                 readOnly={false}
                                             />
@@ -1111,10 +1192,10 @@ const BIMain: React.FC<BIMainProps> = ({
                             </div>
                         </div>
                     ) : (
-                        <div className="flex-1 flex items-center justify-center flex-col text-slate-500">
+                        <div className="flex-1 flex items-center justify-center flex-col text-slate-400 dark:text-slate-500">
                             <i className="fas fa-columns text-6xl mb-4 opacity-20"></i>
-                            <p className="text-lg font-bold mb-2">{t('bi.welcome')}</p>
-                            <button onClick={() => handleCreateDashboard()} className="px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all">
+                            <p className="text-lg font-bold mb-2 text-slate-600 dark:text-slate-400">{t('bi.welcome')}</p>
+                            <button onClick={() => handleCreateDashboard()} className="px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all shadow-lg active:scale-95">
                                 <i className="fas fa-plus mr-2"></i> {t('bi.create_new_dashboard')}
                             </button>
                         </div>
@@ -1123,11 +1204,19 @@ const BIMain: React.FC<BIMainProps> = ({
 
                 {/* Right Panel: Visual Builder */}
                 {rightPanelOpen ? (
-                    <div className="w-80 border-l border-white/5 bg-slate-950 flex flex-col relative group">
+                    <div style={{ width: rightPanelWidth }} className="border-l border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear">
+                        {/* Resizer */}
+                        <div
+                            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-[100] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                            onMouseDown={startResizing('right')}
+                        />
+                        {/* Visual Separator */}
+                        <div className="absolute top-0 left-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
+
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setRightPanelOpen(false)}
-                            className="absolute -left-3 bottom-6 w-6 h-10 bg-slate-800 border border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-white transition-all z-50 shadow-xl hover:bg-slate-700"
+                            className="absolute -left-3 bottom-6 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-50 shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
                             title={t('bi.collapse_right_panel')}
                         >
                             <i className="fas fa-chevron-right text-[10px]"></i>

@@ -229,17 +229,17 @@ const Connections: React.FC<ConnectionsProps> = ({
   };
 
   const renderConnectionForm = () => {
-    const inputClass = "w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-700 text-sm";
+    const inputClass = "w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm";
     const labelClass = "block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1";
 
     const renderBigQueryForm = () => (
       <div className="space-y-6 animate-in fade-in">
-        <div className="flex gap-4 p-1 bg-black/30 rounded-2xl border border-white/5">
+        <div className="flex gap-4 p-1 bg-slate-100 dark:bg-black/30 rounded-2xl border border-slate-200 dark:border-white/5">
           {['ServiceAccount', 'GoogleMail'].map(mode => (
             <button
               key={mode}
               onClick={() => { setTempConn({ ...tempConn, authType: mode as any }); setAuthSuccess(false); setUploadedFile(null); }}
-              className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${tempConn.authType === mode ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'
+              className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${tempConn.authType === mode ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'
                 }`}
             >
               {mode === 'GoogleMail' ? 'OAuth Login' : 'Service Key'}
@@ -257,24 +257,24 @@ const Connections: React.FC<ConnectionsProps> = ({
                 <i className="fas fa-key"></i> Connection Security Note
               </h4>
               <div className="space-y-3">
-                <p className="text-[11px] text-slate-400 leading-relaxed">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                   <strong>OAuth Login:</strong> Best for personal use. Token expires every 60 minutes.
                 </p>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                   <strong>Service Account:</strong> Best for production. Stable, persistent connection with no manual login required.
                 </p>
               </div>
             </div>
 
-            <button onClick={handleGoogleLogin} disabled={isAuthenticating} className="w-full py-5 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl hover:bg-slate-100 transition-all active:scale-[0.98]">
+            <button onClick={handleGoogleLogin} disabled={isAuthenticating} className="w-full py-5 bg-white border border-slate-200 dark:border-transparent text-black rounded-2xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl hover:bg-slate-50 transition-all active:scale-[0.98]">
               {isAuthenticating ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fab fa-google text-lg text-blue-500"></i>}
               {authSuccess ? 'Authenticated Successfully' : 'Sign in with Google Account'}
             </button>
 
             {!authSuccess && (
-              <div className="p-4 bg-slate-800/50 rounded-xl border border-white/5">
+              <div className="p-4 bg-slate-100 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-white/5">
                 <p className="text-[10px] text-slate-500 text-center leading-relaxed">
-                  <i className="fas fa-shield-alt mr-1"></i> Developer Mode: Click <strong className="text-slate-300">Advanced</strong> then <strong className="text-slate-300">Go to ... (unsafe)</strong> if prompted.
+                  <i className="fas fa-shield-alt mr-1"></i> Developer Mode: Click <strong className="text-slate-700 dark:text-slate-300">Advanced</strong> then <strong className="text-slate-700 dark:text-slate-300">Go to ... (unsafe)</strong> if prompted.
                 </p>
               </div>
             )}
@@ -497,25 +497,25 @@ const Connections: React.FC<ConnectionsProps> = ({
   const isAllFilteredSelected = filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name));
 
   return (
-    <div className="p-10 max-w-7xl mx-auto relative h-full overflow-y-auto custom-scrollbar">
+    <div className="p-10 max-w-7xl mx-auto relative h-full overflow-y-auto custom-scrollbar no-print">
       {/* Background Decorations */}
       <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/2 w-[500px] h-[500px] bg-indigo-600/10 blur-[120px] rounded-full -z-10 pointer-events-none"></div>
       <div className="absolute bottom-0 left-0 translate-y-1/2 -translate-x-1/2 w-[400px] h-[400px] bg-blue-600/5 blur-[100px] rounded-full -z-10 pointer-events-none"></div>
 
-      <div className="flex justify-between items-end mb-12">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 gap-6">
         <div>
-          <h2 className="text-5xl font-black text-white tracking-tighter mb-3 bg-gradient-to-r from-white to-slate-500 bg-clip-text text-transparent">{t('conn.title')}</h2>
-          <p className="text-slate-400 font-medium tracking-tight text-lg">{t('conn.subtitle')}</p>
+          <h2 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter mb-3 bg-gradient-to-r from-slate-900 dark:from-white to-slate-500 bg-clip-text text-transparent">{t('conn.title')}</h2>
+          <p className="text-slate-500 dark:text-slate-400 font-medium tracking-tight text-lg">{t('conn.subtitle')}</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="relative w-64">
-            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
+            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
             <input
               type="text"
               value={connSearchTerm}
               onChange={(e) => setConnSearchTerm(e.target.value)}
               placeholder={t('conn.search_placeholder')}
-              className="w-full bg-slate-900/40 border border-white/5 rounded-2xl py-3.5 pl-11 pr-4 text-white focus:ring-2 focus:ring-indigo-600/50 outline-none transition-all placeholder-slate-600 text-sm backdrop-blur-md"
+              className="w-full bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/5 rounded-2xl py-3.5 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600/50 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-600 text-sm shadow-sm dark:backdrop-blur-md"
             />
           </div>
           <button
@@ -530,23 +530,23 @@ const Connections: React.FC<ConnectionsProps> = ({
       {/* Quick Stats Row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
         {[
-          { label: t('conn.stat.total_connections'), value: connections.filter(c => c.type !== 'Excel').length, icon: 'fa-project-diagram', color: 'text-indigo-400' },
-          { label: t('conn.stat.active_syncs'), value: connections.length, icon: 'fa-sync-alt', color: 'text-emerald-400', pulse: true },
+          { label: t('conn.stat.total_connections'), value: connections.filter(c => c.type !== 'Excel').length, icon: 'fa-project-diagram', color: 'text-indigo-600 dark:text-indigo-400' },
+          { label: t('conn.stat.active_syncs'), value: connections.length, icon: 'fa-sync-alt', color: 'text-emerald-600 dark:text-emerald-400', pulse: true },
           {
             label: t('conn.stat.total_tables'),
             // Filter duplicates by tableName and datasetName to be safe
             value: new Set(tables.map(t => `${t.datasetName}.${t.tableName}`)).size,
             icon: 'fa-th-list',
-            color: 'text-blue-400'
+            color: 'text-blue-600 dark:text-blue-400'
           },
-          { label: t('conn.stat.system_health'), value: '100%', icon: 'fa-heartbeat', color: 'text-rose-400' }
+          { label: t('conn.stat.system_health'), value: '100%', icon: 'fa-heartbeat', color: 'text-rose-600 dark:text-rose-400' }
         ].map((stat, i) => (
-          <div key={i} className="bg-white/[0.03] border border-white/5 p-6 rounded-3xl backdrop-blur-sm">
+          <div key={i} className="bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/5 p-6 rounded-3xl shadow-sm dark:backdrop-blur-sm">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{stat.label}</span>
+              <span className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">{stat.label}</span>
               <i className={`fas ${stat.icon} ${stat.color} text-sm ${stat.pulse ? 'animate-pulse' : ''}`}></i>
             </div>
-            <div className="text-2xl font-black text-white">{stat.value}</div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white">{stat.value}</div>
           </div>
         ))}
       </div>
@@ -554,17 +554,17 @@ const Connections: React.FC<ConnectionsProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {connections.length === 0 ? (
           <div className="col-span-full py-32 text-center animate-in fade-in zoom-in duration-700">
-            <div className="inline-flex items-center justify-center w-24 h-24 rounded-[2.5rem] bg-indigo-600/10 border border-indigo-500/20 mb-8 relative">
+            <div className="inline-flex items-center justify-center w-24 h-24 rounded-[2.5rem] bg-indigo-50 dark:bg-indigo-600/10 border border-indigo-100 dark:border-indigo-500/20 mb-8 relative">
               <i className="fas fa-project-diagram text-3xl text-indigo-500"></i>
               <div className="absolute inset-0 bg-indigo-500/20 blur-2xl rounded-full"></div>
             </div>
-            <h3 className="text-2xl font-black text-white mb-3">{t('conn.empty_title')}</h3>
-            <p className="text-slate-500 max-w-md mx-auto mb-10 leading-relaxed font-medium">
+            <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-3">{t('conn.empty_title')}</h3>
+            <p className="text-slate-500 dark:text-slate-500 max-w-md mx-auto mb-10 leading-relaxed font-medium">
               {t('conn.empty_subtitle')}
             </p>
             <button
               onClick={() => handleOpenWizard()}
-              className="bg-white text-black px-10 py-4 rounded-2xl font-black tracking-tight hover:bg-slate-200 transition-all shadow-2xl active:scale-95"
+              className="bg-slate-900 dark:bg-white text-white dark:text-black px-10 py-4 rounded-2xl font-black tracking-tight hover:scale-105 transition-all shadow-2xl active:scale-95"
             >
               {t('conn.empty_button')}
             </button>
@@ -574,36 +574,36 @@ const Connections: React.FC<ConnectionsProps> = ({
             .filter(c => c.name.toLowerCase().includes(connSearchTerm.toLowerCase()) ||
               c.type.toLowerCase().includes(connSearchTerm.toLowerCase()))
             .map(conn => (
-              <div key={conn.id} className="bg-slate-900/40 backdrop-blur-md p-8 rounded-[2rem] border border-white/5 shadow-2xl hover:border-indigo-500/30 transition-all group relative overflow-hidden">
+              <div key={conn.id} className="bg-white dark:bg-slate-900/40 backdrop-blur-md p-8 rounded-[2rem] border border-slate-200 dark:border-white/5 shadow-xl dark:shadow-2xl hover:border-indigo-500/30 transition-all group relative overflow-hidden">
                 <div className="flex justify-between items-start mb-10">
-                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl ${conn.type === 'BigQuery' ? 'bg-blue-600/10 text-blue-400' :
-                    conn.type === 'Snowflake' ? 'bg-cyan-600/10 text-cyan-400' :
-                      'bg-slate-800 text-slate-400'
+                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl ${conn.type === 'BigQuery' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' :
+                    conn.type === 'Snowflake' ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400' :
+                      'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
                     }`}>
                     {WAREHOUSE_OPTIONS.find(o => o.id === conn.type)?.icon || <i className="fas fa-database"></i>}
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleOpenWizard(conn)} className="w-10 h-10 bg-white/5 rounded-xl text-slate-500 hover:text-white transition-all flex items-center justify-center"><i className="fas fa-cog"></i></button>
-                    <button onClick={() => onDeleteConnection(conn.id)} className="w-10 h-10 bg-white/5 rounded-xl text-slate-500 hover:text-red-400 transition-all flex items-center justify-center"><i className="fas fa-trash-alt"></i></button>
+                    <button onClick={() => handleOpenWizard(conn)} className="w-10 h-10 bg-slate-50 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:bg-indigo-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-white transition-all flex items-center justify-center"><i className="fas fa-cog"></i></button>
+                    <button onClick={() => onDeleteConnection(conn.id)} className="w-10 h-10 bg-slate-50 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 transition-all flex items-center justify-center"><i className="fas fa-trash-alt"></i></button>
                   </div>
                 </div>
-                <h3 className="font-black text-white text-xl mb-2 tracking-tight">{conn.name}</h3>
-                <div className="flex items-center gap-2 mb-8 text-[10px] font-black uppercase text-slate-600 tracking-widest">
+                <h3 className="font-black text-slate-900 dark:text-white text-xl mb-2 tracking-tight">{conn.name}</h3>
+                <div className="flex items-center gap-2 mb-8 text-[10px] font-black uppercase text-slate-400 dark:text-slate-600 tracking-widest">
                   <span>{conn.type}</span>
-                  <div className="w-1 h-1 rounded-full bg-slate-700"></div>
-                  <span className="text-indigo-400">{conn.authType}</span>
+                  <div className="w-1 h-1 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+                  <span className="text-indigo-600 dark:text-indigo-400">{conn.authType}</span>
                 </div>
-                <div className="grid grid-cols-2 gap-6 pt-6 border-t border-white/5">
+                <div className="grid grid-cols-2 gap-6 pt-6 border-t border-slate-100 dark:border-white/5">
                   <div>
-                    <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">{t('conn.card.health')}</div>
-                    <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                    <div className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{t('conn.card.health')}</div>
+                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-bold text-sm">
                       <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
                       {t('conn.card.optimal')}
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">{t('conn.stat.total_tables')}</div>
-                    <div className="text-sm font-black text-white">{tables.filter(t => t.connectionId === conn.id).length} {t('conn.card.objects')}</div>
+                    <div className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{t('conn.stat.total_tables')}</div>
+                    <div className="text-sm font-black text-slate-900 dark:text-white">{tables.filter(t => t.connectionId === conn.id).length} {t('conn.card.objects')}</div>
                   </div>
                 </div>
                 <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-indigo-600/5 blur-3xl rounded-full group-hover:bg-indigo-600/20 transition-all duration-700"></div>
@@ -613,16 +613,16 @@ const Connections: React.FC<ConnectionsProps> = ({
       </div>
 
       {isWizardOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/95 backdrop-blur-xl">
-          <div className="w-full max-w-6xl bg-[#0f172a] border border-white/10 rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
-            <div className="bg-white/[0.02] px-10 py-8 border-b border-white/5 flex justify-between items-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/60 dark:bg-black/95 backdrop-blur-xl">
+          <div className="w-full max-w-6xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[3rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
+            <div className="bg-slate-50 dark:bg-white/[0.02] px-10 py-8 border-b border-slate-100 dark:border-white/5 flex justify-between items-center">
               <div>
-                <h2 className="text-2xl font-black text-white tracking-tight">
+                <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
                   {step === 1 ? t('conn.wizard.step1') : step === 2 ? t('conn.wizard.step2') : step === 3 ? t('conn.wizard.step3') : t('conn.wizard.step4')}
                 </h2>
-                <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mt-1">Stage {step} of 4 • {editingConnId ? 'Reconfiguring' : 'Neural Link'}</p>
+                <p className="text-slate-400 dark:text-slate-500 text-[10px] font-black uppercase tracking-widest mt-1">Stage {step} of 4 • {editingConnId ? 'Reconfiguring' : 'Neural Link'}</p>
               </div>
-              <button onClick={closeWizard} className="w-10 h-10 bg-white/5 rounded-full text-slate-500 hover:text-white transition-all"><i className="fas fa-times"></i></button>
+              <button onClick={closeWizard} className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-full text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all flex items-center justify-center"><i className="fas fa-times"></i></button>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -635,10 +635,10 @@ const Connections: React.FC<ConnectionsProps> = ({
                         value={tempConn.name}
                         onChange={e => setTempConn({ ...tempConn, name: e.target.value })}
                         placeholder={`e.g. ${tempConn.type} Core Analytics`}
-                        className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-700"
+                        className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700"
                       />
                       {editingConnId && (
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-full uppercase tracking-widest">
+                        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-3 py-1 rounded-full uppercase tracking-widest">
                           Editing
                         </div>
                       )}
@@ -653,13 +653,13 @@ const Connections: React.FC<ConnectionsProps> = ({
                           key={opt.id}
                           disabled={!!editingConnId}
                           onClick={() => setTempConn({ ...tempConn, type: opt.id as WarehouseType })}
-                          className={`flex flex-col items-center gap-4 p-6 rounded-[2rem] border-2 transition-all group ${tempConn.type === opt.id ? 'border-indigo-600 bg-indigo-600/5' : 'border-white/5 bg-white/[0.02] hover:border-white/10'
+                          className={`flex flex-col items-center gap-4 p-6 rounded-[2rem] border-2 transition-all group ${tempConn.type === opt.id ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5' : 'border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] hover:border-slate-200 dark:hover:border-white/10'
                             } ${editingConnId && tempConn.type !== opt.id ? 'opacity-20 cursor-not-allowed' : ''}`}
                         >
-                          <div className={`text-3xl transition-transform group-hover:scale-110 ${tempConn.type === opt.id ? 'opacity-100' : 'opacity-40'}`}>
+                          <div className={`text-3xl transition-transform group-hover:scale-110 ${tempConn.type === opt.id ? 'opacity-100' : 'opacity-30'}`}>
                             {opt.icon}
                           </div>
-                          <span className={`font-black text-[10px] uppercase tracking-widest ${tempConn.type === opt.id ? 'text-indigo-400' : 'text-slate-500'}`}>
+                          <span className={`font-black text-[10px] uppercase tracking-widest ${tempConn.type === opt.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}`}>
                             {opt.name}
                           </span>
                         </button>
@@ -678,32 +678,32 @@ const Connections: React.FC<ConnectionsProps> = ({
               {step === 3 && (
                 <div className="p-10 space-y-6 animate-in fade-in">
                   <div className="flex items-center gap-2 text-xs mb-4">
-                    <span className={`font-black uppercase tracking-widest ${!selectedContext ? 'text-white' : 'text-slate-500'}`}>
+                    <span className={`font-black uppercase tracking-widest ${!selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-400 dark:text-slate-500'}`}>
                       Select Project
                     </span>
-                    <i className="fas fa-chevron-right text-slate-700"></i>
-                    <span className={`font-black uppercase tracking-widest ${selectedContext ? 'text-white' : 'text-slate-700'}`}>
+                    <i className="fas fa-chevron-right text-slate-200 dark:text-slate-700"></i>
+                    <span className={`font-black uppercase tracking-widest ${selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-200 dark:text-slate-700'}`}>
                       Select Dataset
                     </span>
                   </div>
 
                   {!selectedContext ? (
                     <div className="space-y-3 animate-in slide-in-from-left-4">
-                      <div className="p-4 bg-indigo-600/10 border border-indigo-500/20 rounded-2xl mb-4">
-                        <h4 className="text-indigo-400 font-black uppercase text-[10px] tracking-widest mb-1">
+                      <div className="p-4 bg-indigo-50 dark:bg-indigo-600/10 border border-indigo-100 dark:border-indigo-500/20 rounded-2xl mb-4">
+                        <h4 className="text-indigo-600 dark:text-indigo-400 font-black uppercase text-[10px] tracking-widest mb-1">
                           <i className="fab fa-google-cloud mr-2"></i> Connected to Google Cloud
                         </h4>
-                        <p className="text-[11px] text-indigo-300/70">Select a project to explore its datasets.</p>
+                        <p className="text-[11px] text-indigo-400/70 dark:text-indigo-300/70">Select a project to explore its datasets.</p>
                       </div>
 
                       <div className="relative mb-4">
-                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
+                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
                         <input
                           type="text"
                           value={projectSearchTerm}
                           onChange={(e) => setProjectSearchTerm(e.target.value)}
                           placeholder="Search Projects..."
-                          className="w-full bg-black/30 border border-white/10 rounded-2xl py-4 pl-11 pr-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-700 text-sm"
+                          className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
                         />
                       </div>
 
@@ -727,18 +727,18 @@ const Connections: React.FC<ConnectionsProps> = ({
                                   }
                                 }
                               }}
-                              className="w-full p-5 rounded-2xl border border-white/5 bg-white/5 hover:bg-white/10 hover:border-blue-500/30 transition-all text-left flex items-center justify-between group"
+                              className="w-full p-5 rounded-2xl border border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-blue-500/30 transition-all text-left flex items-center justify-between group"
                             >
                               <div className="flex items-center gap-4">
-                                <div className="w-10 h-10 rounded-xl bg-blue-900/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
                                   <i className="fas fa-cloud text-sm"></i>
                                 </div>
                                 <div>
-                                  <div className="font-bold text-sm text-slate-200 group-hover:text-white">{proj.name}</div>
-                                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">{proj.id}</div>
+                                  <div className="font-bold text-sm text-slate-700 dark:text-slate-200 group-hover:text-slate-900 dark:group-hover:text-white">{proj.name}</div>
+                                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{proj.id}</div>
                                 </div>
                               </div>
-                              <i className="fas fa-chevron-right text-slate-600 group-hover:text-white group-hover:translate-x-1 transition-all"></i>
+                              <i className="fas fa-chevron-right text-slate-300 dark:text-slate-600 group-hover:text-slate-900 dark:group-hover:text-white group-hover:translate-x-1 transition-all"></i>
                             </button>
                           ))}
                       </div>
@@ -748,28 +748,28 @@ const Connections: React.FC<ConnectionsProps> = ({
                       <div className="flex justify-between items-center">
                         <button
                           onClick={() => { setSelectedContext(''); setBqDatasets([]); setDatasetSearchTerm(''); }}
-                          className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white flex items-center gap-2"
+                          className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-2"
                         >
                           <i className="fas fa-arrow-left"></i> Back to Projects
                         </button>
                       </div>
 
                       <div className="relative mb-4">
-                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
+                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
                         <input
                           type="text"
                           value={datasetSearchTerm}
                           onChange={(e) => setDatasetSearchTerm(e.target.value)}
                           placeholder="Search Datasets..."
-                          className="w-full bg-black/30 border border-white/10 rounded-2xl py-4 pl-11 pr-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-700 text-sm"
+                          className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
                         />
                       </div>
 
                       <div className="mt-4">
                         {bqDatasets.length === 0 ? (
-                          <div className="text-center py-12 border-2 border-dashed border-white/5 rounded-2xl">
-                            <i className="fas fa-circle-notch fa-spin text-slate-600 text-2xl mb-3"></i>
-                            <p className="text-xs text-slate-500">Fetching Datasets...</p>
+                          <div className="text-center py-12 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
+                            <i className="fas fa-circle-notch fa-spin text-slate-300 dark:text-slate-600 text-2xl mb-3"></i>
+                            <p className="text-xs text-slate-400 dark:text-slate-500">Fetching Datasets...</p>
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
@@ -780,15 +780,15 @@ const Connections: React.FC<ConnectionsProps> = ({
                                   key={ds.id}
                                   onClick={() => setSelectedDatasetId(ds.id)}
                                   className={`p-5 rounded-2xl border-2 transition-all text-left flex items-start gap-4 ${selectedDatasetId === ds.id
-                                    ? 'border-indigo-600 bg-indigo-600/10'
-                                    : 'border-white/5 bg-white/5 hover:bg-white/10 hover:border-white/20'
+                                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                    : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-slate-200 dark:hover:border-white/20'
                                     }`}
                                 >
-                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${selectedDatasetId === ds.id ? 'bg-indigo-600 text-white' : 'bg-indigo-500/10 text-indigo-400'
+                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${selectedDatasetId === ds.id ? 'bg-indigo-600 text-white' : 'bg-indigo-100 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
                                     }`}>
                                     <i className="fas fa-database text-sm"></i>
                                   </div>
-                                  <div className={`font-bold text-sm break-words line-clamp-2 mt-2 ${selectedDatasetId === ds.id ? 'text-white' : 'text-slate-200'
+                                  <div className={`font-bold text-sm break-words line-clamp-2 mt-2 ${selectedDatasetId === ds.id ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'
                                     }`}>{ds.name}</div>
                                 </button>
                               ))}
@@ -802,15 +802,15 @@ const Connections: React.FC<ConnectionsProps> = ({
 
               {step === 4 && (
                 <div className="animate-in slide-in-from-right-4 px-10 pb-10 flex flex-col h-full overflow-hidden">
-                  <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-[#0f172a] z-10 pt-4">
+                  <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
                     <div className="relative">
-                      <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
+                      <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
                       <input
                         type="text"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         placeholder="Filter tables by name..."
-                        className="w-full bg-black/30 border border-white/10 rounded-2xl py-4 pl-11 pr-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-700 text-sm"
+                        className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
                       />
                     </div>
 
@@ -821,16 +821,16 @@ const Connections: React.FC<ConnectionsProps> = ({
                       >
                         <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))
                           ? 'bg-indigo-600 border-indigo-600'
-                          : 'border-white/10 group-hover:border-white/30'
+                          : 'border-slate-200 dark:border-white/10 group-hover:border-slate-300 dark:group-hover:border-white/30'
                           }`}>
                           {(filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))) && <i className="fas fa-check text-[10px] text-white"></i>}
                         </div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-white transition-colors">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
                           {filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name)) ? 'Deselect All Filtered' : 'Select All Filtered'}
                         </span>
                       </button>
 
-                      <div className="text-[10px] font-black uppercase tracking-widest text-indigo-400 bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-500/20">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20">
                         {selectedTables.length} Objects Selected
                       </div>
                     </div>
@@ -838,9 +838,9 @@ const Connections: React.FC<ConnectionsProps> = ({
 
                   <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
                     {filteredTables.length === 0 ? (
-                      <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-[2rem]">
-                        <i className="fas fa-search text-slate-700 text-3xl mb-4"></i>
-                        <p className="text-slate-500 text-sm">No tables match your filter</p>
+                      <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
+                        <i className="fas fa-search text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
+                        <p className="text-slate-400 dark:text-slate-500 text-sm">No tables match your filter</p>
                       </div>
                     ) : (
                       filteredTables.map(table => (
@@ -848,26 +848,26 @@ const Connections: React.FC<ConnectionsProps> = ({
                           key={table.name}
                           onClick={() => toggleTable(table.name)}
                           className={`flex items-center justify-between p-5 rounded-[2rem] border-2 cursor-pointer transition-all group ${selectedTables.includes(table.name)
-                            ? 'border-indigo-600 bg-indigo-600/5'
-                            : 'border-white/5 bg-white/5 hover:border-white/10'
+                            ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5'
+                            : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
                             }`}
                         >
                           <div className="flex items-center gap-4">
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-800 text-slate-500 group-hover:text-slate-300'
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 group-hover:text-slate-900 dark:group-hover:text-slate-300'
                               }`}>
                               <i className="fas fa-table text-lg"></i>
                             </div>
                             <div>
-                              <div className={`font-bold text-sm transition-colors ${selectedTables.includes(table.name) ? 'text-white' : 'text-slate-300'}`}>
+                              <div className={`font-bold text-sm transition-colors ${selectedTables.includes(table.name) ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
                                 {table.name}
                               </div>
                               {table.dataset && (
-                                <div className="text-[10px] text-slate-500 font-mono mt-0.5">{table.dataset}</div>
+                                <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{table.dataset}</div>
                               )}
                             </div>
                           </div>
 
-                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-emerald-500 border-emerald-500' : 'border-white/10'
+                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-white/10'
                             }`}>
                             {selectedTables.includes(table.name) && <i className="fas fa-check text-[10px] text-white"></i>}
                           </div>
@@ -879,8 +879,8 @@ const Connections: React.FC<ConnectionsProps> = ({
               )}
             </div>
 
-            <div className="px-10 py-8 border-t border-white/5 flex justify-between items-center">
-              <button onClick={() => setStep(prev => prev - 1)} className={`font-black text-[10px] uppercase tracking-widest text-slate-500 ${step === 1 ? 'invisible' : ''}`}>Back</button>
+            <div className="px-10 py-8 border-t border-slate-100 dark:border-white/5 flex justify-between items-center bg-slate-50 dark:bg-white/[0.01]">
+              <button onClick={() => setStep(prev => prev - 1)} className={`font-black text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors ${step === 1 ? 'invisible' : ''}`}>Back</button>
               <button
                 onClick={async () => {
                   if (step === 3 && selectedDatasetId) {

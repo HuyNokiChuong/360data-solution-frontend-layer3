@@ -5,11 +5,13 @@ import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { applyFilters } from '../engine/dataProcessing';
 import { pivotData, formatValue } from '../engine/calculations';
-import { useWidgetData } from '../hooks/useWidgetData';
+import { useDirectQuery } from '../hooks/useDirectQuery';
+import { DrillDownService } from '../engine/DrillDownService';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
-import { CHART_COLORS } from '../utils/chartColors';
+import { useChartColors } from '../utils/chartColors';
+import { formatBIValue } from '../engine/utils';
 
 interface PivotTableWidgetProps {
     widget: BIWidget;
@@ -46,9 +48,13 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
     onClickDataTab,
     onClick
 }) => {
-    const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered } = useFilterStore();
+    const { isDark } = useChartColors();
+    const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, drillDowns } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
-    const widgetData = useWidgetData(widget);
+
+    // Switch to useDirectQuery
+    const { data: directData, isLoading, error: directError } = useDirectQuery(widget);
+    const widgetData = directData;
 
     const isFiltered = isWidgetFiltered(widget.id);
 
@@ -110,7 +116,18 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: 'No data' };
         }
 
-        if (!widget.pivotRows || widget.pivotRows.length === 0 || !widget.pivotValues || widget.pivotValues.length === 0) {
+        const pivotDrillState = drillDowns[widget.id];
+
+        // Use drillDownHierarchy if available, otherwise check pivotRows mainly for state validation
+        const hasDrillHierarchy = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) || (widget.type === 'pivot' && !!widget.pivotRows?.length);
+
+        const activeRows = (hasDrillHierarchy && pivotDrillState)
+            ? DrillDownService.getCurrentFields(widget, pivotDrillState)
+            : (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
+                ? DrillDownService.getCurrentFields(widget, null) // Default to Level 0 if explicit hierarchy
+                : widget.pivotRows || []; // Default to Full Nested if no explicit hierarchy and no active state
+
+        if (!activeRows || activeRows.length === 0 || !widget.pivotValues || widget.pivotValues.length === 0) {
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: 'Fields not configured' };
         }
 
@@ -131,9 +148,40 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                 }
             }
 
+
+            // FORMATTING STEP: Transform data for Display while keeping sort order
+            // We use a composite key "SortValue|||DisplayValue"
+            const formattedData = filteredData.map(row => {
+                const newRow = { ...row };
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+                activeRows.forEach(field => {
+                    const val = newRow[field];
+                    if (val === null || val === undefined) return;
+
+                    if (field.includes('___half')) {
+                        // Sort: 1, 2. Display: Half 1, Half 2
+                        newRow[field] = `${val}|||Half ${val}`;
+                    } else if (field.includes('___quarter')) {
+                        // Sort: 1, 2. Display: Qtr 1, Qtr 2
+                        newRow[field] = `${val}|||Qtr ${val}`;
+                    } else if (field.includes('___month')) {
+                        // Sort: 01, 02. Display: Jan, Feb
+                        const sortVal = String(val).padStart(2, '0');
+                        const displayVal = months[Number(val) - 1] || val;
+                        newRow[field] = `${sortVal}|||${displayVal}`;
+                    } else if (field.includes('___day')) {
+                        // Sort: 01, 02. Display: 1, 2
+                        const sortVal = String(val).padStart(2, '0');
+                        newRow[field] = `${sortVal}|||${val}`;
+                    }
+                });
+                return newRow;
+            });
+
             const result = pivotData(
-                filteredData,
-                widget.pivotRows || [],
+                formattedData,
+                activeRows,
                 widget.pivotCols || [],
                 widget.pivotValues || []
             );
@@ -142,8 +190,127 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         } catch (err: any) {
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: err.message };
         }
-    }, [widget, widgetData, allDashboardFilters, activeDashboard?.globalFilters]);
+    }, [widget, widgetData, allDashboardFilters, activeDashboard?.globalFilters, JSON.stringify(drillDowns[widget.id])]);
 
+    const valueFields = widget.pivotValues || [];
+    const showValueHeader = valueFields.length > 1;
+
+    // Helper to extract display value
+    const getDisplay = (str: string) => {
+        if (typeof str === 'string' && str.includes('|||')) {
+            return str.split('|||')[1];
+        }
+        return str;
+    };
+
+    // Tree Builder Logic
+    const { treeData, flattenedRows } = useMemo(() => {
+        if (!rowKeys.length) return { treeData: [], flattenedRows: [] };
+
+        const root: any = { children: {}, values: grandTotal, key: 'TOTAL', label: 'Grand Total', depth: -1 };
+
+        // 1. Build Tree
+        rowKeys.forEach(rowKey => {
+            const parts = rowKey.split(' > ');
+            let currentNode = root;
+
+            parts.forEach((part, index) => {
+                const isLeaf = index === parts.length - 1;
+                if (!currentNode.children[part]) {
+                    currentNode.children[part] = {
+                        key: parts.slice(0, index + 1).join(' > '),
+                        label: getDisplay(part),
+                        fullPart: part,
+                        depth: index,
+                        children: {},
+                        values: {}, // Will accumulate
+                        isLeaf: false // Will check later
+                    };
+                }
+                currentNode = currentNode.children[part];
+
+                // If this is the specific rowKey from dataMap, it has values (Leaf of the query, but maybe not leaf of tree if we drilled deeper? 
+                // Actually pivotData returns the deepest level keys. So these are leaves.)
+                if (isLeaf) {
+                    currentNode.isLeaf = true;
+                    currentNode.values = dataMap[rowKey]; // Assign direct values
+                }
+            });
+        });
+
+        // 2. Aggregate Values Upwards (Post-Order Traversal)
+        const aggregateNode = (node: any) => {
+            const children = Object.values(node.children);
+            if (children.length === 0) return node.values || {}; // Leaf node
+
+            const aggregatedValues: any = {};
+
+            // Initialize based on first child structure
+            // Or just accum all fields found
+            children.forEach((child: any) => {
+                const childVals = aggregateNode(child);
+                Object.keys(childVals).forEach(colKey => { // colKey is like "2024" or "2024 > Q1" (Columns)
+                    if (!aggregatedValues[colKey]) aggregatedValues[colKey] = {};
+                    const measureObj = childVals[colKey];
+                    if (!measureObj) return;
+
+                    Object.keys(measureObj).forEach(measureKey => {
+                        const val = measureObj[measureKey] || 0;
+                        if (!aggregatedValues[colKey][measureKey]) aggregatedValues[colKey][measureKey] = 0;
+                        aggregatedValues[colKey][measureKey] += val;
+                    });
+                });
+            });
+
+            // If node already had values (it shouldn't if activeRows includes all levels, unless mixed granularity exists), specific logic needed.
+            // For now, assume pivotData returns uniform depth. Parent nodes rely on aggregation.
+            node.values = aggregatedValues;
+            return aggregatedValues;
+        };
+
+        aggregateNode(root);
+
+        // 3. Flatten for Rendering (DFS)
+        const flatten = (node: any, list: any[]) => {
+            // Sort children by key (or part) - Reuse the logic from pivotData sort?
+            // They are keys in an object, so order is not guaranteed. 
+            // We should sort by the original `rowKeys` order preference.
+            // Simple string sort on the 'fullPart' (which includes sorting prefix)
+            const children = Object.values(node.children).sort((a: any, b: any) => a.fullPart.localeCompare(b.fullPart));
+
+            children.forEach((child: any) => {
+                list.push(child);
+                flatten(child, list);
+            });
+        };
+
+        const list: any[] = [];
+        flatten(root, list);
+        return { treeData: root, flattenedRows: list };
+
+    }, [rowKeys, dataMap, grandTotal]);
+
+    // Expansion State
+    const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+
+    // Auto-expand all on load/change
+    useEffect(() => {
+        if (flattenedRows.length > 0) {
+            // Default expand all
+            setExpandedKeys(new Set(flattenedRows.map((r: any) => r.key)));
+        }
+    }, [flattenedRows.length]); // Depend on structure change
+
+    const toggleExpand = (key: string) => {
+        const newSet = new Set(expandedKeys);
+        if (newSet.has(key)) newSet.delete(key);
+        else newSet.add(key);
+        setExpandedKeys(newSet);
+    };
+
+    const rowHeaderWidth = getColWidth('ROW_HEADERS', 240);
+
+    // Early returns moved here to comply with React hooks rules - hooks must be called in the same order every render
     if (!widget.dataSourceId) {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
@@ -160,29 +327,6 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         );
     }
 
-    const valueFields = widget.pivotValues || [];
-    const showValueHeader = valueFields.length > 1;
-
-    // Improved Row Label Renderer
-    const renderRowLabel = (key: string) => {
-        const parts = key.split(' > ');
-        if (parts.length === 1) return <span className="text-white font-bold">{parts[0]}</span>;
-
-        return (
-            <div className="flex flex-row items-center flex-wrap gap-1 leading-tight">
-                {parts.slice(0, -1).map((p, i) => (
-                    <React.Fragment key={i}>
-                        <span className="text-slate-500 font-medium whitespace-nowrap text-[10px]">{p}</span>
-                        <i className="fas fa-chevron-right text-[8px] text-slate-700"></i>
-                    </React.Fragment>
-                ))}
-                <span className="text-white font-bold whitespace-nowrap">{parts[parts.length - 1]}</span>
-            </div>
-        );
-    };
-
-    const rowHeaderWidth = getColWidth('ROW_HEADERS', 240);
-
     return (
         <BaseWidget
             widget={widget}
@@ -191,47 +335,38 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             onDuplicate={onDuplicate}
             isSelected={isSelected}
             isFiltered={isFiltered}
+            loading={isLoading}
+            error={directError || undefined}
             onClick={onClick}
         >
-            <div className={`w-full h-full overflow-auto custom-scrollbar bg-slate-950/30 rounded-lg shadow-inner ${resizingConfig ? 'cursor-col-resize select-none' : ''}`}>
+            <div className={`w-full h-full overflow-auto custom-scrollbar bg-slate-50/50 dark:bg-slate-950/30 rounded-lg shadow-inner font-['Outfit'] ${resizingConfig ? 'cursor-col-resize select-none' : ''}`}>
                 <table className="w-full border-collapse text-[11px] table-fixed min-w-max">
                     <thead className="sticky top-0 z-20">
-                        {/* Primary Column Header Row */}
-                        <tr className="bg-slate-900 shadow-xl border-b border-indigo-500/20">
+                        <tr className="bg-slate-100 dark:bg-slate-900 shadow-xl border-b border-slate-200 dark:border-indigo-500/20">
+                            {/* Unified Rows Column */}
                             <th
-                                className="p-3 border-r border-white/10 text-slate-400 font-black uppercase text-left sticky left-0 bg-slate-900 z-30 relative group"
+                                className="p-3 border-r border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 font-black uppercase text-left sticky left-0 bg-slate-100 dark:bg-slate-900 z-30 relative group"
                                 style={{ width: rowHeaderWidth, minWidth: rowHeaderWidth }}
-                                rowSpan={showValueHeader ? 1 : 2}
+                                rowSpan={showValueHeader ? 2 : 1}
                             >
                                 <div className="flex flex-col gap-1">
                                     <span className="text-[9px] text-indigo-400 opacity-80 uppercase tracking-wider">Rows</span>
                                 </div>
-                                {/* Resizer for Row Headers */}
                                 <div
                                     className="absolute top-0 right-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-500 z-50 transition-colors"
                                     onMouseDown={(e) => handleResizeStart(e, 'ROW_HEADERS', rowHeaderWidth)}
                                 ></div>
                             </th>
+
+                            {/* Column Headers */}
                             {colKeys.map(c => {
-                                // If showValueHeader is TRUE, this is the GROUP header (e.g. 2024). We generally don't resize groups directly, usually leaf columns.
-                                // But if showValueHeader is FALSE, this IS the leaf column.
                                 const isLeaf = !showValueHeader;
-                                // If it's a leaf, the key is standard colKey c
-                                // But wait, if single value, we reuse `c` as key. 
-                                // To handle multiple values case, we rely on secondary row for resizing.
-                                // So we only add resizer here if isLeaf is true.
-
-                                // Actually, if it's a group, we spans multiple cols. Resizing group should resize ALL children? Too complex.
-                                // We only resize LEAF columns.
-
-                                // Case 1: Single Value (isLeaf = true).
                                 const colWidth = isLeaf ? getColWidth(c, 160) : undefined;
-
                                 return (
                                     <th
                                         key={c}
                                         colSpan={valueFields.length}
-                                        className="p-2 border-r border-white/10 text-indigo-300 font-bold text-center bg-slate-900/95 backdrop-blur-md whitespace-nowrap overflow-hidden text-ellipsis relative group"
+                                        className="p-2 border-r border-slate-200 dark:border-white/10 text-indigo-700 dark:text-indigo-300 font-bold text-center bg-slate-100/95 dark:bg-slate-900/95 backdrop-blur-md whitespace-nowrap overflow-hidden text-ellipsis relative group"
                                         style={isLeaf ? { width: colWidth, minWidth: colWidth } : {}}
                                         rowSpan={showValueHeader ? 1 : 2}
                                     >
@@ -247,9 +382,8 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                             })}
                             <th
                                 colSpan={valueFields.length}
-                                className="p-2 border-white/10 text-emerald-400 font-black text-center bg-slate-900 z-20 whitespace-nowrap relative group"
+                                className="p-2 border-slate-200 dark:border-white/10 text-emerald-600 dark:text-emerald-400 font-black text-center bg-slate-100 dark:bg-slate-900 z-20 whitespace-nowrap relative group"
                                 rowSpan={showValueHeader ? 1 : 2}
-                                // If 1 value, this is the leaf Total column.
                                 style={!showValueHeader ? { width: getColWidth('GRAND_TOTAL', 180), minWidth: getColWidth('GRAND_TOTAL', 180) } : {}}
                             >
                                 Total
@@ -262,10 +396,15 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                             </th>
                         </tr>
 
-                        {/* Secondary Value Header Row (Only if > 1 value) */}
+                        {/* Secondary Value Header Row */}
                         {showValueHeader && (
-                            <tr className="bg-slate-800/40 backdrop-blur-md">
-                                <th className="p-2 border-b border-r border-white/10 sticky left-0 bg-[#1e293b] z-30"></th>
+                            <tr className="bg-slate-50/40 dark:bg-slate-800/40 backdrop-blur-md">
+                                {/* Empty cell for nested header under Rows is NOT needed if we used rowSpan=2 above */}
+                                {/* WAIT. If rowSpan=2 for Rows column, we don't need a TH here. */}
+                                {/* BUT logic `colSpan={valueFields.length}` uses `th` for each group column. */}
+                                {/* The previous rows used colSpan logic correct. */}
+                                {/* But here we need to skip the first column (Rows) because it spanned 2 rows. */}
+
                                 {colKeys.map(c => (
                                     valueFields.map(v => {
                                         const uniqueKey = `${c}-${v.field}`;
@@ -273,7 +412,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                         return (
                                             <th
                                                 key={uniqueKey}
-                                                className="p-1 px-2 border-b border-r border-white/5 text-slate-500 font-bold uppercase tracking-tighter text-[9px] whitespace-nowrap relative group"
+                                                className="p-1 px-2 border-b border-r border-slate-200 dark:border-white/5 text-slate-500 font-bold uppercase tracking-tighter text-[9px] whitespace-nowrap relative group"
                                                 style={{ width: width, minWidth: width }}
                                             >
                                                 {v.field}
@@ -291,7 +430,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                     return (
                                         <th
                                             key={uniqueKey}
-                                            className="p-1 px-2 border-b border-white/10 text-slate-500 font-bold uppercase tracking-tighter text-[9px] bg-slate-900/50 whitespace-nowrap relative group"
+                                            className="p-1 px-2 border-b border-slate-200 dark:border-white/10 text-slate-500 font-bold uppercase tracking-tighter text-[9px] bg-slate-100 dark:bg-slate-900/50 whitespace-nowrap relative group"
                                             style={{ width: width, minWidth: width }}
                                         >
                                             {v.field}
@@ -306,39 +445,109 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                         )}
                     </thead>
                     <tbody>
-                        {rowKeys.map(r => (
-                            <tr key={r} className="group hover:bg-indigo-500/10 transition-colors odd:bg-transparent even:bg-white/[0.02]">
-                                <td
-                                    className="p-2 px-3 border-b border-r border-white/10 text-white font-medium sticky left-0 bg-slate-950/95 backdrop-blur-sm group-hover:bg-slate-900 transition-colors z-10 overflow-hidden text-ellipsis align-middle"
-                                    style={{ maxWidth: rowHeaderWidth }}
-                                >
-                                    {renderRowLabel(r)}
-                                </td>
-                                {colKeys.map(c => (
-                                    valueFields.map(v => {
-                                        const val = dataMap[r][c]?.[`${v.field}_${v.aggregation}`];
-                                        const isZero = val === 0;
-                                        const isLeaf = !showValueHeader;
-                                        const key = isLeaf ? c : `${c}-${v.field}`;
-                                        // If isLeaf, get width of c. Else get width of uniqueKey.
-                                        // Wait, getColWidth helper handles lookup.
-                                        const width = getColWidth(key, 160);
+                        {flattenedRows.map((node: any) => {
+                            // Check if visible (parent is expanded)
+                            // We need to check all ancestors. 'flattenedRows' contains all. 
+                            // Quick check: split key, check parts.
+                            // Optimization: In render? No, let's just do it.
+                            const parts = node.key.split(' > ');
+                            let visible = true;
+                            // Check ancestors
+                            for (let i = 1; i < parts.length; i++) {
+                                const parentKey = parts.slice(0, i).join(' > ');
+                                if (!expandedKeys.has(parentKey)) {
+                                    visible = false;
+                                    break;
+                                }
+                            }
+                            if (!visible) return null;
 
-                                        if (widget.hideZeros && isZero) {
-                                            return (
-                                                <td key={`${r}-${c}-${v.field}-${v.aggregation}`}
-                                                    className="p-2 px-3 border-b border-r border-white/5 text-right text-slate-700 font-mono align-middle bg-transparent"
+                            const isLeafNode = Object.keys(node.children || {}).length === 0;
+                            const isExpanded = expandedKeys.has(node.key);
+
+                            return (
+                                <tr key={node.key} className="group hover:bg-indigo-500/5 dark:hover:bg-indigo-500/10 transition-colors odd:bg-transparent even:bg-slate-50/20 dark:even:bg-white/[0.02]">
+                                    <td
+                                        className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/10 text-slate-900 dark:text-white font-medium sticky left-0 bg-white dark:bg-slate-950/95 backdrop-blur-sm group-hover:bg-slate-50 dark:group-hover:bg-slate-900 transition-colors z-10 overflow-hidden text-ellipsis align-middle"
+                                        style={{ maxWidth: rowHeaderWidth, paddingLeft: `${node.depth * 16 + 12}px` }}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            {!isLeafNode && (
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); toggleExpand(node.key); }}
+                                                    className="w-4 h-4 flex items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors"
                                                 >
-                                                    -
+                                                    <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} text-[9px]`}></i>
+                                                </button>
+                                            )}
+                                            {isLeafNode && <span className="w-4"></span>}
+                                            <span className="truncate">{node.label}</span>
+                                        </div>
+                                    </td>
+
+                                    {colKeys.map(c => (
+                                        valueFields.map(v => {
+                                            const val = node.values?.[c]?.[`${v.field}_${v.aggregation}`];
+                                            const isZero = val === 0;
+                                            const key = !showValueHeader ? c : `${c}-${v.field}`;
+                                            const width = getColWidth(key, 160);
+
+                                            if (widget.hideZeros && isZero) {
+                                                return (
+                                                    <td key={`${node.key}-${c}-${v.field}`} className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/5 text-right text-slate-300 dark:text-slate-700 font-mono align-middle bg-transparent">-</td>
+                                                );
+                                            }
+
+                                            const formatted = val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-';
+
+                                            let style: React.CSSProperties = {};
+                                            // Apply conditional formatting
+                                            if (val !== undefined && v.conditionalFormatting) {
+                                                for (const rule of v.conditionalFormatting) {
+                                                    if (checkCondition(val, rule)) {
+                                                        if (rule.textColor) style.color = rule.textColor;
+                                                        if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            return (
+                                                <td key={`${node.key}-${c}-${v.field}`}
+                                                    className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/5 text-right text-slate-600 dark:text-slate-300 font-mono align-middle whitespace-nowrap overflow-hidden text-ellipsis"
+                                                    style={{
+                                                        ...style,
+                                                        maxWidth: width,
+                                                        fontFamily: "'JetBrains Mono', monospace",
+                                                        fontWeight: !isLeafNode ? 'bold' : 'normal',
+                                                        // Only apply default subtotal color if no conditional color is set
+                                                        color: style.color || (!isLeafNode ? '#cbd5e1' : undefined)
+                                                    }}
+                                                >
+                                                    {formatted}
                                                 </td>
                                             );
+                                        })
+                                    ))}
+
+                                    {/* Total Column for this Row */}
+                                    {valueFields.map(v => {
+                                        // Calculate total for this node across all columns
+                                        let rowTotal = 0;
+                                        if (node.values) {
+                                            Object.values(node.values).forEach((colVal: any) => {
+                                                if (colVal) {
+                                                    rowTotal += (colVal[`${v.field}_${v.aggregation}`] || 0);
+                                                }
+                                            });
                                         }
 
-                                        const formatted = val !== undefined ? formatValue(val, v.format || 'standard') : '-';
+                                        const val = rowTotal;
+                                        const key = !showValueHeader ? 'GRAND_TOTAL' : `GRAND_TOTAL-${v.field}`;
 
+                                        // Apply conditional formatting to Row Total
                                         let style: React.CSSProperties = {};
-
-                                        if (val !== undefined && v.conditionalFormatting && v.conditionalFormatting.length > 0) {
+                                        if (val !== undefined && v.conditionalFormatting) {
                                             for (const rule of v.conditionalFormatting) {
                                                 if (checkCondition(val, rule)) {
                                                     if (rule.textColor) style.color = rule.textColor;
@@ -349,53 +558,80 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                         }
 
                                         return (
-                                            <td key={`${r}-${c}-${v.field}-${v.aggregation}`}
-                                                className="p-2 px-3 border-b border-r border-white/5 text-right text-slate-300 font-mono align-middle whitespace-nowrap overflow-hidden text-ellipsis"
-                                                style={{ ...style, maxWidth: width }} // minWidth handled by table-fixed + col width? No, td needs width too often or just relies on th.
-                                            // Actually in fixed table, TD follows TH width. We don't need to set width on TD if TH has it.
-                                            // But let's check.
+                                            <td key={`total-${node.key}-${v.field}`}
+                                                className="p-2 px-3 border-b border-slate-200 dark:border-white/10 text-right text-slate-900 dark:text-white font-bold font-mono bg-slate-50 dark:bg-white/5 align-middle whitespace-nowrap overflow-hidden text-ellipsis"
+                                                style={{
+                                                    ...style,
+                                                    fontFamily: "'JetBrains Mono', monospace"
+                                                }}
                                             >
-                                                {formatted}
+                                                {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
                                             </td>
                                         );
-                                    })
-                                ))}
-                                {/* Row Total Cells */}
-                                {valueFields.map(v => {
-                                    const val = rowTotals[r]?.[`${v.field}_${v.aggregation}`];
-                                    const key = !showValueHeader ? 'GRAND_TOTAL' : `GRAND_TOTAL-${v.field}`;
-                                    // Row totals correspond to the Grand Total column(s) on the right
-
-                                    return (
-                                        <td key={`total-${r}-${v.field}-${v.aggregation}`} className="p-2 px-3 border-b border-white/10 text-right text-white font-bold font-mono bg-white/5 align-middle whitespace-nowrap overflow-hidden text-ellipsis">
-                                            {val !== undefined ? formatValue(val, v.format || 'standard') : '-'}
-                                        </td>
-                                    );
-                                })}
-                            </tr>
-                        ))}
+                                    })}
+                                </tr>
+                            );
+                        })}
                     </tbody>
                     <tfoot className="sticky bottom-0 z-20 shadow-[0_-10px_20px_rgba(0,0,0,0.5)]">
-                        <tr className="bg-slate-900 border-t border-emerald-500/30">
-                            <td className="p-3 border-r border-white/10 text-emerald-400 font-black uppercase sticky left-0 bg-slate-900 z-30">
+                        <tr className="bg-slate-100 dark:bg-slate-900 border-t border-emerald-500/30">
+                            <td className="p-3 border-r border-slate-200 dark:border-white/10 text-emerald-600 dark:text-emerald-400 font-black uppercase sticky left-0 bg-slate-100 dark:bg-slate-900 z-30">
                                 Grand Total
                             </td>
                             {colKeys.map(c => (
                                 valueFields.map(v => {
-                                    const val = colTotals[c]?.[`${v.field}_${v.aggregation}`];
+                                    const val = colTotals?.[c]?.[`${v.field}_${v.aggregation}`];
+
+                                    // Apply conditional formatting to Column Total
+                                    let style: React.CSSProperties = {};
+                                    if (val !== undefined && v.conditionalFormatting) {
+                                        for (const rule of v.conditionalFormatting) {
+                                            if (checkCondition(val, rule)) {
+                                                if (rule.textColor) style.color = rule.textColor;
+                                                if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
+                                                break;
+                                            }
+                                        }
+                                    }
+
                                     return (
-                                        <td key={`total-col-${c}-${v.field}`} className="p-3 border-r border-white/10 text-right text-white font-black font-mono whitespace-nowrap overflow-hidden text-ellipsis">
-                                            {val !== undefined ? formatValue(val, v.format || 'standard') : '-'}
+                                        <td key={`total-col-${c}-${v.field}`}
+                                            className="p-3 border-r border-slate-200 dark:border-white/10 text-right text-slate-900 dark:text-white font-black font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                                            style={{
+                                                ...style,
+                                                fontFamily: "'JetBrains Mono', monospace"
+                                            }}
+                                        >
+                                            {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
                                         </td>
                                     );
                                 })
                             ))}
                             {/* Grand Grand Total */}
                             {valueFields.map(v => {
-                                const val = grandTotal[`${v.field}_${v.aggregation}`];
+                                const val = grandTotal?.[`${v.field}_${v.aggregation}`];
+
+                                // Apply conditional formatting to Grand Grand Total
+                                let style: React.CSSProperties = {};
+                                if (val !== undefined && v.conditionalFormatting) {
+                                    for (const rule of v.conditionalFormatting) {
+                                        if (checkCondition(val, rule)) {
+                                            if (rule.textColor) style.color = rule.textColor;
+                                            if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
+                                            break;
+                                        }
+                                    }
+                                }
+
                                 return (
-                                    <td key={`grand-total-${v.field}`} className="p-3 text-right text-emerald-400 font-black font-mono bg-emerald-500/10 whitespace-nowrap overflow-hidden text-ellipsis">
-                                        {val !== undefined ? formatValue(val, v.format || 'standard') : '-'}
+                                    <td key={`grand-total-${v.field}`}
+                                        className="p-3 text-right text-emerald-600 dark:text-emerald-400 font-black font-mono bg-emerald-500/5 dark:bg-emerald-500/10 whitespace-nowrap overflow-hidden text-ellipsis"
+                                        style={{
+                                            ...style,
+                                            fontFamily: "'JetBrains Mono', monospace"
+                                        }}
+                                    >
+                                        {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
                                     </td>
                                 );
                             })}

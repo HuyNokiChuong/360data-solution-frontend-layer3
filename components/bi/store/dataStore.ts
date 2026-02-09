@@ -15,6 +15,7 @@ interface DataState {
     error: string | null;
     domain: string | null;
     systemLogs: SystemLog[];
+    isHydrated: boolean;
 
     // Actions
     setSelectedDataSource: (id: string | null) => void;
@@ -47,6 +48,12 @@ interface DataState {
     setSyncStatus: (id: string, status: DataSource['syncStatus'], error?: string | null) => void;
     commitDataToStorage: (id: string) => Promise<void>;
 
+    // BigQuery Auth & Connections
+    googleToken: string | null;
+    connections: any[]; // Using any[] for now to match BIMain's Connection[]
+    setGoogleToken: (token: string | null) => void;
+    setConnections: (connections: any[]) => void;
+
     // Logging
     addLog: (log: Omit<SystemLog, 'id' | 'timestamp'>) => void;
     clearLogs: () => void;
@@ -54,14 +61,22 @@ interface DataState {
 
 const getStorageKey = (domain: string | null) => domain ? `${domain}_bi_data_sources` : 'bi_data_sources';
 
-const saveToStorage = async (dataSources: DataSource[], selectedDataSourceId: string | null, domain: string | null, systemLogs: SystemLog[], specificId?: string | 'metadata-only') => {
+const saveToStorage = async (state: DataState, specificId?: string | 'metadata-only') => {
+    const { dataSources, selectedDataSourceId, domain, systemLogs, isHydrated } = state;
+    if (!isHydrated || !domain) return;
+
     try {
+        const storageKey = getStorageKey(domain);
+
         // 1. Always save metadata to localStorage
         const metadata = dataSources.map(ds => {
             const { data, ...rest } = ds;
             return rest;
         });
-        localStorage.setItem(getStorageKey(domain), JSON.stringify({
+
+        // Safety check removed to allow full pruning/reset
+
+        localStorage.setItem(storageKey, JSON.stringify({
             dataSources: metadata,
             selectedDataSourceId,
             systemLogs
@@ -79,7 +94,11 @@ const saveToStorage = async (dataSources: DataSource[], selectedDataSourceId: st
             }
         }
     } catch (e) {
-        console.error('Failed to save data sources', e);
+        if (e instanceof Error && e.name === 'QuotaExceededError') {
+            console.error('🛑 LocalStorage quota exceeded for Data Sources');
+        } else {
+            console.error('Failed to save data sources', e);
+        }
     }
 };
 
@@ -91,48 +110,57 @@ export const useDataStore = create<DataState>((set, get) => ({
     error: null,
     domain: null,
     systemLogs: [],
+    googleToken: null,
+    connections: [],
+    isHydrated: false,
+
+    // Auth Setters
+    setGoogleToken: (googleToken) => set({ googleToken }),
+    setConnections: (connections) => set({ connections }),
 
     // Setters
     setDomain: (domain) => set({ domain }),
-    setSelectedDataSource: (id) => set((state) => {
-        saveToStorage(state.dataSources, id, state.domain, state.systemLogs, 'metadata-only');
-        return { selectedDataSourceId: id };
-    }),
+    setSelectedDataSource: (id) => {
+        set({ selectedDataSourceId: id });
+        saveToStorage(get(), 'metadata-only');
+    },
 
     // Data source actions
-    addDataSource: (dataSource) => set((state) => {
+    addDataSource: (dataSource) => {
         const newDataSource: DataSource = {
-            ...dataSource,
             id: `ds-${Date.now()}`,
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            ...dataSource
         };
 
-        const newState = {
+        set((state) => ({
             dataSources: [...state.dataSources, newDataSource],
             selectedDataSourceId: newDataSource.id
-        };
-        saveToStorage(newState.dataSources, newState.selectedDataSourceId, state.domain, state.systemLogs, newDataSource.id);
-        return newState;
-    }),
+        }));
+        saveToStorage(get(), newDataSource.id);
+    },
 
-    updateDataSource: (id, updates) => set((state) => {
-        const newDataSources = state.dataSources.map(ds =>
-            ds.id === id ? { ...ds, ...updates } : ds
-        );
-        saveToStorage(newDataSources, state.selectedDataSourceId, state.domain, state.systemLogs, id);
-        return { dataSources: newDataSources };
-    }),
+    updateDataSource: (id, updates) => {
+        set((state) => ({
+            dataSources: state.dataSources.map(ds =>
+                ds.id === id ? { ...ds, ...updates } : ds
+            )
+        }));
+        saveToStorage(get(), id);
+    },
 
-    deleteDataSource: (id) => set((state) => {
+    deleteDataSource: (id) => {
+        const state = get();
         const newDataSources = state.dataSources.filter(ds => ds.id !== id);
         const newSelectedId = state.selectedDataSourceId === id ? null : state.selectedDataSourceId;
-        saveToStorage(newDataSources, newSelectedId, state.domain, state.systemLogs, 'metadata-only');
-        PersistentStorage.delete(`ds_data_${id}`);
-        return {
+
+        set({
             dataSources: newDataSources,
             selectedDataSourceId: newSelectedId
-        };
-    }),
+        });
+        saveToStorage(get(), 'metadata-only');
+        PersistentStorage.delete(`ds_data_${id}`);
+    },
 
     // Load CSV file
     loadCSVFile: async (file) => {
@@ -151,13 +179,12 @@ export const useDataStore = create<DataState>((set, get) => ({
                 createdAt: new Date().toISOString()
             };
 
-            const newState = {
-                dataSources: [...get().dataSources, dataSource],
+            set((state) => ({
+                dataSources: [...state.dataSources, dataSource],
                 selectedDataSourceId: dataSource.id,
                 loading: false
-            };
-            saveToStorage(newState.dataSources, newState.selectedDataSourceId, get().domain, get().systemLogs, dataSource.id);
-            set(newState);
+            }));
+            saveToStorage(get(), dataSource.id);
         } catch (error) {
             set({
                 error: error instanceof Error ? error.message : 'Failed to load CSV file',
@@ -183,13 +210,12 @@ export const useDataStore = create<DataState>((set, get) => ({
                 createdAt: new Date().toISOString()
             };
 
-            const newState = {
-                dataSources: [...get().dataSources, dataSource],
+            set((state) => ({
+                dataSources: [...state.dataSources, dataSource],
                 selectedDataSourceId: dataSource.id,
                 loading: false
-            };
-            saveToStorage(newState.dataSources, newState.selectedDataSourceId, get().domain, get().systemLogs, dataSource.id);
-            set(newState);
+            }));
+            saveToStorage(get(), dataSource.id);
         } catch (error) {
             set({
                 error: error instanceof Error ? error.message : 'Failed to load JSON file',
@@ -200,7 +226,7 @@ export const useDataStore = create<DataState>((set, get) => ({
 
     // Load BigQuery table
     loadBigQueryTable: (connectionId, tableName, datasetName, data, schema, totalRows) => {
-        const { dataSources, domain } = get();
+        const { dataSources } = get();
 
         // Find existing data source for this specific table
         const existingId = dataSources.find(ds =>
@@ -239,11 +265,10 @@ export const useDataStore = create<DataState>((set, get) => ({
                 createdAt: new Date().toISOString()
             };
 
-            const newDataSources = [...get().dataSources, dataSource];
-            saveToStorage(newDataSources, get().selectedDataSourceId, domain, get().systemLogs, dataSource.id);
-            set({
-                dataSources: newDataSources,
-            });
+            set((state) => ({
+                dataSources: [...state.dataSources, dataSource],
+            }));
+            saveToStorage(get(), dataSource.id);
 
             return dataSource.id;
         }
@@ -273,50 +298,46 @@ export const useDataStore = create<DataState>((set, get) => ({
             if (dsIndex === -1) return state;
 
             const ds = state.dataSources[dsIndex];
+
+            // MEMORY OPTIMIZATION
+            ds.data.push(...newRows);
+
             const finalTotal = totalRows !== undefined ? totalRows : (ds.totalRows || 0);
 
-            // Optimization: Avoid large array spreads/concat if possible
-            // In a real app with 8M rows, we'd use a different storage model, 
-            // but for now let's at least make the state update cleaner
-            const combinedData = [...ds.data, ...newRows];
+            if (finalTotal > 0 && ds.data.length > finalTotal) {
+                ds.data.splice(finalTotal);
+            }
 
-            // CAPPING & DEDUPLICATION GUARD
-            const results = finalTotal > 0 && combinedData.length > finalTotal
-                ? combinedData.slice(0, finalTotal)
-                : combinedData;
+            const isLoaded = finalTotal > 0 ? ds.data.length >= finalTotal : ds.isLoaded;
 
-            const isLoaded = finalTotal > 0 ? results.length >= finalTotal : ds.isLoaded;
-
-            const updatedDs = {
+            const newDataSources = [...state.dataSources];
+            newDataSources[dsIndex] = {
                 ...ds,
-                data: results,
                 totalRows: finalTotal,
                 isLoaded,
                 lastRefresh: new Date().toISOString()
             };
 
-            const newDataSources = [...state.dataSources];
-            newDataSources[dsIndex] = updatedDs;
-
-            // Save progress metadata to localStorage (so it survives F5)
-            saveToStorage(newDataSources, state.selectedDataSourceId, state.domain, state.systemLogs, 'metadata-only');
-
-            // PERIODIC IDB SAVE: Save to IndexedDB every ~50k rows (approx every append if chunk is 50k)
-            // ensuring we don't lose too much progress on F5
-            PersistentStorage.set(`ds_data_${id}`, results).catch(e => console.error("Periodic IDB save failed", e));
-
             return { dataSources: newDataSources };
         });
+
+        // Save metadata
+        saveToStorage(get(), 'metadata-only');
+
+        // PERIODIC IDB SAVE
+        const ds = get().dataSources.find(d => d.id === id);
+        if (ds && ds.data) {
+            PersistentStorage.set(`ds_data_${id}`, ds.data).catch(e => console.error("Periodic IDB save failed", e));
+        }
     },
 
     clearTableData: (id) => {
-        set((state) => {
-            const newDataSources = state.dataSources.map(ds =>
+        set((state) => ({
+            dataSources: state.dataSources.map(ds =>
                 ds.id === id ? { ...ds, data: [], isLoaded: false, isLoadingPartial: false, totalRows: 0 } : ds
-            );
-            saveToStorage(newDataSources, state.selectedDataSourceId, state.domain, state.systemLogs, 'metadata-only');
-            return { dataSources: newDataSources };
-        });
+            )
+        }));
+        saveToStorage(get(), 'metadata-only');
     },
 
     setTableLoadingState: (id, isLoading) => {
@@ -343,13 +364,12 @@ export const useDataStore = create<DataState>((set, get) => ({
     },
 
     clearAllBigQueryData: () => {
-        set((state) => {
-            const newDataSources = state.dataSources.map(ds =>
+        set((state) => ({
+            dataSources: state.dataSources.map(ds =>
                 ds.type === 'bigquery' ? { ...ds, isLoaded: false, data: [], isLoadingPartial: false, totalRows: 0 } : ds
-            );
-            saveToStorage(newDataSources, state.selectedDataSourceId, state.domain, state.systemLogs, 'metadata-only');
-            return { dataSources: newDataSources };
-        });
+            )
+        }));
+        saveToStorage(get(), 'metadata-only');
     },
 
     loadFromStorage: async (domain) => {
@@ -361,20 +381,19 @@ export const useDataStore = create<DataState>((set, get) => ({
                 const selectedDataSourceId = parsed.selectedDataSourceId || null;
                 const systemLogs = parsed.systemLogs || [];
 
-                // Restore data from IndexedDB in parallel
                 const fullSources = await Promise.all(metadataSources.map(async (ds: any) => {
                     const cachedData = await PersistentStorage.get(`ds_data_${ds.id}`);
                     return {
                         ...ds,
                         data: cachedData || [],
                         isLoaded: ds.isLoaded && !!cachedData,
-                        isLoadingPartial: ds.syncStatus === 'syncing' // Recovery mode: active if it was syncing
+                        isLoadingPartial: ds.syncStatus === 'syncing'
                     };
                 }));
 
-                set({ dataSources: fullSources, selectedDataSourceId, domain, systemLogs });
+                set({ dataSources: fullSources, selectedDataSourceId, domain, systemLogs, isHydrated: true });
             } else {
-                set({ dataSources: [], selectedDataSourceId: null, domain });
+                set({ dataSources: [], selectedDataSourceId: null, domain, isHydrated: true });
             }
         } catch (e) {
             console.error('Failed to load data sources', e);
@@ -382,25 +401,12 @@ export const useDataStore = create<DataState>((set, get) => ({
     },
 
     commitDataToStorage: async (id) => {
-        const { dataSources, selectedDataSourceId, domain, systemLogs } = get();
-        await saveToStorage(dataSources, selectedDataSourceId, domain, systemLogs, id);
+        await saveToStorage(get(), id);
     },
 
     addLog: (log) => {
-        const newLog: SystemLog = {
-            ...log,
-            id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            timestamp: new Date().toISOString()
-        };
-        set((state) => {
-            const nextLogs = [newLog, ...state.systemLogs].slice(0, 100);
-            saveToStorage(state.dataSources, state.selectedDataSourceId, state.domain, nextLogs, 'metadata-only');
-            return { systemLogs: nextLogs };
-        });
+        if (!log) return;
     },
 
-    clearLogs: () => set((state) => {
-        saveToStorage(state.dataSources, state.selectedDataSourceId, state.domain, [], 'metadata-only');
-        return { systemLogs: [] };
-    })
+    clearLogs: () => set({ systemLogs: [] })
 }));

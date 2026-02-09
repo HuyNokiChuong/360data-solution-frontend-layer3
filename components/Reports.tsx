@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { SyncedTable, Connection, ReportSession } from '../types';
 import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
@@ -34,6 +34,7 @@ const Reports: React.FC<ReportsProps> = ({
 }) => {
   const domain = currentUser.email.split('@')[1] || 'default';
   const [isAuthRequired, setIsAuthRequired] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>(() => {
     const saved = localStorage.getItem(`report_selection_${domain}`);
@@ -91,26 +92,68 @@ const Reports: React.FC<ReportsProps> = ({
   }, [googleToken, connections]);
 
   // Handle Send Message
-  const handleSend = async (text: string, isRetry = false, providedToken?: string, model?: any) => {
-    if (!text.trim() || loading) return;
+  const handleSend = async (text: string, model?: any, isRetry = false, providedToken?: string) => {
+    if (!text.trim() || (loading && !isRetry)) return;
+
+    const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
+    const clientId = process.env.GOOGLE_CLIENT_ID || '';
+    const { getTokenForConnection, getGoogleToken } = await import('../services/googleAuth');
+
+    // Stop previous job if any
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    let targetSessionId = activeSessionId;
 
     // 1. Add User Message (only if not a retry)
-    const userMsg = { id: Date.now().toString(), role: 'user' as const, content: text };
     if (!isRetry) {
-      setSessions((prev: ReportSession[]) => prev.map(s =>
-        s.id === activeSessionId
-          ? { ...s, messages: [...s.messages, userMsg], title: s.messages.length === 0 ? text.substring(0, 30) : s.title }
-          : s
-      ));
+      const userMsg = { id: `u-${Date.now()}`, role: 'user' as const, content: text };
+
+      setSessions((prev: ReportSession[]) => {
+        // Find current session
+        const sessionExists = prev.some(s => s.id === targetSessionId);
+
+        if (!sessionExists) {
+          console.warn('⚠️ Active session not found. Falling back to first or new session.');
+          if (prev.length > 0) {
+            targetSessionId = prev[0].id; // Update the tracking ID
+            setActiveSessionId(targetSessionId);
+          } else {
+            // Create a new session if none exist
+            const newId = `s-${Date.now()}`;
+            targetSessionId = newId; // Update the tracking ID
+            const newSession: ReportSession = {
+              id: newId,
+              title: text.substring(0, 50),
+              timestamp: new Date().toLocaleDateString(),
+              messages: [userMsg]
+            };
+            setActiveSessionId(newId);
+            return [newSession];
+          }
+        }
+
+        return prev.map(s =>
+          s.id === targetSessionId
+            ? {
+              ...s,
+              messages: [...s.messages, userMsg],
+              title: (s.messages.length === 0 || s.title === 'New Analysis') ? text.substring(0, 50) : s.title
+            }
+            : s
+        );
+      });
+      setLoading(true);
     }
 
-    setLoading(true);
-    const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
-
     try {
-      // 2. Prepare Context for AI - FILTERED by selectedTableIds
+      setLoading(true);
       const activeTables = tables.filter(t => selectedTableIds.includes(t.id));
       const tableNames = (activeTables || []).map(t => t.tableName);
+
+      const activeSession = sessions.find(s => s.id === activeSessionId);
 
       let schemaStr = "";
       if (activeTables && activeTables.length > 0) {
@@ -121,11 +164,7 @@ const Reports: React.FC<ReportsProps> = ({
         }).join(' | ');
       }
 
-      // Token logic - Try to use providedToken, or get valid token (incl. silent refresh)
       let token = providedToken || googleToken;
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const { getTokenForConnection, getGoogleToken } = await import('../services/googleAuth');
-
       if (bqConn) {
         const validToken = await getTokenForConnection(bqConn, clientId);
         if (validToken) {
@@ -141,33 +180,26 @@ const Reports: React.FC<ReportsProps> = ({
         }
       }
 
-      const options = (bqConn && token) ? { token, projectId: bqConn.projectId } : undefined;
+      const options = (bqConn && token) ? { token, projectId: bqConn.projectId, signal: abortControllerRef.current.signal } : { signal: abortControllerRef.current.signal };
 
-      // 3. Call AI Service - Pass selected model
-      const result = await generateReportInsight(
-        model,
-        text,
-        schemaStr,
-        tableNames,
-        options
-      );
+      // 3. Call AI Service
+      const result = await generateReportInsight(model, text, schemaStr, tableNames, options);
 
-      // 3.5 DETECT AUTH ERRORS IN RESULTS (Specific to BQ error messages)
+      // 3.5 DETECT AUTH ERRORS IN RESULTS
       const hasAuthError =
-        result.dashboard.kpis.some(k => k.value?.toString().toLowerCase().includes('invalid authentication') || k.value?.toString().toLowerCase().includes('expired') || k.value?.toString().toLowerCase().includes('unauthorized')) ||
+        result.dashboard.kpis.some(k => k.value?.toString().toLowerCase().includes('authentication') || k.value?.toString().toLowerCase().includes('expired') || k.value?.toString().toLowerCase().includes('unauthorized')) ||
         result.dashboard.charts.some(c => c.data.length === 0 && (c.insight?.toString().toLowerCase().includes('authentication') || c.insight?.toString().toLowerCase().includes('unauthorized')));
 
       if (hasAuthError && !isRetry && bqConn) {
-        console.warn("Detected expired/invalid token in BigQuery results. Attempting auto-reauth...");
+        console.warn("Detected expired/invalid token. Attempting auto-reauth...");
         const newToken = await getGoogleToken(clientId);
         setGoogleToken(newToken);
-        // Recursively retry once with new token PASSING IT EXPLICITLY
-        return handleSend(text, true, newToken);
+        return await handleSend(text, model, true, newToken);
       }
 
       // 4. Add AI Response
       const aiMsg = {
-        id: (Date.now() + 1).toString(),
+        id: `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         role: 'assistant' as const,
         content: result.dashboard.summary,
         visualData: result.dashboard,
@@ -175,43 +207,83 @@ const Reports: React.FC<ReportsProps> = ({
         executionTime: result.executionTime
       };
 
-      setSessions((prev: ReportSession[]) => prev.map(s =>
-        s.id === activeSessionId ? { ...s, messages: [...s.messages, aiMsg] } : s
-      ));
+      setSessions((prev: ReportSession[]) => {
+        // Use the tracked targetSessionId
+        const sessionToUpdate = prev.find(s => s.id === targetSessionId) || prev[0];
+        if (!sessionToUpdate) return prev;
+
+        return prev.map(s => {
+          if (s.id !== sessionToUpdate.id) return s;
+          if (s.messages.some(m => m.id === aiMsg.id)) return s;
+          return { ...s, messages: [...s.messages, aiMsg] };
+        });
+      });
+      abortControllerRef.current = null;
 
     } catch (e: any) {
       console.error("Report Generation Error:", e);
-
       const isAuthError = e.message?.toLowerCase().includes('authentication') || e.message?.toLowerCase().includes('credentials') || e.message?.toLowerCase().includes('unauthorized');
 
-      // If the top-level call failed with auth error, also try to re-auth
       if (isAuthError && !isRetry && bqConn) {
         try {
-          console.warn("Top-level auth error detected. Retrying with fresh token...");
-          const { getGoogleToken } = await import('../services/googleAuth');
-          const newToken = await getGoogleToken(process.env.GOOGLE_CLIENT_ID || '');
+          const newToken = await getGoogleToken(clientId);
           setGoogleToken(newToken);
-          return handleSend(text, true, newToken);
+          return await handleSend(text, model, true, newToken);
         } catch (authErr) {
-          console.error("Manual re-auth failed after BQ error", authErr);
+          console.error("Manual re-auth failed", authErr);
         }
       }
 
+      const rawMsg = e.message || "Unknown error";
+      const isLeaked = rawMsg.toLowerCase().includes('leaked');
       const errorMsg = {
-        id: Date.now().toString(),
+        id: `err-${Date.now()}`,
         role: 'assistant' as const,
-        content: `I encountered an error: ${e.message || "Unknown error"}. 
-        ${isAuthError ? "It looks like your session expired. Please try again to refresh your connection." : ""}`
+        content: isLeaked
+          ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
+          : `Đã có lỗi xảy ra: ${rawMsg}. ${isAuthError ? "Có vẻ phiên làm việc của bạn đã hết hạn. Hãy thử lại để làm mới kết nối." : ""}`
       };
-      setSessions((prev: ReportSession[]) => prev.map(s =>
-        s.id === activeSessionId ? { ...s, messages: [...s.messages, errorMsg] } : s
-      ));
+      setSessions((prev: ReportSession[]) => {
+        const sessionToUpdate = prev.find(s => s.id === targetSessionId) || prev[0];
+        if (!sessionToUpdate) return prev;
+        return prev.map(s => s.id === sessionToUpdate.id ? { ...s, messages: [...s.messages, errorMsg] } : s);
+      });
     } finally {
-      if (!isRetry) setLoading(false);
+      if (!isRetry) {
+        setLoading(false);
+        abortControllerRef.current = null;
+      }
     }
   };
 
-  const activeSession = sessions.find(s => s.id === activeSessionId);
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setLoading(false);
+    }
+  };
+
+  const handleEditMessage = (messageId: string, newText: string) => {
+    setSessions((prev: ReportSession[]) => {
+      return prev.map(s => {
+        if (s.id !== activeSessionId) return s;
+
+        const msgIndex = s.messages.findIndex(m => m.id === messageId);
+        if (msgIndex === -1) return s;
+
+        // Remove subsequent messages
+        const updatedMessages = s.messages.slice(0, msgIndex);
+        return { ...s, messages: updatedMessages };
+      });
+    });
+
+    // Re-send with new text
+    const session = sessions.find(s => s.id === activeSessionId);
+    if (session) {
+      handleSend(newText);
+    }
+  };
 
   const handleRenameSession = (id: string, newTitle: string) => {
     setSessions((prev: ReportSession[]) => prev.map(s => s.id === id ? { ...s, title: newTitle } : s));
@@ -431,6 +503,8 @@ const Reports: React.FC<ReportsProps> = ({
     }
   };
 
+  const activeSession = sessions.find(s => s.id === activeSessionId);
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {isAuthRequired && (
@@ -447,7 +521,7 @@ const Reports: React.FC<ReportsProps> = ({
           </button>
         </div>
       )}
-      <div className="flex h-full bg-[#020617] overflow-hidden">
+      <div className="flex h-full bg-white dark:bg-[#020617] overflow-hidden">
         <ReportSidebar
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -483,6 +557,8 @@ const Reports: React.FC<ReportsProps> = ({
           onSelectAllTables={() => setSelectedTableIds(tables.map(t => t.id))}
           onDeselectAllTables={() => setSelectedTableIds([])}
           onReauth={connections.find(c => c.type === 'BigQuery' && c.projectId)?.authType === 'GoogleMail' ? handleReauth : undefined}
+          onStop={handleStop}
+          onEditMessage={handleEditMessage}
           isAdmin={currentUser.role === 'Admin'}
         />
       </div>

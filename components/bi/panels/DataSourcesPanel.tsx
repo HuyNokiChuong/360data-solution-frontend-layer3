@@ -248,11 +248,11 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
                                             <div className="text-[9px] text-right">
                                                 {ds.syncStatus === 'ready' && ds.lastSyncAt ? (
                                                     <span className="text-emerald-500/60 block text-[7px] uppercase font-black tracking-tighter mb-0.5">
-                                                        Đã chạy xong • {new Date(ds.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        Sẵn sàng • {new Date(ds.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                                     </span>
                                                 ) : (ds.syncStatus === 'syncing' || ds.isLoadingPartial) ? (
                                                     <span className="text-blue-400 block text-[7px] uppercase font-black tracking-tighter mb-0.5 animate-pulse">
-                                                        Đang chạy...
+                                                        Đang kết nối...
                                                     </span>
                                                 ) : ds.syncStatus === 'queued' ? (
                                                     <span className="text-amber-400/80 block text-[7px] uppercase font-black tracking-tighter mb-0.5">
@@ -260,27 +260,35 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
                                                     </span>
                                                 ) : ds.syncStatus === 'error' ? (
                                                     <span className="text-red-400 block text-[7px] uppercase font-black tracking-tighter mb-0.5">
-                                                        Lỗi đồng bộ
+                                                        Lỗi kết nối
                                                     </span>
                                                 ) : null}
-                                                <span className={`font-mono ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`}>
-                                                    {(ds.data?.length || 0).toLocaleString()}
-                                                </span>
-                                                <span className="text-slate-700 mx-0.5">/</span>
-                                                <span className="text-slate-600">
-                                                    {(ds.totalRows || ds.data?.length || 0).toLocaleString()} rows
-                                                </span>
+                                                {ds.type === 'bigquery' ? (
+                                                    <span className="text-indigo-400 font-bold uppercase tracking-widest text-[8px]">
+                                                        Direct Query
+                                                    </span>
+                                                ) : (
+                                                    <>
+                                                        <span className={`font-mono ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`}>
+                                                            {(ds.data?.length || 0).toLocaleString()}
+                                                        </span>
+                                                        <span className="text-slate-700 mx-0.5">/</span>
+                                                        <span className="text-slate-600">
+                                                            {(ds.totalRows || ds.data?.length || 0).toLocaleString()} rows
+                                                        </span>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
 
-                                    {/* Progress bar */}
+                                    {/* Progress bar (Only for local file sync) */}
                                     {
-                                        !!(ds.isLoadingPartial || (ds.totalRows && ds.totalRows > ds.data.length)) && (
+                                        ds.type !== 'bigquery' && !!(ds.isLoadingPartial || (ds.totalRows && ds.totalRows > ds.data?.length)) && (
                                             <div className="mt-1.5 w-full h-0.5 bg-slate-800 rounded-full overflow-hidden">
                                                 <div
                                                     className="h-full bg-indigo-500 shadow-[0_0_5px_rgba(99,102,241,0.5)] transition-all duration-300"
-                                                    style={{ width: `${Math.min(100, Math.round((ds.data.length / (ds.totalRows || 1)) * 100))}%` }}
+                                                    style={{ width: `${Math.min(100, Math.round((ds.data?.length / (ds.totalRows || 1)) * 100))}%` }}
                                                 />
                                             </div>
                                         )

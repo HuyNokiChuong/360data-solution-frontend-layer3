@@ -1,17 +1,16 @@
-
 import React, { useMemo } from 'react';
-import { formatValue } from '../engine/calculations';
+import { aggregate, formatValue } from '../engine/calculations';
+import { formatBIValue } from '../engine/utils';
+import { applyFilters } from '../engine/dataProcessing';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
-import { BIWidget, DrillDownState } from '../types';
+import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
-import { aggregate, applyFilters } from '../engine/dataProcessing';
-import { useWidgetData } from '../hooks/useWidgetData';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
-import { DrillDownService } from '../engine/DrillDownService';
 import EmptyChartState from './EmptyChartState';
-import { CHART_COLORS } from '../utils/chartColors';
+import { useChartColors } from '../utils/chartColors';
 
 interface GaugeWidgetProps {
     widget: BIWidget;
@@ -33,68 +32,77 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
     onClick
 }) => {
     const { getDataSource } = useDataStore(); // Kept for metadata
-    const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, getDrillDown, setDrillDown } = useFilterStore();
+    const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
-    const widgetData = useWidgetData(widget);
 
-    const drillDownState = getDrillDown(widget.id);
-    const crossFilters = getCrossFiltersForWidget(widget.id);
+    // Switch to useDirectQuery
+    const { data: directData, isLoading, error: directError } = useDirectQuery(widget);
+    const widgetData = directData;
+
+    const dataSource = useMemo(() => {
+        return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
+    }, [widget.dataSourceId, getDataSource]);
+
     const isFiltered = isWidgetFiltered(widget.id);
 
-    const { value, percentage, maxValue, loading, error } = useMemo(() => {
-        if (!widgetData.length || !widget.yAxis?.[0]) {
-            return { value: 0, percentage: 0, maxValue: 100, loading: false, error: 'Please configure metric field' };
+    const { value, percentage, maxValue, error } = useMemo(() => {
+        if (!widgetData || widgetData.length === 0) {
+            return { value: 0, percentage: 0, maxValue: 100, error: null };
         }
 
         try {
-            // Apply widget-level filters
-            let filteredData = widgetData;
-            if (widget.filters && widget.filters.length > 0) {
-                filteredData = applyFilters(filteredData, widget.filters);
-            }
-
-            // Apply cross-filters
-            const crossFilters = getCrossFiltersForWidget(widget.id);
-            if (crossFilters.length > 0) {
-                filteredData = applyFilters(filteredData, crossFilters);
-            }
-
-            // Apply global filters
-            if (activeDashboard?.globalFilters?.length) {
-                const relevantGlobal = activeDashboard.globalFilters.filter(gf =>
-                    !gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)
-                );
-                if (relevantGlobal.length > 0) {
-                    filteredData = applyFilters(filteredData, relevantGlobal as any[]);
-                }
-            }
-
-            // Calculate value
-            const field = widget.yAxis[0];
+            const field = widget.yAxis?.[0];
             const aggregation = widget.aggregation || 'sum';
-            const calculatedValue = aggregate(filteredData, field, aggregation);
+            if (!field) return { value: 0, percentage: 0, maxValue: 100, error: 'Configure metric field' };
 
-            // Calculate max value (comparison)
+            let calculatedValue: number;
             let maxVal = 100;
-            if (widget.comparisonValue) {
-                // Check if it's a numeric string or a field name
-                const num = parseFloat(widget.comparisonValue);
-                if (!isNaN(num)) {
-                    maxVal = num;
+
+            if (dataSource?.type === 'bigquery') {
+                const row = widgetData[0];
+                calculatedValue = row[field];
+
+                if (widget.comparisonValue) {
+                    const num = parseFloat(widget.comparisonValue);
+                    maxVal = !isNaN(num) ? num : (row[widget.comparisonValue] || 100);
                 } else {
-                    // It's a field name, aggregate it
-                    maxVal = aggregate(filteredData, widget.comparisonValue, aggregation);
+                    maxVal = calculatedValue > 0 ? calculatedValue * 1.5 : 100;
                 }
             } else {
-                maxVal = calculatedValue > 0 ? calculatedValue * 1.5 : 100;
+                // Local processing
+                let filteredData = widgetData;
+                if (widget.filters && widget.filters.length > 0) {
+                    filteredData = applyFilters(filteredData, widget.filters);
+                }
+                const crossFilters = getCrossFiltersForWidget(widget.id);
+                if (crossFilters.length > 0) {
+                    filteredData = applyFilters(filteredData, crossFilters);
+                }
+                if (activeDashboard?.globalFilters?.length) {
+                    const relevantGlobal = activeDashboard.globalFilters.filter(gf =>
+                        !gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)
+                    );
+                    if (relevantGlobal.length > 0) {
+                        filteredData = applyFilters(filteredData, relevantGlobal as any[]);
+                    }
+                }
+
+                calculatedValue = aggregate(filteredData, field, aggregation);
+
+                if (widget.comparisonValue) {
+                    const num = parseFloat(widget.comparisonValue);
+                    maxVal = !isNaN(num) ? num : aggregate(filteredData, widget.comparisonValue, aggregation);
+                } else {
+                    maxVal = calculatedValue > 0 ? calculatedValue * 1.5 : 100;
+                }
             }
 
             const pct = maxVal > 0 ? Math.min((calculatedValue / maxVal) * 100, 100) : 0;
-            return { value: calculatedValue, percentage: pct, maxValue: maxVal, loading: false, error: null };
+            return { value: calculatedValue, percentage: pct, maxValue: maxVal, error: null };
         } catch (err: any) {
-            return { value: 0, percentage: 0, maxValue: 100, loading: false, error: err.message };
+            return { value: 0, percentage: 0, maxValue: 100, error: err.message };
         }
-    }, [widget, widgetData, allDashboardFilters, activeDashboard?.globalFilters]);
+    }, [widgetData, dataSource?.type, allDashboardFilters, activeDashboard?.globalFilters]);
 
     // Gauge chart data
     const gaugeData = [
@@ -102,15 +110,17 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
         { name: 'Remaining', value: 100 - percentage }
     ];
 
+    const { chartColors, isDark } = useChartColors();
+
     // Color based on percentage
-    const getColor = (pct: number) => {
-        if (pct >= 80) return CHART_COLORS[4]; // Emerald/Green
-        if (pct >= 50) return CHART_COLORS[3]; // Amber/Yellow
-        return CHART_COLORS[2]; // Pink/Red
+    const getGaugeColor = (pct: number) => {
+        if (pct >= 80) return chartColors[2]; // Emerald/Green if chartColors[2] is green
+        if (pct >= 50) return chartColors[1]; // Amber/Yellow
+        return chartColors[3]; // Rose/Red
     };
 
-    const mainColor = getColor(percentage);
-    const COLORS = [mainColor, '#1e293b'];
+    const mainColor = getGaugeColor(percentage);
+    const COLORS = [mainColor, isDark ? '#1e293b' : '#f1f5f9'];
 
     return (
         <BaseWidget
@@ -120,8 +130,8 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
             onDuplicate={onDuplicate}
             isSelected={isSelected}
             isFiltered={isFiltered}
-            loading={loading}
-            error={error && error !== 'Please configure metric field' ? error : undefined}
+            loading={isLoading}
+            error={error && error !== 'Configure metric field' ? error : (directError || undefined)}
             onClick={onClick}
         >
             {!widget.yAxis?.[0] ? (
@@ -149,15 +159,29 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                     </ResponsiveContainer>
 
                     <div className="text-center mt-[-20%]">
-                        <div className="text-3xl font-black" style={{ color: mainColor }}>
-                            {formatValue(value, widget.valueFormat || 'standard')}
+                        <div
+                            className="font-black max-w-full break-words px-2"
+                            style={{
+                                color: mainColor,
+                                fontFamily: 'Outfit',
+                                fontSize: (() => {
+                                    const formatted = formatBIValue(value, widget.valueFormat || 'standard');
+                                    const len = formatted.length;
+                                    if (len <= 10) return '1.875rem'; // text-3xl
+                                    if (len <= 15) return '1.5rem';   // text-2xl
+                                    if (len <= 20) return '1.25rem';  // text-xl
+                                    return '1.125rem';                // text-lg
+                                })()
+                            }}
+                        >
+                            {formatBIValue(value, widget.valueFormat || 'standard')}
                         </div>
                         <div className="text-sm text-slate-400 mt-1">
                             {percentage.toFixed(1)}%
                         </div>
                         {widget.comparisonValue && (
-                            <div className="text-xs text-slate-500 mt-1">
-                                Target: {formatValue(maxValue, widget.valueFormat || 'standard')}
+                            <div className="text-xs text-slate-500 mt-1" style={{ fontFamily: 'Outfit' }}>
+                                Target: {formatBIValue(maxValue, widget.valueFormat || 'standard')}
                             </div>
                         )}
                     </div>

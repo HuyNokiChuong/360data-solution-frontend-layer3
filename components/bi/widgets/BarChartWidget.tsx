@@ -3,19 +3,20 @@
 // ============================================
 
 import React, { useMemo } from 'react';
-import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
+import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend, LabelList } from 'recharts';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { formatValue } from '../engine/calculations';
-import { useAggregatedData } from '../hooks/useAggregatedData';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import CustomTooltip from './CustomTooltip';
 import EmptyChartState from './EmptyChartState';
 import { DrillDownService } from '../engine/DrillDownService';
-import { DrillDownState } from '../types';
-import { CHART_COLORS } from '../utils/chartColors';
+import { useChartColors } from '../utils/chartColors';
+import { formatBIValue } from '../engine/utils';
+import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import ChartLegend from './ChartLegend';
 
 interface BarChartWidgetProps {
@@ -30,6 +31,10 @@ interface BarChartWidgetProps {
     onClick?: (e: React.MouseEvent) => void;
 }
 
+import ChartContextMenu from './ChartContextMenu';
+import AIAnalysisModal from '../modals/AIAnalysisModal';
+import { analyzeChartTrend } from '../../../services/ai';
+
 const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     widget,
     onEdit,
@@ -41,6 +46,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     isDraggingOrResizing = false,
     onClick
 }) => {
+    // ... existing hooks ...
     const isStackedType = widget.chartType === 'stackedBar' || widget.stacked === true;
     const { getDataSource } = useDataStore();
     const { crossFilters: allDashboardFilters, getFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
@@ -48,39 +54,82 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     const drillDownState = drillDowns[widget.id];
-    const xField = DrillDownService.getCurrentField(widget, drillDownState);
-
-    const yField = widget.yAxis?.[0] || widget.measures?.[0] || '';
+    const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
+    const xField = xFields[0] || '';
 
     // NEW: Centralized Aggregation Hook
-    const { chartData, series, lineSeries, error } = useAggregatedData(widget);
+    const { chartData, series, lineSeries, error, isLoading } = useDirectQuery(widget);
+
+    // --- AI ANALYSIS STATE ---
+    const [contextMenu, setContextMenu] = React.useState<{ x: number, y: number } | null>(null);
+    const [isAIModalOpen, setIsAIModalOpen] = React.useState(false);
+    const [aiIsLoading, setAiIsLoading] = React.useState(false);
+    const [aiResult, setAiResult] = React.useState<string | null>(null);
+    const [aiError, setAiError] = React.useState<string | null>(null);
+
+    const handleContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleAnalyzeTrend = async (provider?: string, modelId?: string) => {
+        setIsAIModalOpen(true);
+
+        // If called without provider (initial click), just open modal and reset state
+        // The Modal's useEffect will trigger the actual analysis
+        if (!provider) {
+            setAiResult(null);
+            setAiError(null);
+            setAiIsLoading(false);
+            return;
+        }
+
+        setAiIsLoading(true);
+
+        try {
+            const dataKeys = [...series, ...lineSeries];
+            const context = `
+                Chart Type: ${widget.chartType}
+                Widget Filters: ${JSON.stringify(widget.filters || [])}
+                Dashboard Filters: ${JSON.stringify(allDashboardFilters.filter(f => f.sourceWidgetId !== widget.id))}
+                Drill Down Level: ${drillDownState?.currentLevel || 0}
+                Hierarchy: ${JSON.stringify(widget.drillDownHierarchy || [])}
+            `;
+
+            const result = await analyzeChartTrend(
+                widget.title || "Biểu đồ",
+                xField,
+                chartData,
+                dataKeys,
+                context,
+                { provider, modelId }
+            );
+            setAiResult(result);
+            setAiError(null);
+        } catch (err: any) {
+            setAiError(err.message || "Phân tích thất bại");
+        } finally {
+            setAiIsLoading(false);
+        }
+    };
+    // -------------------------
+
+    const xFieldDisplay = useMemo(() => {
+        if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
+        if (chartData.length > 0 && chartData[0]._formattedAxis) return '_formattedAxis';
+        return xField;
+    }, [drillDownState?.mode, xFields.length, chartData, xField]);
+
+    const yField = series[0] || '';
 
     // Colors
-    const colors = widget.colors || CHART_COLORS;
+    const { chartColors } = useChartColors();
+    const colors = widget.colors || chartColors;
 
     // Handle bar click
     const handleBarClick = (data: any) => {
-        // Only trigger cross-filter on click.
-        // Drill-down is now exclusively handled by the toolbar buttons.
         if (onDataClick && widget.enableCrossFilter !== false) {
             onDataClick(data);
-        }
-    };
-
-    const handleDrillUp = () => {
-        if (drillDownState) {
-            const newState = DrillDownService.drillUp(drillDownState);
-            setDrillDown(widget.id, newState);
-        }
-    };
-
-    const handleNextLevel = () => {
-        const currentState = drillDownState || DrillDownService.initDrillDown(widget);
-        if (currentState) {
-            const newState = DrillDownService.goToNextLevel(currentState);
-            if (newState) {
-                setDrillDown(widget.id, newState);
-            }
         }
     };
 
@@ -92,7 +141,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const currentSelection = useMemo(() => {
         const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
         if (!cf) return undefined;
-        // Find the filter that matches the CURRENTly displayed field
+        // Find the filter corresponding to the current X-axis field
         return cf.filters.find(f => f.field === xField)?.value;
     }, [allDashboardFilters, widget.id, xField]);
 
@@ -100,13 +149,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
     }, [widget.dataSourceId, getDataSource]);
 
-    const loadingProgress = useMemo(() => {
-        if (!dataSource || !dataSource.totalRows || dataSource.totalRows === 0) return 0;
-        return (dataSource.data?.length || 0) / dataSource.totalRows * 100;
-    }, [dataSource]);
-
-    if (chartData.length === 0) {
-        const yField = widget.yAxis?.[0] || widget.measures?.[0];
+    if (chartData.length === 0 && !isLoading) {
         let errorMsg = 'No data available';
         if (!xField) errorMsg = 'Select X-Axis field';
         else if (!yField) errorMsg = 'Select Y-Axis field';
@@ -118,8 +161,9 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                 onDelete={onDelete}
                 onDuplicate={onDuplicate}
                 isSelected={isSelected}
-                loading={dataSource?.isLoadingPartial}
-                loadingProgress={loadingProgress}
+                isFiltered={!!isFiltered}
+                loading={isLoading}
+                error={error || undefined}
                 onClick={onClick}
             >
                 <EmptyChartState type={widget.chartType || 'bar'} message={errorMsg} onClickDataTab={onClickDataTab} onClick={onClick} />
@@ -135,86 +179,146 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
             onDuplicate={onDuplicate}
             isSelected={isSelected}
             isFiltered={!!isFiltered}
-            loading={dataSource?.isLoadingPartial}
-            loadingProgress={loadingProgress}
+            loading={isLoading}
+            error={error || undefined}
             onClick={onClick}
         >
-            <div className="absolute top-0 right-0 z-10 flex items-center gap-1 p-1">
-                {hasHierarchy && (
-                    <>
-                        <button
-                            onClick={handleDrillUp}
-                            disabled={!drillDownState || drillDownState.currentLevel === 0}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${drillDownState && drillDownState.currentLevel > 0
-                                ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'
-                                : 'bg-slate-800/50 text-slate-500 border-white/5 cursor-not-allowed'
-                                }`}
-                            title="Drill Up"
-                        >
-                            <i className="fas fa-arrow-up text-[8px]"></i>
-                        </button>
-                        <button
-                            onClick={handleNextLevel}
-                            disabled={drillDownState && drillDownState.currentLevel >= (widget.drillDownHierarchy?.length || 0) - 1}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${!(drillDownState && drillDownState.currentLevel >= (widget.drillDownHierarchy?.length || 0) - 1)
-                                ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'
-                                : 'bg-slate-800/50 text-slate-500 border-white/5 cursor-not-allowed'
-                                }`}
-                            title="Go to Next Level"
-                        >
-                            <i className="fas fa-chevron-down text-[8px]"></i>
-                        </button>
-                        {drillDownState && drillDownState.breadcrumbs.length > 0 && (
-                            <div className="ml-1 px-1.5 py-0.5 rounded bg-slate-800/80 text-indigo-300 text-[9px] border border-white/5 max-w-[150px] truncate">
-                                {drillDownState.breadcrumbs.map(bc => bc.value).join(' > ')}
-                            </div>
-                        )}
-                    </>
-                )}
-            </div>
-            <ResponsiveContainer width="100%" height="100%">
-                {isHorizontal ? (
+            <div className="w-full h-full" onContextMenu={handleContextMenu}>
+                <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
                         data={chartData}
-                        layout="vertical"
-                        margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                        layout={isHorizontal ? 'vertical' : 'horizontal'}
+                        margin={isHorizontal
+                            ? { top: 20, right: 40, left: 20, bottom: 5 }
+                            : { top: 20, right: 30, left: 0, bottom: drillDownState?.mode === 'expand' ? 60 : 10 }
+                        }
+                        barCategoryGap="20%"
+                        barGap={4}
+                        onClick={(e: any) => e && e.activePayload && handleBarClick(e.activePayload[0].payload)}
                     >
-                        {widget.showGrid !== false && <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />}
-                        <XAxis
-                            type="number"
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => formatValue(val, widget.valueFormat || 'standard')}
-                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                        />
-                        <YAxis
-                            yAxisId="left"
-                            dataKey={xField}
-                            type="category"
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => {
-                                if (typeof val === 'number') return formatValue(val, widget.valueFormat || 'standard');
-                                return val;
-                            }}
-                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                            width={120}
-                        />
-                        {((widget.yAxisConfigs?.some(c => c.yAxisId === 'right')) || (widget.lineAxisConfigs?.some(c => c.yAxisId === 'right'))) && (
-                            <YAxis
-                                yAxisId="right"
-                                orientation="right"
-                                stroke="#94a3b8"
-                                tickFormatter={(val) => formatValue(val, widget.valueFormat || 'standard')}
-                                style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                                width={120}
+                        {widget.showGrid !== false && (
+                            <CartesianGrid
+                                strokeDasharray="3 3"
+                                stroke="#ffffff08"
+                                vertical={true}
+                                horizontal={true}
                             />
                         )}
-                        <Tooltip
-                            content={<CustomTooltip
-                                aggregation={!widget.yAxisConfigs?.length ? widget.aggregation : undefined}
-                                valueFormat={widget.valueFormat || 'standard'}
-                            />}
-                            cursor={{ fill: '#ffffff05' }}
-                        />
+                        {(() => {
+                            // Shared Logic for Axis Formatting
+                            const leftSeriesField = series.find(s => {
+                                const c = widget.yAxisConfigs?.find(conf => conf.field === s);
+                                return !c?.yAxisId || c.yAxisId === 'left';
+                            }) || lineSeries.find(s => {
+                                const c = widget.lineAxisConfigs?.find(conf => conf.field === s);
+                                return c?.yAxisId === 'left';
+                            });
+
+                            const rightSeriesField = series.find(s => {
+                                const c = widget.yAxisConfigs?.find(conf => conf.field === s);
+                                return c?.yAxisId === 'right';
+                            }) || lineSeries.find(s => {
+                                const c = widget.lineAxisConfigs?.find(conf => conf.field === s);
+                                return c?.yAxisId === 'right';
+                            });
+
+                            const leftConfig = widget.yAxisConfigs?.find(c => c.field === leftSeriesField) || widget.lineAxisConfigs?.find(c => c.field === leftSeriesField);
+                            const rightConfig = widget.yAxisConfigs?.find(c => c.field === rightSeriesField) || widget.lineAxisConfigs?.find(c => c.field === rightSeriesField);
+
+                            const leftRawFormat = (leftConfig?.format && leftConfig.format !== 'standard' ? leftConfig.format : null) || widget.valueFormat;
+                            const rightRawFormat = (rightConfig?.format && rightConfig.format !== 'standard' ? rightConfig.format : null) || widget.valueFormat;
+
+                            const leftFormat = (!leftRawFormat || leftRawFormat === 'standard') ? 'smart_axis' : leftRawFormat;
+                            const rightFormat = (!rightRawFormat || rightRawFormat === 'standard') ? 'smart_axis' : rightRawFormat;
+
+                            const hasRightAxis = series.some(s => widget.yAxisConfigs?.find(c => c.field === s)?.yAxisId === 'right') ||
+                                lineSeries.some(s => widget.lineAxisConfigs?.find(c => c.field === s)?.yAxisId === 'right');
+
+                            if (isHorizontal) {
+                                return (
+                                    <>
+                                        <XAxis
+                                            type="number"
+                                            xAxisId="left"
+                                            stroke="#94a3b8"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            tickFormatter={(val) => formatBIValue(val, leftFormat)}
+                                            fontFamily="Outfit"
+                                        />
+                                        {hasRightAxis && (
+                                            <XAxis
+                                                type="number"
+                                                xAxisId="right"
+                                                orientation="top"
+                                                stroke="#94a3b8"
+                                                fontSize={10}
+                                                tickLine={false}
+                                                axisLine={false}
+                                                tickFormatter={(val) => formatBIValue(val, rightFormat)}
+                                                fontFamily="Outfit"
+                                            />
+                                        )}
+                                        <YAxis
+                                            dataKey={xFieldDisplay}
+                                            type="category"
+                                            stroke="#94a3b8"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            width={120}
+                                            fontFamily="Outfit"
+                                            interval={0}
+                                        />
+                                    </>
+                                );
+                            } else {
+                                // Vertical (Standard)
+                                return (
+                                    <>
+                                        <XAxis
+                                            dataKey={xFieldDisplay}
+                                            type="category"
+                                            stroke="#94a3b8"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
+                                            tick={<HierarchicalAxisTick data={chartData} />}
+                                            height={drillDownState?.mode === 'expand' ? 80 : 30}
+                                            fontFamily="Outfit"
+                                        />
+                                        <YAxis
+                                            yAxisId="left"
+                                            type="number"
+                                            stroke="#94a3b8"
+                                            tickFormatter={(val) => formatBIValue(val, leftFormat)}
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            width={70}
+                                            fontFamily="Outfit"
+                                        />
+                                        {hasRightAxis && (
+                                            <YAxis
+                                                yAxisId="right"
+                                                orientation="right"
+                                                stroke="#94a3b8"
+                                                tickFormatter={(val) => formatBIValue(val, rightFormat)}
+                                                fontSize={10}
+                                                tickLine={false}
+                                                axisLine={false}
+                                                width={70}
+                                                fontFamily="Outfit"
+                                            />
+                                        )}
+                                    </>
+                                );
+                            }
+                        })()}
+
+                        <Tooltip content={<CustomTooltip valueFormat={widget.valueFormat} configs={[...(widget.yAxisConfigs || []), ...(widget.lineAxisConfigs || [])]} />} />
                         {widget.showLegend !== false && (
                             <Legend
                                 layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
@@ -224,225 +328,163 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                     widget={widget}
                                     layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                    fontSize={widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px'}
+                                    fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '10px')}
                                 />}
                             />
                         )}
+
                         {series.length > 0 ? (
-                            series.map((s, idx) => {
-                                const config = widget.yAxisConfigs?.[idx];
+                            series.map((sField, idx) => {
+                                const config = widget.yAxisConfigs?.find(c => c.field === sField);
                                 const yAxisId = config?.yAxisId || 'left';
+                                const format = widget.labelFormat || (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const axisProps = isHorizontal ? { xAxisId: yAxisId } : { yAxisId: yAxisId };
+                                const color = colors[idx % colors.length];
+
                                 return (
                                     <Bar
-                                        key={s}
-                                        dataKey={s}
-                                        name={s}
-                                        yAxisId={yAxisId}
+                                        key={sField}
+                                        dataKey={sField}
+                                        name={sField}
+                                        {...axisProps}
+                                        fill={color}
                                         stackId={isStackedType ? "a" : undefined}
-                                        fill={colors[idx % colors.length]}
-                                        onClick={handleBarClick}
+                                        onClick={(e: any) => handleBarClick(e.payload)}
                                         cursor="pointer"
+                                        radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                                     >
-                                        {chartData.map((entry: any, index: number) => {
-                                            const isSelected = !currentSelection || entry[xField] === currentSelection;
+                                        {chartData.map((entry, index) => {
+                                            const isActive = !currentSelection || entry[xField] === currentSelection;
                                             return (
                                                 <Cell
                                                     key={`cell-${index}`}
-                                                    fill={colors[idx % colors.length]}
-                                                    fillOpacity={isSelected ? 1 : 0.3}
+                                                    fill={color}
+                                                    fillOpacity={isActive ? 1 : 0.3}
+                                                    stroke={isActive && currentSelection ? 'white' : 'none'}
+                                                    strokeWidth={2}
                                                 />
                                             );
                                         })}
+                                        {widget.showLabels !== false && (
+                                            <LabelList
+                                                dataKey={sField}
+                                                position={isHorizontal ? "right" : "top"}
+                                                fill="#94a3b8"
+                                                fontSize={10}
+                                                formatter={(val: any) => {
+                                                    const formatted = formatBIValue(val, format);
+                                                    if (widget.labelMode === 'value') return formatted;
+                                                    if (widget.labelMode === 'category') return sField;
+                                                    return formatted;
+                                                }}
+                                            />
+                                        )}
                                     </Bar>
                                 );
                             })
-                        ) : null}
-
-                        {lineSeries.length > 0 && (
-                            lineSeries.map((ls, idx) => {
-                                const config = widget.lineAxisConfigs?.[idx];
-                                const yAxisId = config?.yAxisId || 'right';
-                                return (
-                                    <Line
-                                        key={ls}
-                                        dataKey={ls}
-                                        name={ls}
-                                        yAxisId={yAxisId}
-                                        stroke={colors[(series.length + idx) % colors.length]}
-                                        strokeWidth={3}
-                                        dot={{ r: 4, fill: colors[(series.length + idx) % colors.length] }}
-                                        activeDot={{ r: 6 }}
-                                        onClick={(e: any) => handleBarClick(e.payload)}
-                                        cursor="pointer"
-                                    />
-                                );
-                            })
-                        )}
-
-                        {!series.length && !lineSeries.length ? (
+                        ) : (
                             <Bar
                                 dataKey={yField}
+                                {...(isHorizontal ? { xAxisId: 'left' } : { yAxisId: 'left' })}
                                 fill={colors[0]}
-                                onClick={handleBarClick}
+                                onClick={(e: any) => handleBarClick(e.payload)}
                                 cursor="pointer"
-                                radius={[0, 4, 4, 0]}
-                                stackId={isStackedType ? "a" : undefined}
+                                radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                             >
-                                {chartData.map((entry: any, index: number) => {
-                                    const isSelected = !currentSelection || entry[xField] === currentSelection;
+                                {chartData.map((entry, index) => {
+                                    const isActive = !currentSelection || entry[xField] === currentSelection;
                                     return (
                                         <Cell
                                             key={`cell-${index}`}
-                                            fill={colors[index % colors.length]}
-                                            fillOpacity={isSelected ? 1 : 0.3}
+                                            fill={colors[0]}
+                                            fillOpacity={isActive ? 1 : 0.3}
+                                            stroke={isActive && currentSelection ? 'white' : 'none'}
+                                            strokeWidth={2}
                                         />
                                     );
                                 })}
+                                {widget.showLabels !== false && (
+                                    <LabelList
+                                        dataKey={yField}
+                                        position={isHorizontal ? "right" : "top"}
+                                        fill="#94a3b8"
+                                        fontSize={10}
+                                        formatter={(val: any) => formatBIValue(val, widget.labelFormat || widget.valueFormat || 'compact')}
+                                    />
+                                )}
                             </Bar>
-                        ) : null}
-                    </ComposedChart>
-                ) : (
-                    <ComposedChart
-                        data={chartData}
-                        margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-                    >
-                        {widget.showGrid !== false && <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />}
-                        <XAxis
-                            dataKey={xField}
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => {
-                                if (typeof val === 'number') return formatValue(val, widget.valueFormat || 'standard');
-                                return val;
-                            }}
-                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                        />
-                        <YAxis
-                            yAxisId="left"
-                            stroke="#94a3b8"
-                            tickFormatter={(val) => formatValue(val, widget.valueFormat || 'standard')}
-                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                            width={120}
-                        />
-                        {((widget.yAxisConfigs?.some(c => c.yAxisId === 'right')) || (widget.lineAxisConfigs?.some(c => c.yAxisId === 'right'))) && (
-                            <YAxis
-                                yAxisId="right"
-                                orientation="right"
-                                stroke="#94a3b8"
-                                tickFormatter={(val) => formatValue(val, widget.valueFormat || 'standard')}
-                                style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px' }}
-                                width={120}
-                            />
                         )}
-                        <Tooltip
-                            content={<CustomTooltip
-                                aggregation={!widget.yAxisConfigs?.length ? widget.aggregation : undefined}
-                                valueFormat={widget.valueFormat || 'standard'}
-                            />}
-                            cursor={{ fill: '#ffffff05' }}
-                        />
-                        {widget.showLegend !== false && (
-                            <Legend
-                                layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
-                                align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                verticalAlign={(widget.legendPosition === 'top') ? 'top' : (widget.legendPosition === 'bottom' || !widget.legendPosition ? 'bottom' : 'middle')}
-                                content={<ChartLegend
-                                    widget={widget}
-                                    layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
-                                    align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                    fontSize={widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px'}
-                                />}
-                            />
-                        )}
-                        {series.length > 0 ? (
-                            series.map((s, idx) => {
-                                const config = widget.yAxisConfigs?.[idx];
-                                const yAxisId = config?.yAxisId || 'left';
-                                return (
-                                    <Bar
-                                        key={s}
-                                        dataKey={s}
-                                        name={s}
-                                        yAxisId={yAxisId}
-                                        stackId={isStackedType ? "a" : undefined}
-                                        fill={colors[idx % colors.length]}
-                                        onClick={handleBarClick}
-                                        cursor="pointer"
-                                    >
-                                        {chartData.map((entry: any, index: number) => {
-                                            const isSelected = !currentSelection || entry[xField] === currentSelection;
-                                            return (
-                                                <Cell
-                                                    key={`cell-${index}`}
-                                                    fill={colors[idx % colors.length]}
-                                                    fillOpacity={isSelected ? 1 : 0.3}
-                                                />
-                                            );
-                                        })}
-                                    </Bar>
-                                );
-                            })
-                        ) : null}
 
                         {lineSeries.length > 0 && (
                             lineSeries.map((ls, idx) => {
-                                const config = widget.lineAxisConfigs?.[idx];
-                                const yAxisId = config?.yAxisId || 'right';
+                                const config = widget.lineAxisConfigs?.find(c => c.field === ls);
+                                const yAxisId = config?.yAxisId || 'left';
+                                const axisProps = isHorizontal ? { xAxisId: yAxisId } : { yAxisId: yAxisId };
+                                const color = colors[(series.length + idx) % colors.length];
+
                                 return (
                                     <Line
                                         key={ls}
                                         dataKey={ls}
                                         name={ls}
-                                        type="monotone"
-                                        yAxisId={yAxisId}
-                                        stroke={colors[(series.length + idx) % colors.length]}
-                                        strokeWidth={3}
-                                        dot={(dotProps: any) => {
-                                            const { cx, cy, payload } = dotProps;
-                                            if (!cx || !cy) return null;
-                                            const isItemSelected = !currentSelection || payload[xField] === currentSelection;
+                                        {...axisProps}
+                                        stroke={color}
+                                        strokeWidth={2}
+                                        // Dim line dots if not active
+                                        dot={(props: any) => {
+                                            const { cx, cy, payload } = props;
+                                            const isActive = !currentSelection || payload[xField] === currentSelection;
                                             return (
                                                 <circle
                                                     cx={cx}
                                                     cy={cy}
-                                                    r={isItemSelected ? 4 : 2}
-                                                    fill={colors[(series.length + idx) % colors.length]}
-                                                    fillOpacity={isItemSelected ? 1 : 0.3}
-                                                    stroke="none"
+                                                    r={4}
+                                                    fill={color}
+                                                    opacity={isActive ? 1 : 0.3}
+                                                    pointerEvents="none"
                                                 />
                                             );
                                         }}
                                         activeDot={{ r: 6 }}
                                         onClick={(e: any) => handleBarClick(e.payload)}
                                         cursor="pointer"
-                                    />
+                                    >
+                                        {widget.showLabels !== false && (
+                                            <LabelList
+                                                dataKey={ls}
+                                                position="top"
+                                                fill="#94a3b8"
+                                                fontSize={10}
+                                                formatter={(val: any) => formatBIValue(val, config?.format || widget.valueFormat || 'compact')}
+                                            />
+                                        )}
+                                    </Line>
                                 );
                             })
                         )}
-
-                        {!series.length && !lineSeries.length ? (
-                            <Bar
-                                dataKey={yField}
-                                fill={colors[0]}
-                                onClick={handleBarClick}
-                                cursor="pointer"
-                                radius={[4, 4, 0, 0]}
-                                stackId={widget.stacked !== false ? "a" : undefined}
-                            >
-                                {chartData.map((entry: any, index: number) => {
-                                    const isSelected = !currentSelection || entry[xField] === currentSelection;
-                                    return (
-                                        <Cell
-                                            key={`cell-${index}`}
-                                            fill={colors[index % colors.length]}
-                                            fillOpacity={isSelected ? 1 : 0.3}
-                                        />
-                                    );
-                                })}
-                            </Bar>
-                        ) : null}
                     </ComposedChart>
+                </ResponsiveContainer>
+                {/* AI Context Menu */}
+                {contextMenu && (
+                    <ChartContextMenu
+                        x={contextMenu.x}
+                        y={contextMenu.y}
+                        onClose={() => setContextMenu(null)}
+                        onAnalyze={handleAnalyzeTrend}
+                    />
                 )}
-            </ResponsiveContainer>
+
+                {/* AI Modal */}
+                <AIAnalysisModal
+                    isOpen={isAIModalOpen}
+                    onClose={() => setIsAIModalOpen(false)}
+                    isLoading={aiIsLoading}
+                    analysisResult={aiResult}
+                    error={aiError}
+                    title={widget.title || "Chart Analysis"}
+                    onReAnalyze={handleAnalyzeTrend}
+                />
+            </div>
         </BaseWidget>
     );
 };

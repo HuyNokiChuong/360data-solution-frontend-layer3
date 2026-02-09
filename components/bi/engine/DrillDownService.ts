@@ -12,15 +12,22 @@ export const DrillDownService = {
      * Initialize drill-down state for a widget
      */
     initDrillDown: (widget: BIWidget): DrillDownState | null => {
-        if (!widget.drillDownHierarchy || widget.drillDownHierarchy.length === 0) {
+        const hierarchy = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
+            ? widget.drillDownHierarchy
+            : (widget.type === 'pivot' && widget.pivotRows && widget.pivotRows.length > 0)
+                ? widget.pivotRows
+                : null;
+
+        if (!hierarchy) {
             return null;
         }
 
         return {
             widgetId: widget.id,
-            hierarchy: widget.drillDownHierarchy,
+            hierarchy: hierarchy,
             currentLevel: 0,
-            breadcrumbs: []
+            breadcrumbs: [],
+            mode: 'drill'
         };
     },
 
@@ -59,6 +66,38 @@ export const DrillDownService = {
     },
 
     /**
+     * Drill to next level: Replace current dimension with the next one
+     * Logic: Move down without filtering, but reset breadcrumbs/filter state
+     */
+    drillToNextLevel: (state: DrillDownState): DrillDownState | null => {
+        if (state.currentLevel >= state.hierarchy.length - 1) {
+            return null;
+        }
+
+        return {
+            ...state,
+            currentLevel: state.currentLevel + 1,
+            mode: 'drill',
+            breadcrumbs: [] // Next level drill-down (Double arrow) usually means aggregated next level
+        };
+    },
+
+    /**
+     * Expand all down: Show both current and next dimension
+     */
+    expandNextLevel: (state: DrillDownState): DrillDownState | null => {
+        if (state.currentLevel >= state.hierarchy.length - 1) {
+            return null;
+        }
+
+        return {
+            ...state,
+            currentLevel: state.currentLevel + 1,
+            mode: 'expand'
+        };
+    },
+
+    /**
      * Go to next level without filtering (Aggregrate all)
      */
     goToNextLevel: (state: DrillDownState): DrillDownState | null => {
@@ -91,15 +130,29 @@ export const DrillDownService = {
     /**
      * Get the current field to display on X-Axis based on drill level
      */
-    getCurrentField: (widget: BIWidget, state?: DrillDownState | null): string => {
-        if (!state || !widget.drillDownHierarchy || widget.drillDownHierarchy.length === 0) {
-            // If we have a hierarchy but no state yet, show the first level of the hierarchy
-            if (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) {
-                return widget.drillDownHierarchy[0];
+    getCurrentFields: (widget: BIWidget, state?: DrillDownState | null): string[] => {
+        // 1. If active state exists, use it (Prioritize state as it likely contains the correct hierarchy snapshot)
+        if (state && state.hierarchy && state.hierarchy.length > 0) {
+            if (state.mode === 'expand') {
+                return state.hierarchy.slice(0, state.currentLevel + 1);
             }
-            return widget.xAxis || widget.dimensions?.[0] || '';
+            return [state.hierarchy[state.currentLevel] || state.hierarchy[0]];
         }
-        return (state.hierarchy && state.hierarchy[state.currentLevel]) || state.hierarchy[0];
+
+        // 2. If no state, check Widget definition
+        const hierarchy = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
+            ? widget.drillDownHierarchy
+            : (widget.type === 'pivot' && widget.pivotRows && widget.pivotRows.length > 0)
+                ? widget.pivotRows
+                : null;
+
+        if (!hierarchy) {
+            const defaultField = widget.xAxis || widget.dimensions?.[0] || '';
+            return defaultField ? [defaultField] : [];
+        }
+
+        // 3. Default to Top Level of Hierarchy
+        return [hierarchy[0]];
     },
     /**
      * Get the current field to display as Legend based on hierarchy

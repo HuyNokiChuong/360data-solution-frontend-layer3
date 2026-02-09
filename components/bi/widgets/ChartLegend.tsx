@@ -127,7 +127,7 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
                 return (
                     <div
                         key={`legend-item-${index}`}
-                        className="flex items-center gap-1.5 py-0.5 px-2 rounded-full transition-all hover:bg-white/5 cursor-pointer hover:shadow-[0_0_8px_rgba(255,255,255,0.05)]"
+                        className="flex items-center gap-1.5 py-0.5 px-2 rounded-full transition-all hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer hover:shadow-[0_0_8px_rgba(0,0,0,0.05)] dark:hover:shadow-[0_0_8px_rgba(255,255,255,0.05)]"
                         onDoubleClick={() => handleDoubleClick(entry)}
                         title="Double click to rename"
                     >
@@ -143,12 +143,13 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
                                 onChange={(e) => setEditValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 onBlur={saveEdit}
-                                className="bg-slate-800 text-white border border-indigo-500 rounded px-1 py-0.5 outline-none w-24 h-5"
+                                className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-indigo-500 rounded px-1 py-0.5 outline-none w-24 h-5"
                                 style={{ fontSize }}
                             />
                         ) : (
                             <span
-                                className="text-slate-300 font-medium whitespace-nowrap overflow-hidden text-ellipsis max-w-[100px]"
+                                className="text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]"
+                                style={{ fontSize }}
                                 title={entry.value}
                             >
                                 {entry.value}

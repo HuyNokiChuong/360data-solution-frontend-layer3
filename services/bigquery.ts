@@ -46,7 +46,7 @@ export const fetchProjects = async (token: string): Promise<Project[]> => {
 
         return projects;
     } catch (error) {
-        console.error(error);
+        // console.error(error);
         return projects;
     }
 };
@@ -80,7 +80,7 @@ export const fetchDatasets = async (token: string, projectId: string): Promise<D
 
         return datasets;
     } catch (error) {
-        console.error(error);
+        // console.error(error);
         return datasets;
     }
 };
@@ -143,7 +143,7 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
                 }));
             }
         } catch (e) {
-            console.warn("Failed to fetch row counts via query", e);
+            // console.warn("Failed to fetch row counts via query", e);
         }
 
         // 3. Fetch schemas using INFORMATION_SCHEMA.COLUMNS
@@ -175,12 +175,12 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
                 }));
             }
         } catch (e) {
-            console.warn("Failed to fetch schemas via query", e);
+            // console.warn("Failed to fetch schemas via query", e);
         }
 
         return tables;
     } catch (error) {
-        console.error(error);
+        // console.error(error);
         return tables;
     }
 }
@@ -208,7 +208,7 @@ const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 
 
         // Only retry on transient errors (5xx) or rate limits (429)
         if (retries > 0 && (response.status >= 500 || response.status === 429)) {
-            console.warn(`⏳ Request failed (${response.status}). Retrying in ${backoff}ms... (${retries} retries left)`);
+            // console.warn(`⏳ Request failed (${response.status}). Retrying in ${backoff}ms... (${retries} retries left)`);
             await new Promise(resolve => setTimeout(resolve, backoff));
             return fetchWithRetry(url, options, retries - 1, backoff * 2);
         }
@@ -217,7 +217,7 @@ const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 
         if (error.name === 'AbortError') throw error; // Don't retry aborts
 
         if (retries > 0) {
-            console.warn(`⏳ Network error. Retrying in ${backoff}ms...`, error);
+            // console.warn(`⏳ Network error. Retrying in ${backoff}ms...`, error);
             await new Promise(resolve => setTimeout(resolve, backoff));
             return fetchWithRetry(url, options, retries - 1, backoff * 2);
         }
@@ -238,7 +238,7 @@ export const fetchTableData = async (
 ): Promise<{ rows: any[], schema: { name: string, type: string }[] }> => {
     try {
         const { limit, onPartialResults, signal } = options || {};
-        console.log('🔍 fetchTableData: Starting fetch for', { projectId, datasetId, tableId, limit });
+        // console.log('🔍 fetchTableData: Starting fetch for', { projectId, datasetId, tableId, limit });
 
         const query = `SELECT * FROM \`${projectId}.${datasetId}.${tableId}\`${limit ? ` LIMIT ${limit}` : ''}`;
 
@@ -275,7 +275,7 @@ export const fetchTableData = async (
         // 2. Poll if job not complete
         let waitTime = 1000;
         while (!data.jobComplete) {
-            console.log(`⏳ Job ${jobId} not complete. Waiting ${waitTime}ms...`);
+            // console.log(`⏳ Job ${jobId} not complete. Waiting ${waitTime}ms...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
 
             const pollUrl = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}`);
@@ -289,7 +289,7 @@ export const fetchTableData = async (
 
             if (!pollResp.ok) {
                 const err = await pollResp.json().catch(() => ({}));
-                console.error("❌ Polling failed:", err);
+                // console.error("❌ Polling failed:", err);
                 break;
             }
 
@@ -330,7 +330,8 @@ export const fetchTableData = async (
             if (!bigQueryRows || bigQueryRows.length === 0) return [];
 
             const parsed: any[] = [];
-            const CHUNK_SIZE = 25000; // Increased chunk size to reduce switching overhead
+            const CHUNK_SIZE = 5000; // Reduced from 25k to keep event loop responsive and memory low
+
 
             for (let i = 0; i < bigQueryRows.length; i += CHUNK_SIZE) {
                 const chunk = bigQueryRows.slice(i, i + CHUNK_SIZE);
@@ -362,7 +363,7 @@ export const fetchTableData = async (
 
         // FIX: If first response is empty but data exists elsewhere, fetch it
         if (currentRows.length === 0 && totalRows > 0 && pageToken) {
-            console.log("🔄 Initial rows empty but data exists. Fetching first page via pageToken...");
+            // console.log("🔄 Initial rows empty but data exists. Fetching first page via pageToken...");
             const nextUrl = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}`);
             nextUrl.searchParams.append('pageToken', pageToken);
             nextUrl.searchParams.append('maxResults', (limit ? Math.min(limit, INITIAL_BATCH_SIZE) : INITIAL_BATCH_SIZE).toString());
@@ -388,9 +389,9 @@ export const fetchTableData = async (
 
         // 5. High-Speed Parallel Fetching for Subsequent Pages
         let totalItemsFetched = currentRows.length;
-        const PARALLEL_CHUNK_SIZE = 50000; // Keep at 50k to balance memory usage and request count
-        // Maximize concurrency to browser limit (usually 6 for HTTP/1.1, more for HTTP/2)
-        const CONCURRENCY = 8;
+        const PARALLEL_CHUNK_SIZE = 15000; // Reduced from 50k to prevent OOM
+        // Maximize concurrency to a safe limit (3 to prevent browser OOM)
+        const CONCURRENCY = 3;
 
         if (totalRows > totalItemsFetched && (!limit || totalItemsFetched < limit)) {
             const startOffset = totalItemsFetched;
@@ -402,7 +403,9 @@ export const fetchTableData = async (
                 chunkStarts.push(i);
             }
 
-            console.log(`🚀 Slicing ${totalToFetch} rows into ${chunkStarts.length} parallel batches (Concurrency: ${CONCURRENCY})...`);
+            // console.log(`🚀 Slicing ${totalToFetch} rows into ${chunkStarts.length} parallel batches (Concurrency: ${CONCURRENCY})...`);
+
+            let firstError: Error | null = null; // Track first error to stop all workers
 
             const fetchChunk = async (startIndex: number) => {
                 const targetChunkSize = Math.min(PARALLEL_CHUNK_SIZE, endOffset - startIndex);
@@ -412,7 +415,7 @@ export const fetchTableData = async (
                 let currentStartIndex = startIndex;
 
                 // Keep fetching until we fill the chunk or run out of data
-                while (fetchedCount < targetChunkSize) {
+                while (fetchedCount < targetChunkSize && !firstError) {
                     const remaining = targetChunkSize - fetchedCount;
                     const maxResults = remaining;
 
@@ -445,43 +448,63 @@ export const fetchTableData = async (
                             fetchedCount += rowCount;
                             currentStartIndex += rowCount;
                         } else {
-                            if (fetchedCount < targetChunkSize) {
-                                console.warn(`⚠️ Batch at ${currentStartIndex} returned 0 rows but expected ${remaining} more. Stopping chunk early.`);
+                            // If we expected more data but got 0 rows, this is an error
+                            if (fetchedCount < targetChunkSize && !limit) {
+                                const error = new Error(`Data incomplete: Batch at ${currentStartIndex} returned 0 rows but expected ${remaining} more rows.`);
+                                if (!firstError) {
+                                    firstError = error;
+                                    pool.length = 0; // Clear pool to stop other workers
+                                }
+                                throw error;
                             }
                             break;
                         }
                     } catch (error) {
-                        console.error(`❌ Failed to fetch sub-chunk at ${currentStartIndex}:`, error);
-                        throw error;
+                        const err = error instanceof Error ? error : new Error(String(error));
+                        if (!firstError) {
+                            firstError = err;
+                            pool.length = 0; // Clear pool to stop other workers
+                        }
+                        throw err;
                     }
                 }
             };
 
             const pool = [...chunkStarts];
             const workers = Array(CONCURRENCY).fill(null).map(async () => {
-                while (pool.length > 0) {
+                while (pool.length > 0 && !firstError) {
                     const start = pool.shift();
                     if (start !== undefined) {
-                        await fetchChunk(start);
+                        try {
+                            await fetchChunk(start);
+                        } catch (error) {
+                            // Error already tracked in firstError, just stop this worker
+                            break;
+                        }
                     }
                 }
             });
 
             await Promise.all(workers);
-            console.log(`✅ All workers finished for ${tableId}.`);
+
+            // If any error occurred, throw it to prevent partial data load
+            if (firstError) {
+                throw firstError;
+            }
+            // console.log(`✅ All workers finished for ${tableId}.`);
         }
 
-        console.log(`✅ Parallel Data Sync Complete.`);
+        // console.log(`✅ Parallel Data Sync Complete.`);
         return { rows: [], schema }; // Return empty rows because they are already pushed via onPartialResults
     } catch (error: any) {
         if (error.name === 'AbortError') {
-            console.log('⏹️ fetchTableData aborted.');
+            // console.log('⏹️ fetchTableData aborted.');
             throw error;
         }
-        console.error('❌ fetchTableData CRITICAL error:', error);
+        // console.error('❌ fetchTableData CRITICAL error:', error);
         if (error instanceof Error) {
-            console.error('Error message:', error.message);
-            console.error('Error stack:', error.stack);
+            // console.error('Error message:', error.message);
+            // console.error('Error stack:', error.stack);
         }
         throw error;
     }
@@ -507,7 +530,7 @@ export const fetchTableSchema = async (token: string, projectId: string, dataset
             type: row.f[1].v
         }));
     } catch (error) {
-        console.error('Failed to fetch schema:', error);
+        // console.error('Failed to fetch schema:', error);
         return [];
     }
 };
@@ -523,35 +546,111 @@ export const fetchAggregatedData = async (
     tableId: string,
     options: {
         dimensions: string[];
-        measures: { field: string; aggregation: string }[];
+        measures: { field: string; aggregation: string; expression?: string }[];
         filters?: any[];
         limit?: number;
         signal?: AbortSignal;
+        sortBy?: string | string[];
+        sortDir?: 'ASC' | 'DESC';
+        groupByIndices?: boolean; // Whether to use numeric indices in GROUP BY (e.g. GROUP BY 1, 2)
     }
 ): Promise<any[]> => {
-    const { dimensions, measures, filters, limit, signal } = options;
+    const { dimensions, measures, filters, limit, signal, sortBy, sortDir, groupByIndices = true } = options;
+
+    // Helper to format a field reference (handles Table.Column -> `Table`.`Column`)
+    const formatColumnReference = (col: string) => {
+        if (col.includes('.')) {
+            const parts = col.split('.');
+            return parts.map(p => `\`${p}\``).join('.');
+        }
+        return `\`${col}\``;
+    };
+
+    // Helper to handle date extraction parts (e.g., "date_field.___year")
+    const parseField = (f: string) => {
+        if (f.includes('___')) {
+            const [field, part] = f.split('___');
+            const colRef = formatColumnReference(field);
+
+            switch (part) {
+                case 'year': return `EXTRACT(YEAR FROM ${colRef})`;
+                case 'month': return `EXTRACT(MONTH FROM ${colRef})`;
+                case 'day': return `EXTRACT(DAY FROM ${colRef})`;
+                case 'quarter': return `EXTRACT(QUARTER FROM ${colRef})`;
+                case 'half': return `IF(EXTRACT(MONTH FROM ${colRef}) <= 6, 1, 2)`;
+                case 'hour': return `EXTRACT(HOUR FROM ${colRef})`;
+                case 'minute': return `EXTRACT(MINUTE FROM ${colRef})`;
+                case 'second': return `EXTRACT(SECOND FROM ${colRef})`;
+                default: return colRef;
+            }
+        }
+        return formatColumnReference(f);
+    };
 
     // 1. Build SELECT clause
     const selectParts = [
-        ...dimensions.map(d => `\`${d}\``),
+        ...dimensions.map(d => `${parseField(d)} as \`${d}\``),
         ...measures.map(m => {
-            const agg = m.aggregation.toUpperCase() === 'COUNTDISTINCT' ? 'COUNT(DISTINCT' : `${m.aggregation.toUpperCase()}(`;
-            return `${agg} \`${m.field}\`${m.aggregation.toUpperCase() === 'COUNTDISTINCT' ? ')' : ')'} as \`${m.field}_${m.aggregation}\``;
+            const agg = m.aggregation.toUpperCase();
+            // Use custom expression if provided, otherwise format the field name
+            // @ts-ignore - expression is optional but checked
+            const colRef = m.expression ? m.expression : formatColumnReference(m.field);
+            let sqlAgg = '';
+
+            // If expression is provided, we assume it handles column references itself,
+            // but we still wrap it in aggregation if needed
+            switch (agg) {
+                case 'COUNTDISTINCT': sqlAgg = `COUNT(DISTINCT ${colRef})`; break;
+                case 'AVG': sqlAgg = `AVG(${colRef})`; break;
+                case 'SUM': sqlAgg = `SUM(${colRef})`; break;
+                case 'MIN': sqlAgg = `MIN(${colRef})`; break;
+                case 'MAX': sqlAgg = `MAX(${colRef})`; break;
+                case 'COUNT': sqlAgg = `COUNT(${colRef})`; break;
+                case 'NONE': case 'RAW': sqlAgg = colRef; break;
+                default: sqlAgg = colRef; // Fallback
+            }
+            return `${sqlAgg} as \`${m.field}_${m.aggregation}\``;
         })
     ];
 
-    // 2. Build WHERE clause (simple version for now)
+    if (selectParts.length === 0) return [];
+
+    // 2. Build WHERE clause
     let whereClause = '';
     if (filters && filters.length > 0) {
         const filterParts = filters.map(f => {
-            if (!f.enabled) return null;
-            const val = typeof f.value === 'string' ? `'${f.value}'` : f.value;
-            switch (f.operator) {
-                case 'equals': return `\`${f.field}\` = ${val}`;
-                case 'notEquals': return `\`${f.field}\` != ${val}`;
-                case 'contains': return `\`${f.field}\` LIKE '%${f.value}%'`;
-                case 'greaterThan': return `\`${f.field}\` > ${val}`;
-                case 'lessThan': return `\`${f.field}\` < ${val}`;
+            if (!f.field || f.enabled === false) return null;
+
+            const field = parseField(f.field);
+            const operator = f.operator;
+            const val = f.value;
+
+            // Format value for SQL
+            const formatVal = (v: any) => {
+                if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
+                if (v instanceof Date) return `'${v.toISOString()}'`;
+                return v;
+            };
+
+            const isRangeOrComp = ['between', 'greaterThan', 'lessThan', 'greaterOrEqual', 'lessOrEqual'].includes(operator);
+            const notNullSuffix = isRangeOrComp ? ` AND ${field} IS NOT NULL` : '';
+
+            switch (operator) {
+                case 'equals': return `${field} = ${formatVal(val)}`;
+                case 'notEquals': return `${field} != ${formatVal(val)}`;
+                case 'contains': return `${field} LIKE '%${val}%'`;
+                case 'notContains': return `${field} NOT LIKE '%${val}%'`;
+                case 'startsWith': return `${field} LIKE '${val}%'`;
+                case 'endsWith': return `${field} LIKE '%${val}'`;
+                case 'greaterThan': return `(${field} > ${formatVal(val)}${notNullSuffix})`;
+                case 'lessThan': return `(${field} < ${formatVal(val)}${notNullSuffix})`;
+                case 'greaterOrEqual': return `(${field} >= ${formatVal(val)}${notNullSuffix})`;
+                case 'lessOrEqual': return `(${field} <= ${formatVal(val)}${notNullSuffix})`;
+                case 'between': return `(${field} BETWEEN ${formatVal(val)} AND ${formatVal(f.value2)}${notNullSuffix})`;
+                case 'in': return `${field} IN (${Array.isArray(val) ? val.map(formatVal).join(', ') : formatVal(val)})`;
+                case 'notIn': return `${field} NOT IN (${Array.isArray(val) ? val.map(formatVal).join(', ') : formatVal(val)})`;
+                case 'isNull': return `${field} IS NULL`;
+                case 'isNotNull': return `${field} IS NOT NULL`;
                 default: return null;
             }
         }).filter(Boolean);
@@ -562,18 +661,43 @@ export const fetchAggregatedData = async (
     }
 
     // 3. Build GROUP BY clause
-    const groupByClause = dimensions.length > 0 ? ` GROUP BY ${dimensions.map((_, i) => i + 1).join(', ')}` : '';
+    // If no measures, we use SELECT DISTINCT to get unique dimension combinations
+    // If has measures, we must GROUP BY dimensions
+    const hasMeasures = measures.some(m => m.aggregation !== 'none');
+    let groupByClause = '';
+    let distinctClause = '';
 
-    // 4. Build Final Query
-    const query = `SELECT ${selectParts.join(', ')} FROM \`${projectId}.${datasetId}.${tableId}\`${whereClause}${groupByClause}${limit ? ` LIMIT ${limit}` : ''}`;
+    if (dimensions.length > 0) {
+        if (hasMeasures) {
+            groupByClause = groupByIndices
+                ? ` GROUP BY ${dimensions.map((_, i) => i + 1).join(', ')}`
+                : ` GROUP BY ${dimensions.map(d => parseField(d)).join(', ')}`;
+        } else {
+            distinctClause = 'DISTINCT ';
+        }
+    }
 
-    console.log('🚀 Remote Aggregation Query:', query);
+    // 4. Build ORDER BY clause
+    let orderByClause = '';
+    if (sortBy) {
+        const sortByArray = Array.isArray(sortBy) ? sortBy : [sortBy];
+        orderByClause = ` ORDER BY ${sortByArray.map(s => `\`${s}\` ${sortDir || 'ASC'}`).join(', ')}`;
+    } else if (dimensions.length > 0) {
+        // Default sort by ALL dimensions to ensure hierarchy and time series order
+        const sortParts = dimensions.map((_, i) => `${i + 1} ASC`);
+        orderByClause = ` ORDER BY ${sortParts.join(', ')}`;
+    }
 
-    const results = await runQuery(token, projectId, query);
+    // 5. Build Final Query
+    const query = `SELECT ${distinctClause}${selectParts.join(', ')} FROM \`${projectId}.${datasetId}.${tableId}\`${whereClause}${groupByClause}${orderByClause}${limit ? ` LIMIT ${limit}` : ''}`;
+
+    // console.log('🚀 Remote Aggregation Query:', query);
+
+    const results = await runQuery(token, projectId, query, signal);
     return results;
 };
 
-export const runQuery = async (token: string, projectId: string, query: string): Promise<any[]> => {
+export const runQuery = async (token: string, projectId: string, query: string, signal?: AbortSignal): Promise<any[]> => {
     try {
         const response = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
             method: 'POST',
@@ -582,6 +706,7 @@ export const runQuery = async (token: string, projectId: string, query: string):
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query, useLegacySql: false, timeoutMs: 30000, maxResults: 1000000 }),
+            signal
         });
 
         if (!response.ok) {
@@ -597,7 +722,8 @@ export const runQuery = async (token: string, projectId: string, query: string):
             while (!data.jobComplete) {
                 await new Promise(resolve => setTimeout(resolve, waitTime));
                 const pollResp = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}${location ? `?location=${location}` : ''}`, {
-                    headers: { Authorization: `Bearer ${token}` }
+                    headers: { Authorization: `Bearer ${token}` },
+                    signal
                 });
                 data = await pollResp.json();
                 waitTime = Math.min(waitTime * 1.5, 5000);
@@ -605,7 +731,7 @@ export const runQuery = async (token: string, projectId: string, query: string):
         }
         return parseBigQueryResponse(data);
     } catch (error) {
-        console.error("Query Execution Error:", error);
+        // console.error("Query Execution Error:", error);
         throw error;
     }
 };
@@ -620,7 +746,7 @@ export const parseBigQueryResponse = (data: any): any[] => {
                 const field = fields[i];
                 let val = cell.v;
                 if (['INTEGER', 'FLOAT', 'FLOAT64', 'INT64', 'NUMERIC'].includes(field.type)) {
-                    val = val !== null ? parseFloat(val) : 0;
+                    val = val !== null && val !== undefined ? parseFloat(val) : null;
                 }
                 rowData[field.name] = val;
             });
@@ -637,7 +763,7 @@ export const clearGCSFolder = async (
     prefix: string,
     signal?: AbortSignal
 ): Promise<void> => {
-    console.log(`🧹 Clearing GCS folder: gs://${bucketName}/${prefix}`);
+    // console.log(`🧹 Clearing GCS folder: gs://${bucketName}/${prefix}`);
 
     let pageToken: string | undefined;
     do {
@@ -660,14 +786,36 @@ export const clearGCSFolder = async (
                     method: 'DELETE',
                     headers: { Authorization: `Bearer ${token}` },
                     signal
-                }).catch(e => console.warn(`Failed to delete ${item.name}`, e))
+                }).catch(e => console.warn(`Failed to delete`, e))
             );
             await Promise.all(deletePromises);
-            console.log(`Deleted ${items.length} files from ${prefix}`);
+            // console.log(`Deleted ${items.length} files from ${prefix}`);
         }
 
         pageToken = listData.nextPageToken;
     } while (pageToken);
+};
+
+// Utility to write a file to GCS (e.g., for logs)
+export const writeGCSFile = async (
+    token: string,
+    bucketName: string,
+    fileName: string,
+    content: string,
+    contentType: string = 'text/plain',
+    signal?: AbortSignal
+): Promise<void> => {
+    const url = `https://storage.googleapis.com/upload/storage/v1/b/${bucketName}/o?uploadType=media&name=${encodeURIComponent(fileName)}`;
+
+    await fetchWithRetry(url, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': contentType
+        },
+        body: content,
+        signal
+    });
 };
 
 export const exportTableToGCS = async (
@@ -684,7 +832,7 @@ export const exportTableToGCS = async (
     const folderPrefix = `${tableId}/`;
     const destinationUri = `gs://${bucketName}/${folderPrefix}export-*.json`;
 
-    console.log(`🚀 Starting BigQuery Export Job: ${tableId} -> ${destinationUri}`);
+    // console.log(`🚀 Starting BigQuery Export Job: ${tableId} -> ${destinationUri}`);
 
     // 1. Create Extract Job
     const jobUrl = `https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/jobs`;
@@ -723,7 +871,7 @@ export const exportTableToGCS = async (
     while (!complete) {
         if (signal?.aborted) throw new Error('Aborted');
 
-        console.log(`⏳ Waiting for export job ${jobId}...`);
+        // console.log(`⏳ Waiting for export job ${jobId}...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
 
         const checkUrl = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/jobs/${jobId}`);
@@ -745,7 +893,7 @@ export const exportTableToGCS = async (
         waitTime = Math.min(waitTime * 1.5, 5000);
     }
 
-    console.log('✅ Export Job Complete via API.');
+    // console.log('✅ Export Job Complete via API.');
 
     // 3. List the exported files
     const listUrl = new URL(`https://storage.googleapis.com/storage/v1/b/${bucketName}/o`);
@@ -780,8 +928,50 @@ export const downloadGCSFile = async (
 
     if (!response.ok) throw new Error(`Failed to download ${fileName}`);
 
-    const text = await response.text();
-    return parseJSONL(text);
+    // STREAMING PARSE to avoid OOM on large files
+    if (response.body) {
+        return parseJSONLStream(response.body);
+    } else {
+        const text = await response.text();
+        return parseJSONL(text);
+    }
+};
+
+// Streaming JSONL Parser using Web Streams API
+const parseJSONLStream = async (stream: ReadableStream<Uint8Array>): Promise<any[]> => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const result: any[] = [];
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            if (line.trim()) {
+                try {
+                    result.push(JSON.parse(line));
+                } catch (e) { }
+            }
+        }
+
+        // Yield to maintain UI responsiveness
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    if (buffer.trim()) {
+        try {
+            result.push(JSON.parse(buffer));
+        } catch (e) { }
+    }
+
+    return result;
 };
 
 // Faster JSONL Parser
@@ -823,32 +1013,63 @@ export const fetchTableDataViaExport = async (
 
     if (fileNames.length === 0) return { rows: [], schema: [] }; // No data
 
-    console.log(`📦 Found ${fileNames.length} shards on GCS. Downloading in parallel...`);
+    // console.log(`📦 Found ${fileNames.length} shards on GCS. Downloading in parallel...`);
 
-    // 2. Download in Parallel (Browser limit ~6)
-    const CONCURRENCY = 6;
+    // 2. Download in Parallel (Safe concurrency for browser)
+    const CONCURRENCY = 3;
     let totalLoaded = 0;
+    let firstError: Error | null = null; // Track first error to throw after all workers stop
+
+    const logHistory = async (msg: string) => {
+        const timestamp = new Date().toISOString();
+        const content = `[${timestamp}] ${msg}\n`;
+        // Append to GCS log file
+        try {
+            // We'll just write the latest message for now to avoid reading/writing huge log files
+            // In a better version, we'd append.
+            await writeGCSFile(token, bucketName, `${tableId}/_fetch_progress.log`, content);
+        } catch (e) { }
+    };
 
     const queue = [...fileNames];
     const workers = Array(CONCURRENCY).fill(null).map(async () => {
-        while (queue.length > 0) {
+        while (queue.length > 0 && !firstError) { // Stop if error occurred
             const fileName = queue.shift();
             if (!fileName || signal?.aborted) break;
 
             try {
                 const rows = await downloadGCSFile(token, bucketName, fileName, signal);
                 totalLoaded += rows.length;
+
+                await logHistory(`Downloaded ${fileName}: +${rows.length} rows (Total: ${totalLoaded})`);
+
                 if (onPartialResults) {
                     onPartialResults(rows, totalLoaded);
                 }
             } catch (e) {
-                console.error(`Failed to download shard ${fileName}`, e);
+                const error = e instanceof Error ? e : new Error(String(e));
+                await logHistory(`ERROR: Failed to download shard ${fileName}: ${error.message}`);
+
+                // Store first error and clear queue to stop all workers
+                if (!firstError) {
+                    firstError = new Error(`Failed to download shard ${fileName}: ${error.message}`);
+                    queue.length = 0; // Clear queue to stop other workers
+                }
+                break; // Exit this worker
             }
         }
     });
 
     await Promise.all(workers);
-    console.log(`✅ GCS Sync Complete. Loaded ${totalLoaded} rows.`);
+
+    // If any error occurred, throw it to prevent partial data load
+    if (firstError) {
+        await logHistory(`FAILED: Data load incomplete due to error`);
+        throw firstError;
+    }
+
+    // console.log(`✅ GCS Sync Complete. Loaded ${totalLoaded} rows.`);
+    await logHistory(`SUCCESS: All shards processed. Total rows: ${totalLoaded}`);
 
     return { rows: [], schema: [] };
 };

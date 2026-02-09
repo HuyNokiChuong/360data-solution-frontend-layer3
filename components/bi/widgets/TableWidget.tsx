@@ -7,7 +7,7 @@ import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { applyFilters, sortData } from '../engine/dataProcessing';
-import { useWidgetData } from '../hooks/useWidgetData';
+import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import { getFieldValue, formatBIValue } from '../engine/utils';
@@ -37,7 +37,10 @@ const TableWidget: React.FC<TableWidgetProps> = ({
     const { getDataSource } = useDataStore(); // Kept for metadata/schema
     const { crossFilters: allDashboardFilters, getFiltersForWidget, isWidgetFiltered } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
-    const widgetData = useWidgetData(widget);
+
+    // Switch to useDirectQuery
+    const { data: directData, isLoading: directLoading, error: directError } = useDirectQuery(widget);
+    const widgetData = directData;
 
     const [sortField, setSortField] = useState<string | null>(null);
     const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -47,46 +50,43 @@ const TableWidget: React.FC<TableWidgetProps> = ({
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
     }, [widget.dataSourceId, getDataSource]);
 
-    // Optimized memo dependencies - only re-calculate if data-relevant fields change
-    const dataRelevantProps = JSON.stringify({
-        filters: widget.filters,
-        enableCrossFilter: widget.enableCrossFilter,
-        dataSourceId: widget.dataSourceId,
-        columns: widget.columns
-    });
-
+    // For Direct Query (BigQuery), filtering/sorting is done server-side.
+    // However, for CSV/JSON sources (widgetData is full data), we still need local processing.
     const tableData = useMemo(() => {
         if (!widgetData || widgetData.length === 0) return [];
 
         let data = widgetData;
 
-        if (widget.filters && widget.filters.length > 0) {
-            data = applyFilters(data, widget.filters);
-        }
-
-        if (widget.enableCrossFilter !== false) {
-            const crossFilters = getFiltersForWidget(widget.id);
-            if (crossFilters.length > 0) {
-                data = applyFilters(data, crossFilters);
+        // Only apply local filters if NOT BigQuery (BigQuery handles it in useDirectQuery)
+        if (dataSource?.type !== 'bigquery') {
+            if (widget.filters && widget.filters.length > 0) {
+                data = applyFilters(data, widget.filters);
             }
-        }
 
-        // Apply global filters
-        if (activeDashboard?.globalFilters?.length) {
-            const relevantFilters = activeDashboard.globalFilters.filter(gf =>
-                !gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)
-            );
-            if (relevantFilters.length > 0) {
-                data = applyFilters(data, relevantFilters as any[]);
+            if (widget.enableCrossFilter !== false) {
+                const crossFilters = getFiltersForWidget(widget.id);
+                if (crossFilters.length > 0) {
+                    data = applyFilters(data, crossFilters);
+                }
             }
-        }
 
-        if (sortField) {
-            data = sortData(data, sortField, sortDirection);
+            // Apply global filters
+            if (activeDashboard?.globalFilters?.length) {
+                const relevantFilters = activeDashboard.globalFilters.filter(gf =>
+                    !gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)
+                );
+                if (relevantFilters.length > 0) {
+                    data = applyFilters(data, relevantFilters as any[]);
+                }
+            }
+
+            if (sortField) {
+                data = sortData(data, sortField, sortDirection);
+            }
         }
 
         return data;
-    }, [widgetData, dataRelevantProps, allDashboardFilters, activeDashboard?.globalFilters, sortField, sortDirection]);
+    }, [widgetData, dataSource?.type, allDashboardFilters, activeDashboard?.globalFilters, sortField, sortDirection]);
 
     const columns = useMemo(() => {
         if (widget.columns && widget.columns.length > 0) {
@@ -119,22 +119,32 @@ const TableWidget: React.FC<TableWidgetProps> = ({
 
     const isFiltered = isWidgetFiltered(widget.id);
 
+    const loadingProgress = useMemo(() => {
+        if (!dataSource || !dataSource.totalRows || dataSource.totalRows === 0) return 0;
+        return (dataSource.data?.length || 0) / dataSource.totalRows * 100;
+    }, [dataSource]);
+
     if (!dataSource || tableData.length === 0) {
         let errorMsg = 'No data available';
         if (!dataSource) errorMsg = 'Select data source';
         else if (columns.length === 0) errorMsg = 'Configure columns';
 
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
+            <BaseWidget
+                widget={widget}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onDuplicate={onDuplicate}
+                isSelected={isSelected}
+                loading={directLoading}
+                loadingProgress={loadingProgress}
+                error={directError || undefined}
+                onClick={onClick}
+            >
                 <EmptyChartState type="table" message={errorMsg} onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
         );
     }
-
-    const loadingProgress = useMemo(() => {
-        if (!dataSource || !dataSource.totalRows || dataSource.totalRows === 0) return 0;
-        return (dataSource.data?.length || 0) / dataSource.totalRows * 100;
-    }, [dataSource]);
 
     return (
         <BaseWidget
@@ -144,8 +154,8 @@ const TableWidget: React.FC<TableWidgetProps> = ({
             onDuplicate={onDuplicate}
             isSelected={isSelected}
             isFiltered={isWidgetFiltered(widget.id)}
-            loading={dataSource?.isLoadingPartial}
-            loadingProgress={loadingProgress}
+            loading={directLoading}
+            error={directError || undefined}
             onClick={onClick}
         >
             <div className="flex flex-col h-full">
@@ -155,12 +165,12 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                         className="w-full text-xs"
                         style={{ fontSize: widget.fontSize ? `${widget.fontSize}px` : undefined }}
                     >
-                        <thead className="sticky top-0 bg-slate-900 border-b border-white/10">
+                        <thead className="sticky top-0 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-white/10">
                             <tr>
                                 {columns.map((col) => (
                                     <th
                                         key={col.field}
-                                        className={`px-3 py-2 text-left font-bold text-slate-300 ${col.sortable !== false ? 'cursor-pointer hover:text-white' : ''}`}
+                                        className={`px-3 py-2 text-left font-bold text-slate-600 dark:text-slate-300 ${col.sortable !== false ? 'cursor-pointer hover:text-indigo-600 dark:hover:text-white' : ''}`}
                                         onClick={() => col.sortable !== false && handleSort(col.field)}
                                     >
                                         <div className="flex items-center gap-2">
@@ -175,12 +185,13 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                         </thead>
                         <tbody>
                             {paginatedData.map((row, rowIndex) => (
-                                <tr key={rowIndex} className="border-b border-white/5 hover:bg-white/5">
+                                <tr key={rowIndex} className="border-b border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/5">
                                     {columns.map((col) => {
                                         const val = getFieldValue(row, col.field);
+                                        const format = (col as any).format || widget.valueFormat || 'standard';
                                         return (
-                                            <td key={col.field} className="px-3 py-2 text-slate-300">
-                                                {formatBIValue(val, widget.valueFormat || 'standard')}
+                                            <td key={col.field} className="px-3 py-2 text-slate-600 dark:text-slate-300">
+                                                {formatBIValue(val, format)}
                                             </td>
                                         );
                                     })}
@@ -192,7 +203,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
 
                 {/* Pagination */}
                 {totalPages > 1 && (
-                    <div className="flex items-center justify-between px-3 py-2 border-t border-white/10 bg-slate-900/30">
+                    <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/30">
                         <div className="text-[10px] text-slate-400">
                             Showing {((currentPage - 1) * pageSize + 1).toLocaleString()} to {Math.min(currentPage * pageSize, tableData.length).toLocaleString()} of {tableData.length.toLocaleString()}
                         </div>
@@ -200,7 +211,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                             <button
                                 onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
                                 disabled={currentPage === 1}
-                                className="px-2 py-1 rounded text-[10px] bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                                className="px-2 py-1 rounded text-[10px] bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
                             >
                                 <i className="fas fa-chevron-left"></i>
                             </button>
@@ -210,7 +221,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                             <button
                                 onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
                                 disabled={currentPage === totalPages}
-                                className="px-2 py-1 rounded text-[10px] bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                                className="px-2 py-1 rounded text-[10px] bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
                             >
                                 <i className="fas fa-chevron-right"></i>
                             </button>

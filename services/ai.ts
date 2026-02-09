@@ -24,13 +24,15 @@ function cleanJsonResponse(text: string): string {
 
 // Helper to get API keys from local storage or env
 const getApiKey = (provider: string) => {
-  if (provider === 'OpenAI') return localStorage.getItem('openai_api_key') || process.env.OPENAI_API_KEY || '';
-  if (provider === 'Anthropic') return localStorage.getItem('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '';
-  if (provider === 'Google') return localStorage.getItem('gemini_api_key') || process.env.GEMINI_API_KEY || process.env.API_KEY || "";
-  return "";
+  let key = "";
+  if (provider === 'OpenAI') key = localStorage.getItem('openai_api_key') || process.env.OPENAI_API_KEY || '';
+  else if (provider === 'Anthropic') key = localStorage.getItem('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '';
+  else if (provider === 'Google') key = localStorage.getItem('gemini_api_key') || process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+
+  return key.trim();
 };
 
-async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7) {
+async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7, signal?: AbortSignal) {
   const apiKey = getApiKey('OpenAI');
   if (!apiKey) throw new Error("OpenAI API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
 
@@ -48,7 +50,8 @@ async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: str
       ],
       temperature: temperature,
       response_format: { type: "json_object" }
-    })
+    }),
+    signal
   });
 
   const data = await response.json();
@@ -56,7 +59,7 @@ async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: str
   return data.choices[0].message.content;
 }
 
-async function callAnthropic(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7) {
+async function callAnthropic(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7, signal?: AbortSignal) {
   const apiKey = getApiKey('Anthropic');
   if (!apiKey) throw new Error("Anthropic API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
 
@@ -76,7 +79,8 @@ async function callAnthropic(modelId: string, systemPrompt: string, userPrompt: 
       ],
       max_tokens: 4096,
       temperature: temperature
-    })
+    }),
+    signal
   });
 
   const data = await response.json();
@@ -89,7 +93,8 @@ async function regenerateInsightsWithRealData(
   originalPrompt: string,
   kpis: any[],
   charts: any[],
-  chartData: any[][]
+  chartData: any[][],
+  signal?: AbortSignal
 ): Promise<{ summary: string, insights: any[], chartInsights: any[] }> {
   try {
     // Basic detection of provider based on model ID prefix
@@ -119,24 +124,26 @@ async function regenerateInsightsWithRealData(
       ${dataSummary}
       
       YÊU CẦU PHÂN TÍCH (QUAN TRỌNG - TUYỆT ĐỐI TUÂN THỦ):
-      1. Dashboard Summary: Viết lại 1-2 câu cực ngắn (dưới 40 chữ), phản ánh đúng tình hình dựa trên số liệu thật.
-      2. Strategic Insights: Tạo ra 3 nhận định chiến lược. MỖI INSIGHT BẮT BUỘC PHẢI CÓ:
-         - title: Tiêu đề ngắn gọn (4-8 từ)
-         - analysis: Phân tích ngắn gọn (20-40 từ)
-         - recommendation: HÀNH ĐỘNG CỤ THỂ (BẮT BUỘC - KHÔNG ĐƯỢC ĐỂ TRỐNG hoặc "N/A")
-           * Phải là câu mệnh lệnh: "Tăng ngân sách...", "Cắt giảm chi phí...", "Tập trung vào..."
-           * Phải có số liệu cụ thể nếu có thể: "Tăng 20%", "Giảm 30%", "Chuyển 50% ngân sách sang..."
-         - priority: "High", "Medium", hoặc "Low"
-      3. Chart Insights (BẮT BUỘC):
+      1. Dashboard Summary: Tổng hợp tình hình cốt lõi cực kỳ súc tích nhưng đầy đủ chiều sâu chiến lược (dưới 60 chữ).
+      2. Strategic Insights (NHẬN ĐỊNH CẤP CAO): Tạo ra ít nhất 3-4 nhận định đa chiều. Mỗi nhận định PHẢI bao gồm:
+         - title: Tiêu đề thu hút, phản ánh bản chất vấn đề (Vd: "Khủng hoảng chi phí", "Cơ hội chiếm lĩnh thị trường").
+         - analysis: Phân tích sâu sắc (40-70 từ). Kết nối các chỉ số KPI với nhau (Vd: "Mặc dù chi phí tăng 20%, nhưng Lợi nhuận gộp giảm 5%, cho thấy hiệu suất vận hành đang đi xuống").
+         - recommendation: CHIẾN LƯỢC HÀNH ĐỘNG (BẮT BUỘC).
+           * Phải là giải pháp giải quyết tận gốc vấn đề (Root Cause Analysis).
+           * Có các bước thực thi 1-2-3 nếu cần.
+         - priority: "Critical", "High", "Medium", hoặc "Low"
+      3. Chart Insights (PHÂN TÍCH CHUYÊN SÂU):
          - PHẢI tạo ra CHÍNH XÁC ${charts.length} phân tích, tương ứng với ${charts.length} biểu đồ đã liệt kê ở trên.
          - THỨ TỰ: Phải trả về mảng chart_insights theo đúng thứ tự của các biểu đồ trong danh sách trên.
-         - NGUYÊN TẮC CONTEXT (CHỐNG RÂU ÔNG NỌ CẮM CẰM BÀ):
+         - NGUYÊN TẮC CONTEXT (KIỂM TRA CHÉO):
            * Phân tích của biểu đồ nào CHỈ ĐƯỢC dùng số liệu của biểu đồ đó.
            * TUYỆT ĐỐI không nhắc đến dữ liệu của biểu đồ A trong phần phân tích của biểu đồ B.
-           * Ví dụ: Nếu biểu đồ nói về Nhân viên, KHÔNG được phân tích về Facebook hay Chi phí quảng cáo trong đó.
-         - analysis: Tìm điểm bất thường, tăng trưởng/sụt giảm. Chỉ dựa trên dữ liệu thật được cung cấp.
-         - trend: Giải thích ngắn gọn động lực chính.
-         - action: Đề xuất hành động thực tế (BẮT BUỘC CỤ THỂ).
+         - analysis: PHÂN TÍCH CHI TIẾT. Không chỉ nêu con số, hãy giải thích ý nghĩa kinh tế/vận hành đằng sau sự thay đổi. 
+           * Tìm kiếm các điểm xoay chiều (inflection points).
+           * So sánh các giai đoạn (đầu kỳ vs cuối kỳ).
+           * Đánh giá mức độ ổn định của dữ liệu.
+         - trend: Phân tích xu hướng dài hạn (Long-term trend) vs biến động ngắn hạn (Short-term volatility).
+         - action: Đề xuất hành động chiến thuật CỤ THỂ và định lượng (BÁT BUỘC).
       
       Output JSON format:
       {
@@ -173,20 +180,38 @@ async function regenerateInsightsWithRealData(
     let responseText = "{}";
 
     if (provider === 'OpenAI') {
-      responseText = await callOpenAI(modelId, "You are a JSON generator.", prompt);
+      responseText = await callOpenAI(modelId, "You are a JSON generator.", prompt, 0.7, signal);
     } else if (provider === 'Anthropic') {
-      responseText = await callAnthropic(modelId, "You are a JSON generator. Output valid JSON only.", prompt);
+      responseText = await callAnthropic(modelId, "You are a JSON generator. Output valid JSON only.", prompt, 0.7, signal);
     } else {
       if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: modelId });
-      const response = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
+
+      // Retry logic for 429 errors
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (attempts < maxAttempts) {
+        try {
+          const response = await model.generateContent({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+            }
+          }, { signal });
+          responseText = response.response.text();
+          break; // Success
+        } catch (e: any) {
+          attempts++;
+          const is429 = e.message?.includes('429') || e.message?.toLowerCase().includes('resource exhausted');
+          if (is429 && attempts < maxAttempts) {
+            console.warn(`Gemini 429 detected, retrying (attempt ${attempts})...`);
+            await new Promise(resolve => setTimeout(resolve, attempts * 2000)); // Exponential backoff
+            continue;
+          }
+          throw e;
         }
-      });
-      responseText = response.response.text();
+      }
     }
 
     const result = JSON.parse(cleanJsonResponse(responseText || "{}"));
@@ -195,8 +220,23 @@ async function regenerateInsightsWithRealData(
       insights: result.strategic_insights || [],
       chartInsights: result.chart_insights || []
     };
-  } catch (e) {
+  } catch (e: any) {
     console.warn("Failed to regenerate insights", e);
+    const errorMsg = e.message || String(e);
+    if (errorMsg.toLowerCase().includes('leaked')) {
+      return {
+        summary: "⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio và cập nhật trong tab AI Setting.",
+        insights: [],
+        chartInsights: []
+      };
+    }
+    if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
+      return {
+        summary: "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ 30-60 giây rồi thử lại, hoặc nâng cấp lên gói trả phí (Pay-as-you-go).",
+        insights: [],
+        chartInsights: []
+      };
+    }
     return { summary: "", insights: [], chartInsights: [] };
   }
 }
@@ -206,7 +246,7 @@ export async function generateReportInsight(
   prompt: string,
   schemaInfo: string,
   tableNames: string[],
-  options?: { token?: string, projectId?: string }
+  options?: { token?: string, projectId?: string, signal?: AbortSignal }
 ): Promise<{ dashboard: DashboardConfig, sql: string, executionTime: number }> {
   const activeModel = model || { id: 'gemini-2.0-flash', provider: 'Google' };
   const provider = activeModel.provider || 'Google';
@@ -305,14 +345,14 @@ export async function generateReportInsight(
            - Có 2-5 categories CỐ ĐỊNH: Dùng 'bar' để dễ so sánh độ dài.
            - TUYỆT ĐỐI KHÔNG DÙNG DONUT/PIE/RADIAL vì khó so sánh trực quan.
          * Nếu có 6-8 categories: Dùng 'bar' (horizontal nếu label dài).
-         * Nếu trên 8 categories: BẮT BUỘC dùng SQL LIMIT 5-10 + 'bar' chart.
+         * Nếu trên 8 categories: Chỉ dùng LIMIT khi người dùng yêu cầu xem "Top" hoặc "Bottom" criteria. TUYỆT ĐỐI KHÔNG tự ý dùng LIMIT 12.
          * **VÍ DỤ ĐÚNG**:
            ✅ "Phân bố chi phí theo 3 kênh (Facebook, Google, TikTok)" + bar
            ✅ "Tỷ lệ sản phẩm bán ra (5 loại)" + bar
        
        - **COMPARISON (So sánh)**:
          * Dưới 6 items KHÔNG CÓ THỜI GIAN: Dùng 'bar'.
-         * Trên 6 items: Dùng 'bar' + SQL LIMIT để tập trung vào top performers.
+         * Trên 6 items: Chỉ dùng SQL LIMIT khi người dùng yêu cầu tập trung vào top performers hoặc xem "Top" criteria.
           * Nếu có yếu tố thời gian: Dùng 'bar', 'line'.
        
        - **CORRELATION (Tương quan 2 đại lượng)**:
@@ -334,13 +374,12 @@ export async function generateReportInsight(
     5. KPI DASHBOARD: Phải sinh ra ít nhất 4-6 chỉ số KPI 'Sống còn'.
     6. NGẮN GỌN & CHUYÊN NGHIỆP: Mọi nhận định phải có số liệu SQL chứng minh. Tổng kết (Summary) phải CỰC KỲ NGẮN GỌN (dưới 50 từ), tập trung vào thông điệp quan trọng nhất.
 
-    YÊU CẦU VỀ GIÁ TRỊ QUYẾT ĐỊNH (DECISIVE INSIGHTS):
-    - Bạn không phải là máy đọc số. Bạn là CEO/Advisor. 
-    - Insights không được dùng từ: "có xu hướng", "dao động khoảng".
-    - Hãy dùng từ mạnh: "Phát hiện lỗ hổng", "Lãng phí ngân sách ở...", "Cần cắt giảm ngay...", "Cơ hội tăng trưởng 20% nằm ở...".
-    - Mọi Strategic Insights phải trả lời được câu hỏi: "Nếu không làm gì, doanh nghiệp sẽ mất gì?".
-    - Chart Insights: Phần 'action' phải là một mệnh lệnh hành động (Actionable Order). 
-    - KHÔNG ĐƯỢC NHẦM LẪN DỮ LIỆU: Phân tích của Chart nào phải dựa trên Title và SQL của Chart đó. Không được râu ông nọ cắm cằm bà.
+    YÊU CẦU VỀ GIÁ TRỊ QUYẾT ĐỊNH (DECISIVE & DEEP INSIGHTS):
+    - Bạn không phải là máy đọc số. Bạn là CEO/Advisor/Data Scientist. 
+    - Insights PHẢI CÓ CHIỀU SÂU: Kết nối các dấu chấm giữa các bảng dữ liệu khác nhau. 
+    - Hãy dùng ngôn ngữ chuyên gia: "Phát hiện sự lệch pha giữa...", "Tỷ lệ tăng trưởng đang bị kìm hãm bởi...", "Cơ hội tối ưu hóa nằm ở việc tái cấu trúc...".
+    - Mọi Strategic Insights phải chỉ ra được MỐI LIÊN HỆ nhân quả (Cause-Effect) và tác động kinh doanh (Business Impact).
+    - Chart Insights: Phần 'analysis' phải cung cấp bối cảnh (Context), không chỉ liệt kê số. Phần 'action' phải là lộ trình hành động (Roadmap).
 
     QUY TẮC SQL & KPI MAPPING:
     1. SQL TỔNG QUAN (root 'sql'): 
@@ -350,55 +389,56 @@ export async function generateReportInsight(
        - Alias trùng label (lowercase, underscore).
        - BẮT BUỘC PHẢI DÙNG ĐƯỜNG DẪN ĐẦY ĐỦ (Full Path): \`project-id.dataset_id.table_id\`.
        - Xử lý Date: Nếu không có yêu cầu ngày cụ thể, hãy lấy dữ liệu mới nhất có sẵn trong bảng thay vì dùng strict CURRENT_DATE() để tránh bảng trống.
+       - TOÁN TỬ CHIA: TUYỆT ĐỐI không dùng toán tử '/' để chia. BẮT BUỘC dùng hàm \`SAFE_DIVIDE(numerator, denominator)\` cho tất cả các phép tính tỷ lệ (ROI, Conversion Rate, v.v.) để tránh lỗi 'Division by zero'.
     
     2. SQL TIME-SERIES - CHỌN GRANULARITY THÔNG MINH:
        **Nguyên tắc**: Phân tích TIME GRANULARITY dựa trên câu hỏi của người dùng.
        
        **A. DAILY (Theo ngày)**:
        - Keywords: "hàng ngày", "theo ngày", "7 ngày", "30 ngày", "tuần này", "tháng này"
-       - SQL: \`SELECT * FROM (SELECT DATE(created_at) as date, SUM(...) FROM ... GROUP BY 1 ORDER BY 1 DESC LIMIT 30) ORDER BY 1 ASC\`
+       - SQL: \`SELECT DATE(created_at) as date, SUM(...) FROM ... GROUP BY 1 ORDER BY 1 ASC\`
        - ORDER BY: date ASC (để hiển thị từ trái qua phải là CWS -> MỚI)
-       - LIMIT: 7-30 rows (tùy yêu cầu)
+       - LIMIT: KHÔNG DÙNG (Hiển thị tất cả dữ liệu có sẵn). TUYỆT ĐỐI KHÔNG tự ý dùng LIMIT 12.
        - VD: "Doanh thu 30 ngày gần nhất"
        
        **B. WEEKLY (Theo tuần)**:
        - Keywords: "theo tuần", "hàng tuần", "12 tuần", "quý này theo tuần"
        - SQL: \`DATE_TRUNC(created_at, WEEK) as week\` (Dùng pattern Subquery như bước A để lấy mới nhất nhưng hiển thị ASC)
        - ORDER BY: week ASC
-       - LIMIT: 12-26 rows
+       - LIMIT: KHÔNG DÙNG.
        - VD: "Chi phí quảng cáo 12 tuần qua"
        
        **C. MONTHLY (Theo tháng)**:
        - Keywords: "theo tháng", "hàng tháng", "6 tháng", "năm nay", "12 tháng"
        - SQL: \`DATE_TRUNC(created_at, MONTH) as month\`
        - ORDER BY: month ASC
-       - LIMIT: 6-12 rows
+       - LIMIT: KHÔNG DÙNG.
        - VD: "Doanh thu 12 tháng gần nhất"
        
        **D. QUARTERLY (Theo quý)**:
        - Keywords: "theo quý", "hàng quý", "4 quý", "2 năm qua theo quý"
        - SQL: \`...quarter...\`
        - ORDER BY: quarter ASC
-       - LIMIT: 4-8 rows
+       - LIMIT: KHÔNG DÙNG.
        - VD: "Phân tích doanh thu theo quý"
        
        **E. HALF-YEARLY (Theo nửa năm)**:
        - Keywords: "theo nửa năm", "6 tháng đầu năm", "nửa cuối năm", "H1", "H2"
        - SQL: \`...half_year...\`
        - ORDER BY: half_year ASC
-       - LIMIT: 4-6 rows
+       - LIMIT: KHÔNG DÙNG.
        - VD: "So sánh H1 vs H2"
        
        **F. YEARLY (Theo năm)**:
        - Keywords: "theo năm", "hàng năm", "3 năm", "5 năm qua"
        - SQL: \`EXTRACT(YEAR FROM created_at) as year\`
        - ORDER BY: year ASC
-       - LIMIT: 3-5 rows
+       - LIMIT: KHÔNG DÙNG.
        - VD: "Tăng trưởng doanh thu 5 năm qua"
        
        **LƯU Ý QUAN TRỌNG**:
-       - Luôn dùng ORDER BY [time_column] DESC để có dữ liệu mới nhất
-       - Dùng LIMIT phù hợp để tránh quá nhiều data points
+       - KHÔNG DÙNG LIMIT nếu không có yêu cầu "Top/Bottom" từ người dùng.
+       - TUYỆT ĐỐI KHÔNG bao giờ kèm theo 'LIMIT 12' mặc định.
        - Đảm bảo xAxisKey khớp with alias trong SQL (date, week, month, quarter, half_year, year)
     
     3. SQL Biểu đồ: Fully Qualified Name. Phải đảm bảo SQL chạy được và trả về dữ liệu đa dạng.
@@ -418,7 +458,7 @@ export async function generateReportInsight(
         ],
         "charts": [
             {
-                "type": "bar|line|scatter|combo|horizontalBar|stackedBar",
+                "type": "bar|line|scatter|combo|horizontalBar|stackedBar|area",
                 "title": "string",
                 "xAxisKey": "string",
                 "dataKeys": ["string"],
@@ -439,9 +479,9 @@ export async function generateReportInsight(
     let responseText = "{}";
 
     if (provider === 'OpenAI') {
-      responseText = await callOpenAI(activeModel.id, systemInstruction, prompt);
+      responseText = await callOpenAI(activeModel.id, systemInstruction, prompt, 0.7, options?.signal);
     } else if (provider === 'Anthropic') {
-      responseText = await callAnthropic(activeModel.id, systemInstruction, prompt);
+      responseText = await callAnthropic(activeModel.id, systemInstruction, prompt, 0.7, options?.signal);
     } else {
       if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
       const genAI = new GoogleGenerativeAI(apiKey);
@@ -450,94 +490,111 @@ export async function generateReportInsight(
         systemInstruction: systemInstruction
       });
 
-      const response = await aiModel.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-          responseSchema: {
-            type: SchemaType.OBJECT,
-            properties: {
-              sql: { type: SchemaType.STRING, description: "SQL dùng để lấy các chỉ số KPI tổng quan. Sử dụng Subqueries để tránh mất dòng dữ liệu." },
-              title: { type: SchemaType.STRING },
-              summary: { type: SchemaType.STRING },
-              kpis: {
-                type: SchemaType.ARRAY,
-                items: {
-                  type: SchemaType.OBJECT,
-                  properties: {
-                    label: { type: SchemaType.STRING },
-                    value: { type: SchemaType.STRING },
-                    trend: { type: SchemaType.STRING },
-                    status: { type: SchemaType.STRING },
-                    comparisonContext: { type: SchemaType.STRING }
-                  },
-                  required: ["label", "value", "trend", "status", "comparisonContext"]
-                }
-              },
-              charts: {
-                type: SchemaType.ARRAY,
-                items: {
-                  type: SchemaType.OBJECT,
-                  properties: {
-                    type: {
-                      type: SchemaType.STRING,
-                      enum: ["bar", "line", "scatter", "combo", "horizontalBar", "stackedBar"],
-                      description: "Allowed: bar, line, scatter, combo, horizontalBar, stackedBar"
-                    },
-                    title: { type: SchemaType.STRING },
-                    xAxisKey: { type: SchemaType.STRING },
-                    dataKeys: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-                    insight: {
+      // Retry logic for 429 errors
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (attempts < maxAttempts) {
+        try {
+          const response = await aiModel.generateContent({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              temperature: 0.1,
+              responseSchema: {
+                type: SchemaType.OBJECT,
+                properties: {
+                  sql: { type: SchemaType.STRING, description: "SQL dùng để lấy các chỉ số KPI tổng quan. Sử dụng Subqueries để tránh mất dòng dữ liệu." },
+                  title: { type: SchemaType.STRING },
+                  summary: { type: SchemaType.STRING },
+                  kpis: {
+                    type: SchemaType.ARRAY,
+                    items: {
                       type: SchemaType.OBJECT,
                       properties: {
-                        analysis: { type: SchemaType.STRING },
+                        label: { type: SchemaType.STRING },
+                        value: { type: SchemaType.STRING },
                         trend: { type: SchemaType.STRING },
-                        action: { type: SchemaType.STRING },
-                        highlight: {
-                          type: SchemaType.ARRAY,
-                          items: {
-                            type: SchemaType.OBJECT,
-                            properties: {
-                              index: { type: SchemaType.INTEGER },
-                              value: { type: SchemaType.STRING },
-                              label: { type: SchemaType.STRING },
-                              type: { type: SchemaType.STRING }
-                            }
-                          }
-                        }
+                        status: { type: SchemaType.STRING },
+                        comparisonContext: { type: SchemaType.STRING }
                       },
-                      required: ["analysis", "trend", "action"]
-                    },
-                    sql: { type: SchemaType.STRING },
-                    mockLabels: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
+                      required: ["label", "value", "trend", "status", "comparisonContext"]
+                    }
                   },
-                  required: ["type", "title", "dataKeys", "insight", "xAxisKey", "sql", "mockLabels"]
-                }
-              },
-              insights: {
-                type: SchemaType.ARRAY,
-                items: {
-                  type: SchemaType.OBJECT,
-                  properties: {
-                    title: { type: SchemaType.STRING },
-                    analysis: { type: SchemaType.STRING },
-                    recommendation: { type: SchemaType.STRING },
-                    priority: { type: SchemaType.STRING }
+                  charts: {
+                    type: SchemaType.ARRAY,
+                    items: {
+                      type: SchemaType.OBJECT,
+                      properties: {
+                        type: {
+                          type: SchemaType.STRING,
+                          enum: ["bar", "line", "scatter", "combo", "horizontalBar", "stackedBar", "area"],
+                          description: "Allowed: bar, line, scatter, combo, horizontalBar, stackedBar, area"
+                        },
+                        title: { type: SchemaType.STRING },
+                        xAxisKey: { type: SchemaType.STRING },
+                        dataKeys: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+                        insight: {
+                          type: SchemaType.OBJECT,
+                          properties: {
+                            analysis: { type: SchemaType.STRING },
+                            trend: { type: SchemaType.STRING },
+                            action: { type: SchemaType.STRING },
+                            highlight: {
+                              type: SchemaType.ARRAY,
+                              items: {
+                                type: SchemaType.OBJECT,
+                                properties: {
+                                  index: { type: SchemaType.INTEGER },
+                                  value: { type: SchemaType.STRING },
+                                  label: { type: SchemaType.STRING },
+                                  type: { type: SchemaType.STRING }
+                                }
+                              }
+                            }
+                          },
+                          required: ["analysis", "trend", "action"]
+                        },
+                        sql: { type: SchemaType.STRING },
+                        mockLabels: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
+                      },
+                      required: ["type", "title", "dataKeys", "insight", "xAxisKey", "sql", "mockLabels"]
+                    }
                   },
-                  required: ["title", "analysis", "recommendation"]
-                }
-              },
-              suggestions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
-            },
-            required: ["sql", "title", "summary", "charts", "kpis", "insights", "suggestions"]
-          } as any
+                  insights: {
+                    type: SchemaType.ARRAY,
+                    items: {
+                      type: SchemaType.OBJECT,
+                      properties: {
+                        title: { type: SchemaType.STRING },
+                        analysis: { type: SchemaType.STRING },
+                        recommendation: { type: SchemaType.STRING },
+                        priority: { type: SchemaType.STRING }
+                      },
+                      required: ["title", "analysis", "recommendation"]
+                    }
+                  },
+                  suggestions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
+                },
+                required: ["sql", "title", "summary", "charts", "kpis", "insights", "suggestions"]
+              } as any
+            }
+          }, { signal: options?.signal });
+          if (!response || !response.response) {
+            throw new Error("Không nhận được phản hồi từ AI.");
+          }
+          responseText = response.response.text();
+          break; // Success
+        } catch (e: any) {
+          attempts++;
+          const is429 = e.message?.includes('429') || e.message?.toLowerCase().includes('resource exhausted');
+          if (is429 && attempts < maxAttempts) {
+            console.warn(`Gemini 429 detected in report generation, retrying (attempt ${attempts})...`);
+            await new Promise(resolve => setTimeout(resolve, attempts * 2000));
+            continue;
+          }
+          throw e;
         }
-      });
-      if (!response || !response.response) {
-        throw new Error("Không nhận được phản hồi từ AI.");
       }
-      responseText = response.response.text();
     }
 
     const cleanedText = cleanJsonResponse(responseText);
@@ -551,7 +608,7 @@ export async function generateReportInsight(
     if (options?.token && options?.projectId && result.sql) {
       try {
         const { runQuery } = await import('./bigquery');
-        const kpiData = await runQuery(options.token, options.projectId, result.sql);
+        const kpiData = await runQuery(options.token, options.projectId, result.sql, options.signal);
         if (kpiData && kpiData.length > 0) {
           const firstRow = kpiData[0];
           const normalizeStr = (str: string) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s/g, '_');
@@ -620,7 +677,8 @@ export async function generateReportInsight(
           prompt,
           kpiValues,
           validCharts,
-          validData
+          validData,
+          options?.signal
         );
 
         if (realInsights.summary) finalSummary = realInsights.summary;
@@ -682,7 +740,13 @@ export async function generateReportInsight(
     return { dashboard: finalDashboard, sql: result.sql || "-- SQL Trace unavailable", executionTime: Date.now() - startTime };
 
   } catch (e: any) {
-    console.error("AI Service Error:", e);
+    const errorMsg = e.message || String(e);
+    if (errorMsg.toLowerCase().includes('leaked')) {
+      throw new Error("⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio (https://aistudio.google.com/) và cập nhật trong tab AI Setting. Lưu ý tuyệt đối không để lộ Key này trên GitHub hoặc các nơi công cộng.");
+    }
+    if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
+      throw new Error("⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ vài giây rồi nhấn thử lại nhé.");
+    }
     throw e;
   }
 }
@@ -731,13 +795,11 @@ export async function analyzeDashboardContent(
   const systemInstruction = `
     Bạn là "360data AI Advisor" - Chuyên gia phân tích dữ liệu chuyên nghiệp.
     Nhiệm vụ của bạn là hỗ trợ người dùng giải mã các số liệu TRÊN DASHBOARD.
-    
-    NGUYÊN TẮC PHÂN TÍCH (BẮT BUỘC):
-    1. CHỈ PHÂN TÍCH DỰA TRÊN DỮ LIỆU THỰC: Mọi nhận định, con số và xu hướng phải bắt nguồn trực tiếp từ danh sách Widget và Data Sample. TUYỆT ĐỐI không bịa số.
     2. NÊU TÊN BIỂU ĐỒ: Chỉ rõ Insight đến từ biểu đồ nào.
     3. CHIỀU SÂU: Không chỉ nói 'doanh thu tăng', hãy cố gắng giải thích 'tại sao' dựa trên các chart khác (tương quan giữa traffic và conversion chẳng hạn).
     4. HÀNH ĐỘNG: Luôn kết thúc bằng một vài khuyến nghị thực tế.
     5. NGÔN NGỮ: Trả về bằng ngôn ngữ người dùng hỏi (Việt/Anh).
+    6. SQL SAFETY: Nếu người dùng yêu cầu viết hoặc sửa SQL, TUYỆT ĐỐI không dùng toán tử '/' để chia. BẮT BUỘC dùng \`SAFE_DIVIDE(numerator, denominator)\`.
   `;
 
   try {
@@ -754,20 +816,189 @@ export async function analyzeDashboardContent(
         systemInstruction: systemInstruction
       });
 
-      const response = await aiModel.generateContent({
-        contents: [
-          ...history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.content }] })),
-          { role: 'user', parts: [{ text: fullUserMessage }] }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-        }
-      });
+      // Retry logic for 429 errors
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (attempts < maxAttempts) {
+        try {
+          const response = await aiModel.generateContent({
+            contents: [
+              ...history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.content }] })),
+              { role: 'user', parts: [{ text: fullUserMessage }] }
+            ],
+            generationConfig: {
+              temperature: 0.2,
+            }
+          });
 
-      return response.response.text() || "Xin lỗi, tôi không thể phân tích vào lúc này.";
+          return response.response.text() || "Xin lỗi, tôi không thể phân tích vào lúc này.";
+        } catch (e: any) {
+          attempts++;
+          const is429 = e.message?.includes('429') || e.message?.toLowerCase().includes('resource exhausted');
+          if (is429 && attempts < maxAttempts) {
+            console.warn(`Gemini 429 detected in analysis, retrying (attempt ${attempts})...`);
+            await new Promise(resolve => setTimeout(resolve, attempts * 2000));
+            continue;
+          }
+          throw e;
+        }
+      }
+      return "Xin lỗi, hệ thống đang bận, vui lòng thử lại sau.";
     }
   } catch (e: any) {
-    console.error("AI Analysis Error:", e);
-    return `Đã có lỗi xảy ra khi gọi AI Advisor: ${e.message || "Vui lòng kiểm tra API Key hoặc kết nối trong tab AI Setting."}`;
+    const errorMsg = e.message || String(e);
+    if (errorMsg.toLowerCase().includes('leaked')) {
+      return "⚠️ THÔNG BÁO QUAN TRỌNG: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa để bảo mật. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/\n2. Tạo một API Key MỚI.\n3. Cập nhật Key mới này vào tab 'AI Settings' trong ứng dụng.\n\nLưu ý: Tuyệt đối không chia sẻ hoặc để lộ Key này trên các kho lưu trữ công khai như GitHub.";
+    }
+    if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
+      return "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ vài giây rồi gửi lại tin nhắn nhé.";
+    }
+    return `Đã có lỗi xảy ra khi gọi AI Advisor: ${errorMsg || "Vui lòng kiểm tra API Key hoặc kết nối trong tab AI Setting."}`;
+  }
+}
+
+
+
+export async function testApiKey(provider: string, key: string): Promise<{ success: boolean, message: string }> {
+  if (!key) return { success: false, message: "API Key không được để trống." };
+
+  try {
+    if (provider === 'Google') {
+      const genAI = new GoogleGenerativeAI(key);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      await model.generateContent("Hi");
+      return { success: true, message: "Kết nối Google Gemini thành công!" };
+    } else if (provider === 'OpenAI') {
+      const response = await fetch("https://api.openai.com/v1/models", {
+        headers: { "Authorization": `Bearer ${key}` }
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      return { success: true, message: "Kết nối OpenAI thành công!" };
+    } else if (provider === 'Anthropic') {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-3-haiku-20240307",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "Hi" }]
+        })
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      return { success: true, message: "Kết nối Anthropic thành công!" };
+    }
+    return { success: false, message: "Provider không hợp lệ." };
+  } catch (e: any) {
+    console.error(`Test ${provider} Key failed:`, e);
+    let msg = e.message || String(e);
+    if (msg.toLowerCase().includes('leaked')) {
+      msg = "⚠️ API Key đã bị lộ (leaked) và bị Google/nhà cung cấp khóa. Hãy tạo Key mới.";
+    }
+    return { success: false, message: `Lỗi: ${msg}` };
+  }
+}
+
+export async function analyzeChartTrend(
+  title: string,
+  xAxis: string,
+  data: any[],
+  dataKeys: string[],
+  chartContext: string,
+  options?: { provider?: string, modelId?: string, signal?: AbortSignal }
+): Promise<string> {
+  const activeModel = {
+    id: options?.modelId || 'gemini-2.0-flash',
+    provider: options?.provider || 'Google'
+  };
+
+  if (!options?.provider && typeof localStorage !== 'undefined') {
+    // Legacy fallback: if no provider specified, check if OpenAI is available
+    if (localStorage.getItem('openai_api_key')) activeModel.provider = 'OpenAI';
+  }
+
+  const prompt = `
+    Bạn là chuyên gia phân tích dữ liệu cao cấp (Senior Data Analyst).
+    Nhiệm vụ: Phân tích sâu về biểu đồ "${title}".
+
+    Dữ liệu (Sample 20 dòng):
+    ${JSON.stringify(data.slice(0, 20))}
+
+    Trục X: ${xAxis}
+    Metrics (Trục Y): ${dataKeys.join(', ')}
+    Context: ${chartContext}
+
+    YÊU CẦU PHÂN TÍCH (Output định dạng Markdown):
+    1. **Tóm tắt Xu hướng (Executive Summary)**:
+       - Nhận định chung về xu hướng chính (Tăng/Giảm/Đi ngang).
+       - Tổng quan về độ biến động.
+
+    2. **Phân tích Nhân quả & Các biến số ảnh hưởng (Causal Analysis)**:
+       - ĐỪNG CHỈ MÔ TẢ DỮ LIỆU. Hãy giải thích TẠI SAO số liệu lại như vậy.
+       - Nếu có nhiều metrics: Phân tích mối tương quan (Correlation) giữa chúng (Vd: "Khi metric A tăng thì metric B giảm...").
+       - Nếu chỉ có 1 metric: Đưa ra các giả thuyết về các yếu tố bên ngoài có thể ảnh hưởng (Mùa vụ, sự kiện, xu hướng thị trường, chiến dịch marketing...).
+       - Chỉ ra các "Inflection Points" (Điểm đảo chiều) và nguyên nhân tiềm năng.
+
+    3. **Điểm Nổi Bật (Anomalies & Peaks)**:
+       - Xác định các điểm đỉnh (Peak) và đáy (Trough) quan trọng nhất.
+       - Phát hiện các điểm bất thường (Outlier) nếu có.
+
+    4. **Khuyến nghị Hành động (Actionable Insight)**:
+       - Dựa trên phân tích nhân quả, đề xuất 3 hành động cụ thể để cải thiện hoặc duy trì hiệu quả.
+       - Phân loại ưu tiên: Cao/Trung bình/Thấp.
+
+    LƯU Ý:
+    - Ngôn ngữ: Tiếng Việt chuyên nghiệp, văn phong Business Intelligence.
+    - Tập trung vào "Key Drivers" (Yếu tố dẫn dắt) thay vì chỉ liệt kê con số.
+    - Nếu thấy dữ liệu bị thiếu hoặc null, hãy cảnh báo.
+  `;
+
+  try {
+    if (activeModel.provider === 'OpenAI') {
+      return await callOpenAI('gpt-4o', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+    } else if (activeModel.provider === 'Anthropic') {
+      return await callAnthropic('claude-3-5-sonnet-20240620', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+    } else {
+      const apiKey = getApiKey('Google');
+      if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+      // Retry logic for 429 errors
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (attempts < maxAttempts) {
+        try {
+          const result = await model.generateContent(prompt);
+          return result.response.text();
+        } catch (e: any) {
+          attempts++;
+          const is429 = e.message?.includes('429') || e.message?.toLowerCase().includes('resource exhausted');
+          if (is429 && attempts < maxAttempts) {
+            console.warn(`Gemini 429 detected in analysis, retrying (attempt ${attempts})...`);
+            await new Promise(resolve => setTimeout(resolve, attempts * 2000));
+            continue;
+          }
+          throw e;
+        }
+      }
+      return "Xin lỗi, hệ thống đang bận, vui lòng thử lại sau.";
+    }
+  } catch (e: any) {
+    console.error("AI Analysis failed:", e);
+    const errorMsg = e.message || String(e);
+    if (errorMsg.toLowerCase().includes('leaked')) {
+      throw new Error("⚠️ LỖI BẢO MẬT: API Key của bạn đã bị lộ (leaked) và bị khóa. Vui lòng tạo Key mới.");
+    }
+    if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
+      throw new Error("⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI của bạn đã hết lượt gọi. Vui lòng chờ vài giây.");
+    }
+    throw new Error(`Xin lỗi, không thể phân tích: ${errorMsg}. Vui lòng kiểm tra lại API Key hoặc kết nối mạng.`);
   }
 }

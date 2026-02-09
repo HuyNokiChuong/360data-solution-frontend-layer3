@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { User, UserRole } from '../types';
+import { isCorporateDomain } from '../utils/domain';
 
 interface UserManagementProps {
   users: User[];
@@ -30,6 +31,20 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
     e.preventDefault();
 
     // Verification Layer: Ensure email identity is unique within the workspace
+    const emailDomain = newUser.email.split('@')[1]?.toLowerCase();
+    const adminEmail = users.find(u => u.role === 'Admin')?.email;
+    const workspaceDomain = adminEmail?.split('@')[1]?.toLowerCase();
+
+    if (!isCorporateDomain(newUser.email)) {
+      triggerToast(`Access restricted: Only corporate email accounts can be invited.`, 'error');
+      return;
+    }
+
+    if (emailDomain !== workspaceDomain) {
+      triggerToast(`Domain Mismatch: You can only invite users with @${workspaceDomain} emails to this workspace.`, 'error');
+      return;
+    }
+
     const existingUser = users.find(u => u.email.toLowerCase() === newUser.email.toLowerCase());
     if (existingUser) {
       triggerToast(`${newUser.email} is already registered in this workspace.`, 'error');
@@ -74,9 +89,9 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
         </div>
       )}
 
-      <div className="flex justify-between items-start mb-12">
+      <div className="flex justify-between items-center mb-12">
         <div>
-          <h2 className="text-4xl font-black text-white tracking-tighter mb-2">Team Management</h2>
+          <h2 className="text-4xl font-black text-slate-900 dark:text-white tracking-tighter mb-2">Team Management</h2>
           <p className="text-slate-500 font-medium">Provision user access and define role-based permissions (RBAC)</p>
         </div>
         <button
@@ -87,11 +102,11 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
         </button>
       </div>
 
-      <div className="bg-slate-900/50 backdrop-blur-md rounded-[2.5rem] border border-white/5 shadow-2xl overflow-hidden">
+      <div className="bg-white dark:bg-slate-900/50 backdrop-blur-md rounded-[2.5rem] border border-slate-200 dark:border-white/5 shadow-2xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-white/5 bg-white/[0.02]">
+              <tr className="border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">User Details</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Access Role</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Status</th>
@@ -108,8 +123,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                         {user.name.charAt(0)}
                       </div>
                       <div>
-                        <div className="text-slate-200 font-bold text-sm">{user.name}</div>
-                        <div className="text-[10px] font-black text-slate-600 uppercase tracking-widest mt-0.5">{user.email}</div>
+                        <div className="text-slate-900 dark:text-slate-200 font-bold text-sm">{user.name}</div>
+                        <div className="text-[10px] font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest mt-0.5">{user.email}</div>
                       </div>
                     </div>
                   </td>
@@ -141,12 +156,12 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                       >
                         <i className={`fas ${user.status === 'Active' ? 'fa-user-slash' : 'fa-user-check'} text-xs`}></i>
                       </button>
-                      <button className="w-10 h-10 bg-white/5 rounded-xl text-slate-500 hover:text-white transition-all flex items-center justify-center">
+                      <button className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-white transition-all flex items-center justify-center">
                         <i className="fas fa-pen text-xs"></i>
                       </button>
                       <button
                         onClick={() => deleteUser(user.id)}
-                        className="w-10 h-10 bg-white/5 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
+                        className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
                       >
                         <i className="fas fa-trash-alt text-xs"></i>
                       </button>
@@ -160,8 +175,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
       </div>
 
       {isInviteModalOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
-          <form onSubmit={handleInvite} className="w-full max-w-xl bg-[#0f172a] border border-white/10 rounded-[3rem] shadow-3xl overflow-hidden p-12 relative animate-in zoom-in-95 duration-300">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/80 dark:bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
+          <form onSubmit={handleInvite} className="w-full max-w-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[3rem] shadow-3xl overflow-hidden p-12 relative animate-in zoom-in-95 duration-300">
             {isSending && (
               <div className="absolute inset-0 z-10 bg-[#0f172a]/80 backdrop-blur-sm flex flex-col items-center justify-center">
                 <div className="w-16 h-16 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
@@ -171,8 +186,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
 
             <div className="flex justify-between items-center mb-10">
               <div>
-                <h2 className="text-3xl font-black text-white tracking-tight">Invite Member</h2>
-                <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mt-1 italic">Identity Provisioning Layer</p>
+                <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Invite Member</h2>
+                <p className="text-[10px] font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest mt-1 italic">Identity Provisioning Layer</p>
               </div>
               <button
                 type="button"
@@ -190,7 +205,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                   required
                   value={newUser.name}
                   onChange={e => setNewUser({ ...newUser, name: e.target.value })}
-                  className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-800"
+                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800"
                   placeholder="e.g. Hoàng Anh"
                 />
               </div>
@@ -201,7 +216,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                   required
                   value={newUser.email}
                   onChange={e => setNewUser({ ...newUser, email: e.target.value })}
-                  className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-800"
+                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800"
                   placeholder="anh.h@360data-solutions.ai"
                 />
               </div>
@@ -210,7 +225,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
                 <select
                   value={newUser.role}
                   onChange={e => setNewUser({ ...newUser, role: e.target.value as UserRole })}
-                  className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-600 outline-none appearance-none cursor-pointer"
+                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none appearance-none cursor-pointer"
                 >
                   <option value="Viewer">Viewer (Read Analysis Only)</option>
                   <option value="Editor">Editor (Build & Save Reports)</option>
