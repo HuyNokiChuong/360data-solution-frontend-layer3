@@ -136,10 +136,10 @@ export function formatBIValue(value: any, valueFormat: string = 'standard'): str
             }).format(num);
 
         case '1m':
-            return (num / 1000000).toFixed(1) + 'M';
+            return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
 
         case '1b':
-            return (num / 1000000000).toFixed(1) + 'B';
+            return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B';
 
         case 'scientific':
             return num.toExponential(2);
@@ -156,7 +156,8 @@ export function formatBIValue(value: any, valueFormat: string = 'standard'): str
             return getNumberFormatter('en-US', {
                 style: 'currency',
                 currency: 'USD',
-                minimumFractionDigits: 0
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 2
             }).format(num);
 
         case 'currency_vnd':
@@ -205,16 +206,28 @@ export function formatBIValue(value: any, valueFormat: string = 'standard'): str
             }).format(num / 100);
 
         case 'float_1':
-            return num.toFixed(1);
+            return getNumberFormatter('en-US', {
+                minimumFractionDigits: 1,
+                maximumFractionDigits: 1
+            }).format(num);
 
         case 'float_2':
-            return num.toFixed(2);
+            return getNumberFormatter('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }).format(num);
 
         case 'float_3':
-            return num.toFixed(3);
+            return getNumberFormatter('en-US', {
+                minimumFractionDigits: 3,
+                maximumFractionDigits: 3
+            }).format(num);
 
         case 'float_4':
-            return num.toFixed(4);
+            return getNumberFormatter('en-US', {
+                minimumFractionDigits: 4,
+                maximumFractionDigits: 4
+            }).format(num);
 
         case 'smart_axis':
             if (Math.abs(num) >= 1000000000) return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B';
@@ -227,9 +240,9 @@ export function formatBIValue(value: any, valueFormat: string = 'standard'): str
 
         case 'standard':
         default:
-            // User requested default to be float (with decimals)
+            // Improved Standard: Commas + Optional Decimals (max 2)
             return getNumberFormatter('en-US', {
-                minimumFractionDigits: 2,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 2
             }).format(num);
     }
