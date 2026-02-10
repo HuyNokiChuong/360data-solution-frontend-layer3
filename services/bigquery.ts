@@ -321,6 +321,13 @@ export const fetchTableData = async (
                     }
                 };
             }
+            if (type === 'BOOLEAN' || type === 'BOOL') {
+                return (rowData: any, val: any) => {
+                    if (val === 'true' || val === true) rowData[name] = true;
+                    else if (val === 'false' || val === false) rowData[name] = false;
+                    else rowData[name] = null;
+                };
+            }
             return (rowData: any, val: any) => {
                 rowData[name] = val;
             };
@@ -752,6 +759,10 @@ export const parseBigQueryResponse = (data: any): any[] => {
                 let val = cell.v;
                 if (['INTEGER', 'FLOAT', 'FLOAT64', 'INT64', 'NUMERIC'].includes(field.type)) {
                     val = val !== null && val !== undefined ? parseFloat(val) : null;
+                } else if (['BOOLEAN', 'BOOL'].includes(field.type)) {
+                    if (val === 'true') val = true;
+                    else if (val === 'false') val = false;
+                    else val = null;
                 }
                 rowData[field.name] = val;
             });
