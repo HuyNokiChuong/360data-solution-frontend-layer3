@@ -3,7 +3,7 @@
 // ============================================
 
 import React, { useMemo, useState } from 'react';
-import RGL, { WidthProvider } from 'react-grid-layout/legacy';
+import RGL, { WidthProvider } from 'react-grid-layout';
 import { BIDashboard, BIWidget } from '../types';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useFilterStore } from '../store/filterStore';

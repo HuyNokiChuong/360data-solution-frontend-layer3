@@ -73,6 +73,10 @@ export const refreshAccessToken = async (clientId: string): Promise<string | nul
         await initGoogleAuth(clientId);
     }
 
+    // DEBUG: Deployment Verification
+    console.log(`[Auth] Client ID: ${clientId}`);
+    console.log(`[Auth] Origin: ${window.location.origin} (Verify in Google Console)`);
+
     try {
         console.log('🔄 Triggering pro-active silent token refresh...');
         return new Promise((resolve) => {
@@ -128,6 +132,7 @@ export const getValidToken = async (clientId: string): Promise<string | null> =>
 // Trigger full login (with popup)
 export const getGoogleToken = (clientId: string): Promise<string> => {
     return new Promise((resolve, reject) => {
+        console.log(`[Auth] Manual Login Origin: ${window.location.origin}`);
         const client = (window as any).google.accounts.oauth2.initTokenClient({
             client_id: clientId,
             scope: 'https://www.googleapis.com/auth/bigquery.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets.readonly',
