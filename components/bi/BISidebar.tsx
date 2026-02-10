@@ -538,15 +538,38 @@ const BISidebar: React.FC<BISidebarProps> = ({
                     title={shareModalData.name}
                     permissions={shareModalData.permissions}
                     folderDashboards={shareModalData.folderDashboards}
-                    onSave={(perms, selectedDashboardIds) => {
+                    onSave={(email: string, roles: Record<string, SharePermission['permission'] | 'none'>) => {
+                        const now = new Date().toISOString();
+
+                        // 1. Handle Folder-level permission
                         if (shareModalData.type === 'folder') {
-                            shareFolder(shareModalData.id, perms);
-                            if (selectedDashboardIds && selectedDashboardIds.length > 0) {
-                                selectedDashboardIds.forEach(id => shareDashboard(id, perms));
+                            const folderRole = roles['folder'];
+                            const folder = folders.find(f => f.id === shareModalData.id);
+                            if (folder) {
+                                let newPerms = [...(folder.sharedWith || [])].filter(p => p.userId !== email);
+                                if (folderRole !== 'none') {
+                                    newPerms.push({ userId: email, permission: folderRole, sharedAt: now });
+                                }
+                                shareFolder(folder.id, newPerms);
                             }
-                        } else {
-                            shareDashboard(shareModalData.id, perms);
                         }
+
+                        // 2. Handle Dashboard-level permissions
+                        Object.entries(roles).forEach(([key, role]) => {
+                            if (key === 'folder') return; // Handled above
+
+                            // Determine target dashboard ID
+                            const targetDashboardId = key === 'dashboard' ? shareModalData.id : key;
+                            const dashboard = dashboards.find(d => d.id === targetDashboardId);
+
+                            if (dashboard) {
+                                let newPerms = [...(dashboard.sharedWith || [])].filter(p => p.userId !== email);
+                                if (role !== 'none') {
+                                    newPerms.push({ userId: email, permission: role, sharedAt: now });
+                                }
+                                shareDashboard(dashboard.id, newPerms);
+                            }
+                        });
                     }}
                 />
             )}

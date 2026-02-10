@@ -8,203 +8,218 @@ interface ShareModalProps {
     itemType: 'dashboard' | 'folder';
     permissions: SharePermission[];
     folderDashboards?: BIDashboard[];
-    onSave: (permissions: SharePermission[], selectedDashboardIds?: string[]) => void;
+    onSave: (email: string, roles: Record<string, SharePermission['permission'] | 'none'>) => void;
 }
 
 export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, title, itemType, permissions, folderDashboards, onSave }) => {
     const [email, setEmail] = useState('');
-    const [role, setRole] = useState<'view' | 'edit' | 'admin'>('view');
+    const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
     const [currentPermissions, setCurrentPermissions] = useState<SharePermission[]>(permissions || []);
-    const [selectedDashboardIds, setSelectedDashboardIds] = useState<Set<string>>(new Set());
 
-    // Initialize selected dashboards to all when opening (optional, or none)
-    // User requested: "Choose which dashboards to share". 
-    // Usually better to start empty or all? Let's start with ALL because usually you share a folder to share its content.
+    // Initialize granular roles
     useEffect(() => {
-        if (folderDashboards) {
-            setSelectedDashboardIds(new Set(folderDashboards.map(d => d.id)));
+        if (isOpen) {
+            const initialRoles: Record<string, SharePermission['permission'] | 'none'> = {};
+            if (itemType === 'folder' && folderDashboards) {
+                // Default all to 'none' (Don't Share) - users must explicitly grant permissions
+                folderDashboards.forEach(d => {
+                    initialRoles[d.id] = 'none';
+                });
+                // Also handle the folder itself (using 'folder' as key)
+                initialRoles['folder'] = 'none';
+            } else {
+                initialRoles['dashboard'] = 'none';
+            }
+            setGranularRoles(initialRoles);
         }
-    }, [folderDashboards, isOpen]);
+    }, [isOpen, itemType, folderDashboards]);
 
     if (!isOpen) return null;
 
-    const handleAddUser = () => {
-        if (!email.trim()) return;
-        // Check if exists
-        const exists = currentPermissions.find(p => p.userId === email);
-        if (exists) {
-            setCurrentPermissions(prev => prev.map(p => p.userId === email ? { ...p, permission: role } : p));
-        } else {
-            setCurrentPermissions(prev => [
-                ...prev,
-                { userId: email, permission: role, sharedAt: new Date().toISOString() }
-            ]);
-        }
-        setEmail('');
-    };
-
-    const handleRemoveUser = (userId: string) => {
-        setCurrentPermissions(prev => prev.filter(p => p.userId !== userId));
+    const handleRoleChange = (id: string, role: SharePermission['permission'] | 'none') => {
+        setGranularRoles(prev => ({ ...prev, [id]: role }));
     };
 
     const handleSave = () => {
-        onSave(currentPermissions, Array.from(selectedDashboardIds));
-        onClose();
-    };
-
-    const toggleDashboard = (id: string) => {
-        const newSet = new Set(selectedDashboardIds);
-        if (newSet.has(id)) newSet.delete(id);
-        else newSet.add(id);
-        setSelectedDashboardIds(newSet);
-    };
-
-    const toggleAll = () => {
-        if (!folderDashboards) return;
-        if (selectedDashboardIds.size === folderDashboards.length) {
-            setSelectedDashboardIds(new Set());
-        } else {
-            setSelectedDashboardIds(new Set(folderDashboards.map(d => d.id)));
+        if (!email.trim() || !email.includes('@')) {
+            alert("Please enter a valid corporate email.");
+            return;
         }
+
+        // Construct permissions list to pass back
+        // For 'folder' itemType, we need to pass which dashboard gets what perms
+        // But the onSave signature is (permissions, selectedDashboardIds)
+        // We'll adapt: if granular Roles are all the same, use standard flow.
+        // If different, we might need to call onSave multiple times or enhance it.
+
+        // Let's assume onSave can handle a mapping or we call it per dashboard.
+        // Actually, let's keep it simple: 
+        // 1. Apply folder permission if applicable
+        // 2. Apply each dashboard permission individually
+
+        // We'll pass the granularRoles back as a special case or just fix the parent.
+        // For now, let's pass a special 'granularMapping' in the permissions array or similar? No.
+
+        // BETTER: I will update the BISidebar and DashboardToolbar to handle the granular mapping.
+        // I'll change the onSave signature to take the role mapping.
+
+        (onSave as any)(email, granularRoles);
+        onClose();
+        setEmail('');
     };
 
     return (
         <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-md"
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-300"
             onClick={onClose}
         >
             <div
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-3xl w-[600px] shadow-2xl animate-in fade-in zoom-in duration-200 overflow-hidden flex flex-col max-h-[80vh]"
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-[2.5rem] w-[640px] shadow-3xl animate-in zoom-in-95 duration-300 overflow-hidden flex flex-col max-h-[90vh]"
                 onClick={e => e.stopPropagation()}
             >
-                <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-white/10 shrink-0">
-                    <h2 className="text-slate-900 dark:text-white font-black text-lg tracking-tight">Share {itemType === 'dashboard' ? 'Dashboard' : 'Folder'}: {title}</h2>
-                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors">
+                {/* Header */}
+                <div className="flex items-center justify-between p-10 pb-6 border-b border-white/5 shrink-0">
+                    <div>
+                        <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Share Access</h2>
+                        <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1 italic">Identity & Permission Provisioning</p>
+                    </div>
+                    <button onClick={onClose} className="w-12 h-12 flex items-center justify-center rounded-2xl bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all hover:scale-110 active:scale-95">
                         <i className="fas fa-times"></i>
                     </button>
                 </div>
 
-                <div className="p-6 overflow-y-auto flex-1">
-                    <div className="flex gap-2 mb-6">
+                <div className="p-10 flex-1 overflow-y-auto custom-scrollbar space-y-10">
+                    {/* Step 1: Email */}
+                    <div className="space-y-4">
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
+                            <i className="fas fa-envelope text-indigo-500"></i>
+                            User Email Address
+                        </label>
                         <input
-                            type="text"
+                            autoFocus
+                            type="email"
                             value={email}
                             onChange={e => setEmail(e.target.value)}
-                            placeholder="Enter user email or ID..."
-                            onKeyDown={e => e.key === 'Enter' && handleAddUser()}
-                            className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all placeholder-slate-400 dark:placeholder-slate-600"
+                            placeholder="collaborator@yourcompany.com"
+                            className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-5 text-lg font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 transition-all placeholder-slate-400 dark:placeholder-slate-800 shadow-inner"
                         />
-                        <select
-                            value={role}
-                            onChange={e => setRole(e.target.value as any)}
-                            className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white text-sm outline-none focus:border-indigo-500 cursor-pointer transition-all"
-                        >
-                            <option value="view">Viewer</option>
-                            <option value="edit">Editor</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                        <button
-                            onClick={handleAddUser}
-                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-6 rounded-xl transition-all text-xs uppercase tracking-widest shadow-lg shadow-indigo-600/20"
-                        >
-                            Invite
-                        </button>
                     </div>
 
-                    {itemType === 'folder' && folderDashboards && folderDashboards.length > 0 && (
-                        <div className="mb-6 bg-slate-50 dark:bg-white/5 rounded-2xl p-4 border border-slate-100 dark:border-white/10">
-                            <div className="flex items-center justify-between mb-3">
-                                <h3 className="text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">
-                                    Include Dashboards
-                                </h3>
-                                <button
-                                    onClick={toggleAll}
-                                    className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
-                                >
-                                    {selectedDashboardIds.size === folderDashboards.length ? 'Deselect All' : 'Select All'}
-                                </button>
-                            </div>
-                            <div className="space-y-2 max-h-[150px] overflow-y-auto pr-2 custom-scrollbar">
-                                {folderDashboards.map(d => (
-                                    <label key={d.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer transition-colors group">
-                                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${selectedDashboardIds.has(d.id) ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 dark:border-slate-600 group-hover:border-indigo-500'}`}>
-                                            {selectedDashboardIds.has(d.id) && <i className="fas fa-check text-white text-[10px]"></i>}
-                                        </div>
-                                        <input
-                                            type="checkbox"
-                                            className="hidden"
-                                            checked={selectedDashboardIds.has(d.id)}
-                                            onChange={() => toggleDashboard(d.id)}
-                                        />
-                                        <span className={`text-xs font-medium transition-colors ${selectedDashboardIds.has(d.id) ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
-                                            {d.title}
-                                        </span>
-                                    </label>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                    {/* Step 2: Granular List */}
+                    <div className="space-y-4">
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
+                            <i className="fas fa-shield-alt text-indigo-500"></i>
+                            Define Workspace Permissions
+                        </label>
 
-                    <div className="space-y-2">
-                        <h3 className="text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">
-                            Access List
-                        </h3>
-                        <div className="max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
-                            {currentPermissions.length === 0 ? (
-                                <div className="text-center py-8 text-slate-500 text-sm">
-                                    Not shared with anyone yet.
-                                </div>
-                            ) : (
-                                currentPermissions.map(perm => (
-                                    <div key={perm.userId} className="flex items-center justify-between bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-2xl p-4 mb-2 transition-all hover:border-indigo-500/30 shadow-sm">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-black text-xs border border-indigo-500/20">
-                                                {perm.userId.substring(0, 2).toUpperCase()}
+                        <div className="bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl overflow-hidden shadow-2xl">
+                            {/* List Header */}
+                            <div className="grid grid-cols-12 gap-4 px-6 py-4 bg-slate-100 dark:bg-white/[0.03] border-b border-white/5 font-black text-[9px] text-slate-400 uppercase tracking-widest">
+                                <div className="col-span-12">Resource Name & Purpose</div>
+                            </div>
+
+                            <div className="divide-y divide-white/5 max-h-[350px] overflow-y-auto custom-scrollbar">
+                                {/* Folder itself if applicable */}
+                                {itemType === 'folder' && (
+                                    <div className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
+                                        <div className="col-span-7 flex items-center gap-4">
+                                            <div className="w-10 h-10 bg-yellow-500/10 text-yellow-500 rounded-xl flex items-center justify-center text-sm shadow-inner group-hover:scale-110 transition-transform">
+                                                <i className="fas fa-folder"></i>
                                             </div>
                                             <div>
-                                                <div className="text-slate-900 dark:text-white text-sm font-bold tracking-tight">{perm.userId}</div>
-                                                <div className="text-slate-400 dark:text-slate-500 text-[9px] font-black uppercase tracking-widest">Shared {new Date(perm.sharedAt).toLocaleDateString()}</div>
+                                                <div className="text-sm font-black text-slate-900 dark:text-white tracking-tight">{title} <span className="text-[10px] text-slate-500 uppercase ml-2">(Folder)</span></div>
+                                                <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Container & Organizational Access</div>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-4">
+                                        <div className="col-span-5 flex justify-end">
                                             <select
-                                                value={perm.permission}
-                                                onChange={e => {
-                                                    const newRole = e.target.value as any;
-                                                    setCurrentPermissions(prev => prev.map(p => p.userId === perm.userId ? { ...p, permission: newRole } : p));
-                                                }}
-                                                className="bg-transparent text-slate-600 dark:text-slate-400 text-[10px] font-black uppercase tracking-widest outline-none cursor-pointer hover:text-indigo-600 dark:hover:text-white transition-colors"
+                                                value={granularRoles['folder']}
+                                                onChange={e => handleRoleChange('folder', e.target.value as any)}
+                                                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 dark:text-white outline-none cursor-pointer focus:border-indigo-600 appearance-none shadow-sm min-w-[100px] text-center"
                                             >
-                                                <option value="view" className="bg-white dark:bg-slate-800">Viewer</option>
-                                                <option value="edit" className="bg-white dark:bg-slate-800">Editor</option>
-                                                <option value="admin" className="bg-white dark:bg-slate-800">Admin</option>
+                                                <option value="none">Don't Share</option>
+                                                <option value="view">Viewer</option>
+                                                <option value="edit">Editor</option>
+                                                <option value="admin">Admin</option>
                                             </select>
-                                            <button
-                                                onClick={() => handleRemoveUser(perm.userId)}
-                                                className="w-8 h-8 flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors bg-white dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/5"
-                                            >
-                                                <i className="fas fa-trash-alt text-[10px]"></i>
-                                            </button>
                                         </div>
                                     </div>
-                                ))
-                            )}
+                                )}
+
+                                {/* Dashboards */}
+                                {itemType === 'dashboard' ? (
+                                    <div className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
+                                        <div className="col-span-7 flex items-center gap-4">
+                                            <div className="w-10 h-10 bg-indigo-500/10 text-indigo-400 rounded-xl flex items-center justify-center text-sm shadow-inner group-hover:scale-110 transition-transform">
+                                                <i className="fas fa-chart-line"></i>
+                                            </div>
+                                            <div>
+                                                <div className="text-sm font-black text-slate-900 dark:text-white tracking-tight">{title}</div>
+                                                <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Primary Dashboard Asset</div>
+                                            </div>
+                                        </div>
+                                        <div className="col-span-5 flex justify-end">
+                                            <select
+                                                value={granularRoles['dashboard']}
+                                                onChange={e => handleRoleChange('dashboard', e.target.value as any)}
+                                                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 dark:text-white outline-none cursor-pointer focus:border-indigo-600 appearance-none shadow-sm min-w-[100px] text-center"
+                                            >
+                                                <option value="none">Don't Share</option>
+                                                <option value="view">Viewer</option>
+                                                <option value="edit">Editor</option>
+                                                <option value="admin">Admin</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    folderDashboards?.map(dashboard => (
+                                        <div key={dashboard.id} className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
+                                            <div className="col-span-7 flex items-center gap-4">
+                                                <div className="w-10 h-10 bg-indigo-500/5 text-slate-400 group-hover:text-indigo-400 rounded-xl flex items-center justify-center text-sm shadow-inner transition-all">
+                                                    <i className="fas fa-chart-bar"></i>
+                                                </div>
+                                                <div>
+                                                    <div className="text-sm font-bold text-slate-700 dark:text-slate-300 group-hover:text-white transition-colors">{dashboard.title}</div>
+                                                    <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Report Resource</div>
+                                                </div>
+                                            </div>
+                                            <div className="col-span-5 flex justify-end">
+                                                <select
+                                                    value={granularRoles[dashboard.id] || 'none'}
+                                                    onChange={e => handleRoleChange(dashboard.id, e.target.value as any)}
+                                                    className={`border rounded-xl px-4 py-2 text-xs font-bold outline-none cursor-pointer appearance-none shadow-sm min-w-[100px] text-center transition-all ${granularRoles[dashboard.id] === 'none'
+                                                        ? 'bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/5 text-slate-400'
+                                                        : 'bg-white dark:bg-slate-900 border-indigo-500/50 text-indigo-500 dark:text-white'
+                                                        }`}
+                                                >
+                                                    <option value="none">Don't Share</option>
+                                                    <option value="view">Viewer</option>
+                                                    <option value="edit">Editor</option>
+                                                    <option value="admin">Admin</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div className="p-6 border-t border-slate-100 dark:border-white/10 flex justify-end gap-3 bg-slate-50 dark:bg-white/[0.02] shrink-0">
+                {/* Footer */}
+                <div className="p-10 border-t border-white/5 bg-slate-50/50 dark:bg-white/[0.01] shrink-0 flex justify-end gap-5">
                     <button
                         onClick={onClose}
-                        className="px-6 py-3 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5 transition-all text-[10px] font-black uppercase tracking-widest"
+                        className="px-8 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
                     >
                         Cancel
                     </button>
                     <button
                         onClick={handleSave}
-                        className="px-8 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-xl shadow-indigo-600/30 transition-all font-black text-[10px] uppercase tracking-widest active:scale-95"
+                        className="px-10 py-5 rounded-[1.5rem] bg-indigo-600 hover:bg-indigo-500 text-white shadow-2xl shadow-indigo-600/30 transition-all font-black text-xs uppercase tracking-widest active:scale-95 flex items-center gap-3"
                     >
-                        Save Permissions
+                        <span>Confirm & Save Access</span>
+                        <i className="fas fa-paper-plane text-[10px] opacity-50"></i>
                     </button>
                 </div>
             </div>

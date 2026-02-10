@@ -133,20 +133,8 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
         try {
             let filteredData = widgetData;
-            const crossFilters = getCrossFiltersForWidget(widget.id);
-
-            if (crossFilters.length > 0) {
-                filteredData = applyFilters(filteredData, crossFilters);
-            }
-
-            if (activeDashboard?.globalFilters?.length) {
-                const relevantGlobal = activeDashboard.globalFilters.filter(gf =>
-                    !gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)
-                );
-                if (relevantGlobal.length > 0) {
-                    filteredData = applyFilters(filteredData, relevantGlobal as any[]);
-                }
-            }
+            // REMOVED local applyFilters here because useDirectQuery already handles both CrossFilters and GlobalFilters at the BigQuery level.
+            // Applying them here on aggregated data causes issues if the filter field is not part of the pivot dimensions.
 
 
             // FORMATTING STEP: Transform data for Display while keeping sort order

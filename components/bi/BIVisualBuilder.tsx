@@ -3,7 +3,7 @@
 // ============================================
 
 import React, { useState } from 'react';
-import { BIWidget, ChartType, AggregationType, PivotValue } from './types';
+import { BIWidget, ChartType, AggregationType, PivotValue, ConditionalFormat } from './types';
 import { useDataStore } from './store/dataStore';
 import { useDashboardStore } from './store/dashboardStore';
 import ColorPicker from './panels/ColorPicker';
@@ -380,6 +380,39 @@ const PivotValueSelector: React.FC<{
         onChange(newValues);
     };
 
+    const handleApplyPreset = (index: number, preset: 'traffic' | 'stoplight' | 'heatmap') => {
+        const newValues = [...values];
+        let newRules: ConditionalFormat[] = [];
+
+        switch (preset) {
+            case 'traffic':
+                newRules = [
+                    { condition: 'greater', value: 1000, textColor: '#10b981' }, // Green
+                    { condition: 'between', value: 500, value2: 1000, textColor: '#f59e0b' }, // Amber
+                    { condition: 'less', value: 500, textColor: '#ef4444' } // Red
+                ];
+                break;
+            case 'stoplight':
+                newRules = [
+                    { condition: 'greater', value: 1000, backgroundColor: '#064e3b', textColor: '#ffffff' },
+                    { condition: 'between', value: 500, value2: 1000, backgroundColor: '#78350f', textColor: '#ffffff' },
+                    { condition: 'less', value: 500, backgroundColor: '#7f1d1d', textColor: '#ffffff' }
+                ];
+                break;
+            case 'heatmap':
+                newRules = [
+                    { condition: 'greater', value: 2000, backgroundColor: '#1e3a8a', textColor: '#ffffff' },
+                    { condition: 'between', value: 1000, value2: 2000, backgroundColor: '#3b82f6', textColor: '#ffffff' },
+                    { condition: 'between', value: 500, value2: 1000, backgroundColor: '#93c5fd', textColor: '#1e3a8a' },
+                    { condition: 'less', value: 500, backgroundColor: '#eff6ff', textColor: '#1e3a8a' }
+                ];
+                break;
+        }
+
+        newValues[index] = { ...newValues[index], conditionalFormatting: newRules };
+        onChange(newValues);
+    };
+
     return (
         <div ref={setNodeRef} className={`space-y-2 p-2 rounded-lg transition-all ${isOver ? 'bg-indigo-50 dark:bg-indigo-600/20 ring-2 ring-indigo-500/50' : ''}`}>
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">{label}</label>
@@ -390,10 +423,13 @@ const PivotValueSelector: React.FC<{
                             <span className="flex-1 text-[11px] text-slate-900 dark:text-white truncate font-bold">{v.field}</span>
                             <button
                                 onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
-                                className={`p-1 rounded text-[8px] uppercase font-bold border transition-colors ${expandedIndex === idx ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:text-indigo-600 dark:hover:text-white'}`}
+                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] uppercase font-black transition-all border ${expandedIndex === idx
+                                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
+                                    : (v.conditionalFormatting?.length ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:text-indigo-600')
+                                    }`}
                             >
-                                <i className="fas fa-paint-brush mr-1"></i>
-                                Rules
+                                <i className={`fas fa-paint-brush ${v.conditionalFormatting?.length ? 'animate-pulse' : ''}`}></i>
+                                Rules {v.conditionalFormatting?.length ? `(${v.conditionalFormatting.length})` : ''}
                             </button>
                             <button onClick={() => handleRemove(idx)} className="text-slate-400 dark:text-slate-600 hover:text-red-500 p-0.5 ml-1">
                                 <i className="fas fa-times text-[10px]"></i>
@@ -448,9 +484,21 @@ const PivotValueSelector: React.FC<{
                         {/* Conditional Formatting Rules UI */}
                         {expandedIndex === idx && (
                             <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/5 space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-[9px] text-slate-500 font-bold uppercase">Formatting Rules</span>
-                                    <button onClick={() => handleAddRule(idx)} className="text-[9px] text-indigo-400 hover:text-white">+ Add Rule</button>
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[9px] text-slate-500 font-black uppercase tracking-tighter">Cond. Formatting</span>
+                                    <div className="flex items-center gap-1">
+                                        <select
+                                            onChange={(e) => e.target.value && handleApplyPreset(idx, e.target.value as any)}
+                                            className="bg-transparent text-[9px] text-indigo-400 hover:text-white outline-none cursor-pointer"
+                                            value=""
+                                        >
+                                            <option value="" disabled>Presets...</option>
+                                            <option value="traffic">Traffic (Text)</option>
+                                            <option value="stoplight">Stoplight (Bg)</option>
+                                            <option value="heatmap">Heatmap</option>
+                                        </select>
+                                        <button onClick={() => handleAddRule(idx)} className="text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-sm hover:bg-indigo-500 transition-colors font-bold">+ New Rule</button>
+                                    </div>
                                 </div>
                                 {v.conditionalFormatting?.map((rule, rIdx) => (
                                     <div key={rIdx} className="flex items-center gap-1 bg-slate-950 p-1 rounded border border-white/5">
@@ -515,7 +563,7 @@ const PivotValueSelector: React.FC<{
             <CustomFieldDropdown
                 value=""
                 onChange={handleAdd}
-                fields={fields.filter(f => f.type === 'number')}
+                fields={fields.filter(f => f.type === 'number' || f.isCalculated || f.isQuickMeasure)}
                 placeholder="+ Add value..."
                 className="mt-1"
             />

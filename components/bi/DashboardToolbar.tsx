@@ -398,8 +398,19 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     title={activeDashboard.title}
                     itemType="dashboard"
                     permissions={activeDashboard.sharedWith || []}
-                    onSave={(perms) => {
-                        shareDashboard(activeDashboard.id, perms);
+                    onSave={(email, roles) => {
+                        const dashboardRole = roles['dashboard'];
+                        if (activeDashboard) {
+                            let newPerms = [...(activeDashboard.sharedWith || [])].filter(p => p.userId !== email);
+                            if (dashboardRole !== 'none') {
+                                newPerms.push({
+                                    userId: email,
+                                    permission: dashboardRole,
+                                    sharedAt: new Date().toISOString()
+                                });
+                            }
+                            shareDashboard(activeDashboard.id, newPerms);
+                        }
                     }}
                 />
             )

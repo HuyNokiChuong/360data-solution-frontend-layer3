@@ -1,4 +1,12 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { Connection, SyncedTable, ReportSession, User } from './types';
+import { INITIAL_TABLES } from './constants';
+import { initGoogleAuth } from './services/googleAuth';
+import { PersistentStorage } from './services/storage';
+import { useThemeStore } from './store/themeStore';
+import { isCorporateDomain } from './utils/domain';
+
 const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
 const Tables = lazy(() => import('./components/Tables'));
@@ -8,13 +16,6 @@ const UserManagement = lazy(() => import('./components/UserManagement'));
 const BIMain = lazy(() => import('./components/bi/BIMain'));
 const LogViewer = lazy(() => import('./components/LogViewer'));
 const Onboarding = lazy(() => import('./components/Onboarding'));
-import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { Connection, SyncedTable, ReportSession, User } from './types';
-import { INITIAL_TABLES } from './constants';
-import { initGoogleAuth } from './services/googleAuth';
-import { PersistentStorage } from './services/storage';
-import { useThemeStore } from './store/themeStore';
-import { isCorporateDomain } from './utils/domain';
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -41,7 +42,10 @@ const App: React.FC = () => {
   }, [theme]);
 
   const [isRegistering, setIsRegistering] = useState(false);
-  const [pendingUser, setPendingUser] = useState<User | null>(null);
+  const [pendingUser, setPendingUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('pending_user');
+    return saved ? JSON.parse(saved) : null;
+  });
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('auth_user');
@@ -128,6 +132,15 @@ const App: React.FC = () => {
       localStorage.removeItem('auth_user');
     }
   }, [currentUser]);
+
+  // PERSISTENCE: Save pending user
+  useEffect(() => {
+    if (pendingUser) {
+      localStorage.setItem('pending_user', JSON.stringify(pendingUser));
+    } else {
+      localStorage.removeItem('pending_user');
+    }
+  }, [pendingUser]);
 
   // PERSISTENCE: Load scoped data when currentUser changes
   useEffect(() => {
@@ -241,11 +254,9 @@ const App: React.FC = () => {
         companySize: 'Enterprise',
         phoneNumber: '+1000000000'
       };
-      setTimeout(() => {
-        setLoading(false);
-        setCurrentUser(superAdmin);
-        setIsAuthenticated(true);
-      }, 800);
+      setLoading(false);
+      setCurrentUser(superAdmin);
+      setIsAuthenticated(true);
       return;
     }
 
@@ -255,48 +266,75 @@ const App: React.FC = () => {
       return;
     }
 
-    setTimeout(() => {
-      setLoading(false);
-      const savedUsersJson = localStorage.getItem(`${d}_users`);
-      let workspaceUsers: User[] = savedUsersJson ? JSON.parse(savedUsersJson) : [];
+    if (isRegistering) {
+      const phoneNumber = formData.get('phoneNumber') as string;
+      const level = formData.get('level') as string;
+      const department = formData.get('department') as string;
+      const industry = formData.get('industry') as string;
+      const companySize = formData.get('companySize') as string;
 
-      if (isRegistering) {
-        if (workspaceUsers.length > 0) {
-          setAuthError(`Workspace for ${d} already exists.`);
-          return;
-        }
-
-        const phoneNumber = formData.get('phoneNumber') as string;
-        const level = formData.get('level') as string;
-        const department = formData.get('department') as string;
-        const industry = formData.get('industry') as string;
-        const companySize = formData.get('companySize') as string;
-
-        // START ONBOARDING FLOW
-        setPendingUser({
-          id: Date.now().toString(),
-          name,
+      // Call Backend Register API
+      fetch('http://localhost:3001/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           email,
+          password,
+          name,
           phoneNumber,
           level,
           department,
           industry,
-          companySize,
-          role: 'Admin',
-          status: 'Pending',
-          joinedAt: new Date().toISOString()
-        });
-        navigate('/onboarding');
-      } else {
-        const user = workspaceUsers.find(u => u.email === email);
-        if (!user) {
-          setAuthError('User not found.');
-          return;
-        }
-        setCurrentUser(user);
-        setIsAuthenticated(true);
-      }
-    }, 1200);
+          companySize
+        })
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.message || 'Registration failed');
+
+          setPendingUser({
+            id: 'pending', // ID will be real from backend later or we can use data.data.id if returned
+            name,
+            email,
+            phoneNumber,
+            level,
+            department,
+            industry,
+            companySize,
+            role: 'Admin',
+            status: 'Pending',
+            joinedAt: new Date().toISOString()
+          });
+          navigate('/onboarding');
+        })
+        .catch(err => {
+          setAuthError(err.message);
+        })
+        .finally(() => setLoading(false));
+
+    } else {
+      // Call Backend Login API
+      fetch('http://localhost:3001/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.message || 'Login failed');
+
+          const user = data.data.user;
+          setCurrentUser(user);
+          setIsAuthenticated(true);
+
+          // Sync optional local storage if needed, but backend is source of truth now
+          localStorage.setItem(`${d}_users`, JSON.stringify([user]));
+        })
+        .catch(err => {
+          setAuthError(err.message);
+        })
+        .finally(() => setLoading(false));
+    }
   };
 
   const handleOnboardingComplete = (finalUser: User) => {
@@ -369,6 +407,17 @@ const App: React.FC = () => {
   const deleteTables = (ids: string[]) => setTables(prev => prev.filter(t => !ids.includes(t.id)));
 
   if (!isAuthenticated) {
+    if (location.pathname === '/onboarding' && pendingUser) {
+      return (
+        <Suspense fallback={null}>
+          <Onboarding
+            currentUser={pendingUser}
+            onUpdateUser={handleOnboardingComplete}
+          />
+        </Suspense>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-[#020617] flex flex-col items-center justify-center p-6 overflow-hidden relative transition-colors duration-300">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-600/10 blur-[150px] rounded-full"></div>

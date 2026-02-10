@@ -275,11 +275,47 @@ export const useDataStore = create<DataState>((set, get) => ({
     },
 
     setSyncStatus: (id, status, error = null) => {
-        set((state) => ({
-            dataSources: state.dataSources.map(ds =>
-                ds.id === id ? { ...ds, syncStatus: status, syncError: error } : ds
-            )
-        }));
+        set((state) => {
+            const dataSource = state.dataSources.find(ds => ds.id === id);
+            const newLogs = [...state.systemLogs];
+
+            if (status === 'syncing') {
+                newLogs.unshift({
+                    id: `log-${Date.now()}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'info',
+                    message: `Bắt đầu đồng bộ dữ liệu cho: ${dataSource?.name || id}`,
+                    target: id
+                });
+            } else if (status === 'ready') {
+                newLogs.unshift({
+                    id: `log-${Date.now()}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'success',
+                    message: `Đồng bộ thành công: ${dataSource?.name || id}`,
+                    target: id
+                });
+            } else if (status === 'error') {
+                newLogs.unshift({
+                    id: `log-${Date.now()}`,
+                    timestamp: new Date().toISOString(),
+                    type: 'error',
+                    message: `Lỗi đồng bộ ${dataSource?.name || id}: ${error}`,
+                    target: id
+                });
+            }
+
+            // Keep only last 100 logs
+            if (newLogs.length > 100) newLogs.splice(100);
+
+            return {
+                dataSources: state.dataSources.map(ds =>
+                    ds.id === id ? { ...ds, syncStatus: status, syncError: error } : ds
+                ),
+                systemLogs: newLogs
+            };
+        });
+        saveToStorage(get(), 'metadata-only');
     },
 
     // Load data for existing source
@@ -406,6 +442,16 @@ export const useDataStore = create<DataState>((set, get) => ({
 
     addLog: (log) => {
         if (!log) return;
+        set((state) => {
+            const newLog: SystemLog = {
+                id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                timestamp: new Date().toISOString(),
+                ...log
+            };
+            const newLogs = [newLog, ...state.systemLogs].slice(0, 100);
+            return { systemLogs: newLogs };
+        });
+        saveToStorage(get(), 'metadata-only');
     },
 
     clearLogs: () => set({ systemLogs: [] })

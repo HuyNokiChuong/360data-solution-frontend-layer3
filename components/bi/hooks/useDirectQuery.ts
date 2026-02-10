@@ -284,9 +284,37 @@ export const useDirectQuery = (widget: BIWidget) => {
                     }
                 }
 
+                const bqDimensions = dimensions.map(d => {
+                    const calcField = activeDashboard?.calculatedFields?.find(c => c.name === d);
+                    if (calcField) {
+                        let expr = calcField.formula;
+                        expr = expr.replace(/\[(.*?)\]/g, (match, p1) => `\`${p1}\``);
+                        return { field: d, expression: expr };
+                    }
+                    return d;
+                });
+
+                const finalFilters = bqFilters.map(f => {
+                    const calcField = activeDashboard?.calculatedFields?.find(c => c.name === f.field);
+                    if (calcField) {
+                        let expr = calcField.formula;
+                        expr = expr.replace(/\[(.*?)\]/g, (match, p1) => `\`${p1}\``);
+                        return { ...f, expression: expr };
+                    }
+                    return f;
+                });
+
                 const result = await fetchAggregatedData(
                     token!, projectId, dataSource.datasetName || '', dataSource.tableName || '',
-                    { dimensions, measures, filters: bqFilters, sortBy: bqSortBy, sortDir: bqSortDir, limit: widget.type === 'table' ? (widget.pageSize || 100) : 1000, signal: abortController.signal }
+                    {
+                        dimensions: bqDimensions,
+                        measures,
+                        filters: finalFilters,
+                        sortBy: bqSortBy,
+                        sortDir: bqSortDir,
+                        limit: widget.type === 'table' ? (widget.pageSize || 100) : 1000,
+                        signal: abortController.signal
+                    }
                 );
 
                 if (isMounted) {

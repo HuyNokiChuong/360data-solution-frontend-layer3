@@ -1,7 +1,8 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { isCorporateDomain } from '../utils/domain';
+import { useDashboardStore } from './bi/store/dashboardStore';
+import { SharePermission } from './bi/types';
 
 interface UserManagementProps {
   users: User[];
@@ -9,10 +10,23 @@ interface UserManagementProps {
 }
 
 const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
+  const { dashboards, shareDashboard } = useDashboardStore();
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [showToast, setShowToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [newUser, setNewUser] = useState({ name: '', email: '', role: 'Viewer' as UserRole });
+  const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
+
+  // Initialize granular roles when modal opens
+  useEffect(() => {
+    if (isInviteModalOpen) {
+      const initial: Record<string, SharePermission['permission'] | 'none'> = {};
+      dashboards.forEach(d => {
+        initial[d.id] = 'none'; // Default to Don't Share - explicit permission required
+      });
+      setGranularRoles(initial);
+    }
+  }, [isInviteModalOpen, dashboards]);
 
   const deleteUser = (id: string) => {
     setUsers(users.filter(u => u.id !== id));
@@ -30,7 +44,6 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
   const handleInvite = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Verification Layer: Ensure email identity is unique within the workspace
     const emailDomain = newUser.email.split('@')[1]?.toLowerCase();
     const adminEmail = users.find(u => u.role === 'Admin')?.email;
     const workspaceDomain = adminEmail?.split('@')[1]?.toLowerCase();
@@ -53,133 +66,156 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
 
     setIsSending(true);
 
-    // Simulate SMTP dispatch
+    // Simulate SMTP dispatch and permission propagation
     setTimeout(() => {
       const user: User = {
         id: Date.now().toString(),
         name: newUser.name,
         email: newUser.email,
         role: newUser.role,
-        status: 'Active', // Set to Active immediately so they can login as requested
+        status: 'Active',
         joinedAt: new Date().toISOString().split('T')[0]
       };
+
+      // 1. Add User
       setUsers([...users, user]);
+
+      // 2. Propagate Granular Dashboard Permissions
+      Object.entries(granularRoles).forEach(([dashboardId, role]) => {
+        if (role === 'none') return;
+
+        const dashboard = dashboards.find(d => d.id === dashboardId);
+        if (dashboard) {
+          const newPerm: SharePermission = {
+            userId: user.email,
+            permission: role,
+            sharedAt: new Date().toISOString()
+          };
+          const updatedPerms = [...(dashboard.sharedWith || []), newPerm];
+          shareDashboard(dashboardId, updatedPerms);
+        }
+      });
+
       setIsSending(false);
       setIsInviteModalOpen(false);
       setNewUser({ name: '', email: '', role: 'Viewer' });
-      triggerToast(`Invitation email dispatched to ${user.email}`, 'success');
+      triggerToast(`Invitation sent and permissions provisioned for ${user.email}`, 'success');
     }, 1500);
-  };
-
-  const resendInvitation = (email: string) => {
-    triggerToast(`Re-sending secure invitation to ${email}...`, 'success');
   };
 
   return (
     <div className="p-10 max-w-[1600px] mx-auto relative h-full overflow-y-auto custom-scrollbar">
       {/* Toast Notification */}
       {showToast && (
-        <div className="fixed top-10 right-10 z-[120] animate-in slide-in-from-right-10 fade-in duration-300">
-          <div className={`${showToast.type === 'error' ? 'bg-red-500 shadow-red-500/20' : 'bg-emerald-500 shadow-emerald-500/20'} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-white/10`}>
-            <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center">
-              <i className={`fas ${showToast.type === 'error' ? 'fa-exclamation-triangle' : 'fa-paper-plane'} text-xs`}></i>
+        <div className="fixed top-10 right-10 z-[120] animate-in slide-in-from-right-20 fade-in-0 duration-500">
+          <div className={`${showToast.type === 'error' ? 'bg-rose-500/90' : 'bg-indigo-600/90'} backdrop-blur-xl text-white px-8 py-5 rounded-[2rem] shadow-3xl flex items-center gap-5 border border-white/20`}>
+            <div className="w-10 h-10 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
+              <i className={`fas ${showToast.type === 'error' ? 'fa-shield-virus' : 'fa-check-double'} text-sm`}></i>
             </div>
-            <span className="text-sm font-black uppercase tracking-widest">{showToast.message}</span>
+            <div>
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] opacity-60 mb-0.5">System Alert</div>
+              <span className="text-xs font-black uppercase tracking-widest">{showToast.message}</span>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="flex justify-between items-center mb-12">
+      <div className="flex justify-between items-end mb-12">
         <div>
-          <h2 className="text-4xl font-black text-slate-900 dark:text-white tracking-tighter mb-2">Team Management</h2>
-          <p className="text-slate-500 font-medium">Provision user access and define role-based permissions (RBAC)</p>
+          <h2 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter mb-1">Team Management</h2>
+          <p className="text-slate-500 font-medium text-lg italic opacity-80 px-1">Configure workspace autonomy and role-based access protocols</p>
         </div>
         <button
           onClick={() => setIsInviteModalOpen(true)}
-          className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black tracking-tight hover:bg-indigo-500 transition-all flex items-center gap-3 shadow-xl shadow-indigo-600/20 active:scale-95"
+          className="bg-indigo-600 text-white px-10 py-5 rounded-[2rem] font-black tracking-tight hover:bg-indigo-500 transition-all flex items-center gap-4 shadow-2xl shadow-indigo-600/40 active:scale-95 group"
         >
-          <i className="fas fa-user-plus"></i> Invite Member
+          <i className="fas fa-plus-circle group-hover:rotate-90 transition-transform duration-300"></i>
+          <span>Invite New Member</span>
         </button>
       </div>
 
-      <div className="bg-white dark:bg-slate-900/50 backdrop-blur-md rounded-[2.5rem] border border-slate-200 dark:border-white/5 shadow-2xl overflow-hidden">
+      <div className="bg-white dark:bg-slate-900/40 backdrop-blur-3xl rounded-[3.5rem] border border-slate-200 dark:border-white/10 shadow-3xl overflow-hidden mb-20 transition-all duration-500">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">User Details</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Role & Dept</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Level</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Status</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Joined</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Actions</th>
+              <tr className="border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.03]">
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Member Identity</th>
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Access Token</th>
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Authority</th>
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Status</th>
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] text-center">Provisioned</th>
+                <th className="px-10 py-8 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] text-right">Ops</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.03]">
               {users.map(user => (
-                <tr key={user.id} className="group hover:bg-white/[0.01] transition-colors">
-                  <td className="px-8 py-6">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 text-indigo-400 flex items-center justify-center font-black shadow-inner border border-white/5">
-                        {user.name.charAt(0)}
+                <tr key={user.id} className="group hover:bg-white/[0.02] transition-colors relative">
+                  <td className="px-10 py-8">
+                    <div className="flex items-center gap-5">
+                      <div className="w-14 h-14 rounded-3xl bg-indigo-600 text-white flex items-center justify-center font-black text-lg shadow-xl shadow-indigo-600/20 group-hover:scale-110 transition-transform duration-300">
+                        {user.name.charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <div className="text-slate-900 dark:text-slate-200 font-bold text-sm">{user.name}</div>
-                        <div className="text-[10px] font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest mt-0.5">{user.email}</div>
+                        <div className="text-slate-900 dark:text-white font-black text-lg tracking-tight leading-none mb-2">{user.name}</div>
+                        <div className="text-[10px] font-black text-slate-400 dark:text-indigo-400/60 uppercase tracking-widest flex items-center gap-2">
+                          <i className="fas fa-at text-[8px]"></i>
+                          {user.email}
+                        </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-8 py-6">
-                    <div className="flex flex-col gap-1.5">
-                      <span className={`w-fit px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border ${user.role === 'Admin' ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20' :
+                  <td className="px-10 py-8">
+                    <div className="flex flex-col gap-2">
+                      <span className={`w-fit px-4 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-widest border shadow-sm ${user.role === 'Admin' ? 'bg-indigo-600 text-white border-indigo-400/30' :
                         user.role === 'Editor' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                           'bg-slate-800 text-slate-400 border-slate-700'
                         }`}>
                         {user.role}
                       </span>
                       {user.department && (
-                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 pl-1 italic">
-                          {user.department}
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter opacity-50 pl-1">
+                          {user.department} Unit
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="px-8 py-6">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                      {user.level || '—'}
+                  <td className="px-10 py-8">
+                    <span className="text-sm font-black text-slate-900 dark:text-slate-300 tracking-tight">
+                      {user.level || 'Standard'}
                     </span>
                     {user.companySize && (
-                      <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-0.5">
-                        {user.companySize} Size
+                      <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1 opacity-60">
+                        Scale: {user.companySize}
                       </div>
                     )}
                   </td>
-                  <td className="px-8 py-6">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full ${user.status === 'Active' ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' :
-                        user.status === 'Pending' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'
+                  <td className="px-10 py-8">
+                    <div className="flex items-center gap-4 bg-slate-100 dark:bg-white/5 w-fit px-4 py-2 rounded-2xl border border-white/5">
+                      <div className={`w-2.5 h-2.5 rounded-full ${user.status === 'Active' ? 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)]' :
+                        user.status === 'Pending' ? 'bg-amber-400 animate-pulse' : 'bg-rose-500'
                         }`}></div>
-                      <span className="text-xs font-black uppercase tracking-widest text-slate-400">{user.status}</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">{user.status}</span>
                     </div>
                   </td>
-                  <td className="px-8 py-6 text-center">
-                    <span className="text-slate-600 text-[10px] font-black uppercase tracking-widest">{user.joinedAt}</span>
+                  <td className="px-10 py-8 text-center">
+                    <div className="text-slate-900 dark:text-white font-black text-sm tracking-tight mb-0.5">{user.joinedAt}</div>
+                    <div className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em] opacity-40">UTC TIMESTAMP</div>
                   </td>
-                  <td className="px-8 py-6 text-right">
-                    <div className="flex justify-end gap-3 opacity-40 group-hover:opacity-100 transition-opacity">
+                  <td className="px-10 py-8 text-right">
+                    <div className="flex justify-end gap-4 opacity-0 group-hover:opacity-100 transition-all translate-x-4 group-hover:translate-x-0 duration-300">
                       <button
                         onClick={() => toggleStatus(user.id)}
-                        className={`w-10 h-10 rounded-xl transition-all flex items-center justify-center ${user.status === 'Active' ? 'bg-amber-500/10 text-amber-500 hover:bg-amber-500 hover:text-white' : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white'}`}
-                        title={user.status === 'Active' ? 'Deactivate User' : 'Activate User'}
+                        className={`w-12 h-12 rounded-2xl transition-all flex items-center justify-center border ${user.status === 'Active' ? 'bg-amber-500/5 text-amber-500 border-amber-500/20 hover:bg-amber-500 hover:text-white' : 'bg-emerald-500/5 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500 hover:text-white'}`}
+                        title={user.status === 'Active' ? 'Restrict Access' : 'Grant Access'}
                       >
-                        <i className={`fas ${user.status === 'Active' ? 'fa-user-slash' : 'fa-user-check'} text-xs`}></i>
+                        <i className={`fas ${user.status === 'Active' ? 'fa-lock' : 'fa-lock-open'} text-xs`}></i>
                       </button>
-                      <button className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-white transition-all flex items-center justify-center">
-                        <i className="fas fa-pen text-xs"></i>
+                      <button className="w-12 h-12 bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-2xl text-slate-400 hover:text-indigo-500 transition-all flex items-center justify-center shadow-sm">
+                        <i className="fas fa-sliders-h text-xs"></i>
                       </button>
                       <button
                         onClick={() => deleteUser(user.id)}
-                        className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
+                        className="w-12 h-12 bg-red-500/10 text-red-500 border border-red-500/20 rounded-2xl hover:bg-red-500 hover:text-white transition-all flex items-center justify-center shadow-lg shadow-red-500/10"
                       >
                         <i className="fas fa-trash-alt text-xs"></i>
                       </button>
@@ -193,85 +229,131 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
       </div>
 
       {isInviteModalOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/80 dark:bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
-          <form onSubmit={handleInvite} className="w-full max-w-xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[3rem] shadow-3xl overflow-hidden p-12 relative animate-in zoom-in-95 duration-300">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/90 dark:bg-black/95 backdrop-blur-3xl animate-in fade-in duration-500">
+          <form onSubmit={handleInvite} className="w-full max-w-4xl bg-white dark:bg-[#0b1120] border border-white/10 rounded-[4rem] shadow-4xl overflow-hidden p-16 relative animate-in zoom-in-95 duration-500 grid grid-cols-2 gap-12">
             {isSending && (
-              <div className="absolute inset-0 z-10 bg-[#0f172a]/80 backdrop-blur-sm flex flex-col items-center justify-center">
-                <div className="w-16 h-16 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
-                <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em]">Dispatching Secure Email...</p>
+              <div className="absolute inset-0 z-[120] bg-[#0b1120]/90 backdrop-blur-md flex flex-col items-center justify-center">
+                <div className="w-24 h-24 border-8 border-indigo-600/10 border-t-indigo-600 rounded-full animate-spin mb-8"></div>
+                <p className="text-sm font-black text-indigo-400 uppercase tracking-[0.5em] animate-pulse">Provisioning Access Identity</p>
               </div>
             )}
 
-            <div className="flex justify-between items-center mb-10">
+            <div className="col-span-2 flex justify-between items-start mb-4">
               <div>
-                <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Invite Member</h2>
-                <p className="text-[10px] font-black text-slate-400 dark:text-slate-600 uppercase tracking-widest mt-1 italic">Identity Provisioning Layer</p>
+                <h2 className="text-4xl font-black text-slate-900 dark:text-white tracking-tight mb-2">Member Provisioning</h2>
+                <div className="flex items-center gap-3">
+                  <div className="h-0.5 w-10 bg-indigo-600 rounded-full"></div>
+                  <p className="text-[10px] font-black text-slate-500 dark:text-indigo-400/60 uppercase tracking-[0.3em]">Identity & Permissions Protocol</p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsInviteModalOpen(false)}
-                className="w-12 h-12 bg-white/5 rounded-full text-slate-500 hover:text-white transition-all"
+                className="w-14 h-14 bg-slate-100 dark:bg-white/5 rounded-3xl text-slate-500 hover:text-white transition-all flex items-center justify-center border border-white/5 active:scale-90"
               >
-                <i className="fas fa-times"></i>
+                <i className="fas fa-times text-lg"></i>
               </button>
             </div>
 
-            <div className="space-y-8">
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 px-2">Member Name</label>
+            {/* Left Column: Basic Info */}
+            <div className="space-y-10">
+              <div className="space-y-4">
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest px-2">Member Name Identity</label>
                 <input
                   required
                   value={newUser.name}
                   onChange={e => setNewUser({ ...newUser, name: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800"
+                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-3xl px-8 py-5 text-lg text-slate-900 dark:text-white font-medium focus:ring-4 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800 shadow-inner"
                   placeholder="e.g. Hoàng Anh"
                 />
               </div>
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 px-2">Corporate Email</label>
+              <div className="space-y-4">
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest px-2">Corporate Endpoint (Email)</label>
                 <input
                   type="email"
                   required
                   value={newUser.email}
                   onChange={e => setNewUser({ ...newUser, email: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800"
-                  placeholder="anh.h@360data-solutions.ai"
+                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-3xl px-8 py-5 text-lg text-slate-900 dark:text-white font-medium focus:ring-4 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-800 shadow-inner"
+                  placeholder="anh.h@company.ai"
                 />
               </div>
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 px-2">Authorization Level</label>
-                <select
-                  value={newUser.role}
-                  onChange={e => setNewUser({ ...newUser, role: e.target.value as UserRole })}
-                  className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none appearance-none cursor-pointer"
-                >
-                  <option value="Viewer">Viewer (Read Analysis Only)</option>
-                  <option value="Editor">Editor (Build & Save Reports)</option>
-                  <option value="Admin">Admin (Full Infrastructure Control)</option>
-                </select>
+              <div className="space-y-4">
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest px-2">System Authorization Node</label>
+                <div className="relative">
+                  <select
+                    value={newUser.role}
+                    onChange={e => setNewUser({ ...newUser, role: e.target.value as UserRole })}
+                    className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-3xl px-8 py-5 text-lg text-slate-900 dark:text-white font-black appearance-none cursor-pointer focus:ring-4 focus:ring-indigo-600/20 outline-none shadow-inner"
+                  >
+                    <option value="Viewer">Viewer (Read Only)</option>
+                    <option value="Editor">Editor (Build Access)</option>
+                    <option value="Admin">Admin (Full Control)</option>
+                  </select>
+                  <i className="fas fa-chevron-down absolute right-8 top-1/2 -translate-y-1/2 text-indigo-500 pointer-events-none"></i>
+                </div>
               </div>
             </div>
 
-            <div className="mt-12 p-6 bg-indigo-600/5 border border-indigo-500/10 rounded-3xl">
-              <div className="flex items-center gap-3 text-indigo-400 mb-2">
-                <i className="fas fa-info-circle"></i>
-                <span className="text-[10px] font-black uppercase tracking-widest">Email Notification</span>
+            {/* Right Column: Dashboard Permissions (Granular) */}
+            <div className="flex flex-col">
+              <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-6 px-2 flex items-center justify-between">
+                <span>Granular Dashboard Access</span>
+                <span className="text-indigo-400">{dashboards.length} Assets Found</span>
+              </label>
+
+              <div className="flex-1 bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl">
+                <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-white/5">
+                  {dashboards.length === 0 ? (
+                    <div className="p-10 text-center text-slate-500 text-xs italic">No dashboards found to assign.</div>
+                  ) : (
+                    dashboards.map(d => (
+                      <div key={d.id} className="p-6 flex items-center justify-between group hover:bg-white/[0.02] transition-all">
+                        <div>
+                          <div className="text-sm font-black text-slate-900 dark:text-white tracking-tight group-hover:text-indigo-400 transition-colors uppercase">{d.title}</div>
+                          <div className="text-[10px] font-bold text-slate-500 opacity-60">Provision individual role</div>
+                        </div>
+                        <select
+                          value={granularRoles[d.id] || 'none'}
+                          onChange={e => setGranularRoles({ ...granularRoles, [d.id]: e.target.value as any })}
+                          className={`text-[10px] font-black uppercase tracking-widest bg-white dark:bg-slate-900 border rounded-xl px-4 py-2 outline-none cursor-pointer transition-all ${granularRoles[d.id] === 'none' ? 'border-slate-300 dark:border-white/10 text-slate-400' : 'border-indigo-600 text-indigo-600 dark:text-white'
+                            }`}
+                        >
+                          <option value="none">Don't Share</option>
+                          <option value="view">Viewer</option>
+                          <option value="edit">Editor</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="p-6 bg-indigo-600/5 border-t border-white/5">
+                  <div className="flex items-center gap-3 text-indigo-400 mb-3">
+                    <i className="fas fa-fingerprint text-xs"></i>
+                    <span className="text-[10px] font-black uppercase tracking-widest">Security Protocol</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-bold leading-relaxed px-1">
+                    Privileges are applied instantly upon account activation.
+                  </p>
+                </div>
               </div>
-              <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
-                The user will be created with an <strong>Active</strong> status and can access the hub immediately using their email.
-              </p>
             </div>
 
-            <div className="flex gap-4 mt-12">
+            <div className="col-span-2 h-px bg-white/5 mt-4"></div>
+
+            <div className="col-span-2 flex gap-8 items-center">
               <button
                 type="button"
                 onClick={() => setIsInviteModalOpen(false)}
-                className="flex-1 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white transition-colors"
+                className="flex-1 py-6 text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 hover:text-white transition-all tracking-widest"
               >
-                Cancel
+                Abort Protocol
               </button>
-              <button className="flex-[2] bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black text-xs uppercase tracking-widest hover:bg-indigo-500 shadow-2xl shadow-indigo-600/30 transition-all active:scale-95">
-                Dispatch Invitation
+              <button className="flex-[2] bg-indigo-600 text-white py-8 rounded-[2rem] font-black text-sm uppercase tracking-[0.3em] hover:bg-indigo-500 shadow-3xl shadow-indigo-600/30 transition-all active:scale-95 flex items-center justify-center gap-4">
+                <span>Dispatch Identity Package</span>
+                <i className="fas fa-paper-plane text-xs opacity-50"></i>
               </button>
             </div>
           </form>

@@ -545,7 +545,7 @@ export const fetchAggregatedData = async (
     datasetId: string,
     tableId: string,
     options: {
-        dimensions: string[];
+        dimensions: (string | { field: string; expression?: string })[];
         measures: { field: string; aggregation: string; expression?: string }[];
         filters?: any[];
         limit?: number;
@@ -589,16 +589,17 @@ export const fetchAggregatedData = async (
 
     // 1. Build SELECT clause
     const selectParts = [
-        ...dimensions.map(d => `${parseField(d)} as \`${d}\``),
+        ...dimensions.map(d => {
+            const fieldName = typeof d === 'string' ? d : d.field;
+            const expression = typeof d === 'string' ? parseField(d) : (d.expression || parseField(d.field));
+            return `${expression} as \`${fieldName}\``;
+        }),
         ...measures.map(m => {
             const agg = m.aggregation.toUpperCase();
-            // Use custom expression if provided, otherwise format the field name
-            // @ts-ignore - expression is optional but checked
+            // Use m.expression if provided
             const colRef = m.expression ? m.expression : formatColumnReference(m.field);
             let sqlAgg = '';
 
-            // If expression is provided, we assume it handles column references itself,
-            // but we still wrap it in aggregation if needed
             switch (agg) {
                 case 'COUNTDISTINCT': sqlAgg = `COUNT(DISTINCT ${colRef})`; break;
                 case 'AVG': sqlAgg = `AVG(${colRef})`; break;
@@ -621,7 +622,8 @@ export const fetchAggregatedData = async (
         const filterParts = filters.map(f => {
             if (!f.field || f.enabled === false) return null;
 
-            const field = parseField(f.field);
+            // Use f.expression if provided (for calculated fields in WHERE)
+            const field = f.expression ? f.expression : parseField(f.field);
             const operator = f.operator;
             const val = f.value;
 
@@ -671,7 +673,10 @@ export const fetchAggregatedData = async (
         if (hasMeasures) {
             groupByClause = groupByIndices
                 ? ` GROUP BY ${dimensions.map((_, i) => i + 1).join(', ')}`
-                : ` GROUP BY ${dimensions.map(d => parseField(d)).join(', ')}`;
+                : ` GROUP BY ${dimensions.map(d => {
+                    if (typeof d === 'string') return parseField(d);
+                    return d.expression || parseField(d.field);
+                }).join(', ')}`;
         } else {
             distinctClause = 'DISTINCT ';
         }

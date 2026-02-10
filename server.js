@@ -22,6 +22,7 @@ app.get(['/*.tsx', '/*.ts'], async (req, res) => {
             entryPoints: [filePath],
             bundle: true,
             write: false,
+            outdir: 'dist', // Add dummy output directory to satisfy file loader if triggered
             format: 'esm',
             target: 'es2022',
             loader: {
@@ -29,11 +30,17 @@ app.get(['/*.tsx', '/*.ts'], async (req, res) => {
                 '.ts': 'ts',
                 '.css': 'css',
                 '.json': 'json',
-                '.png': 'file',
-                '.jpg': 'file',
-                '.svg': 'file',
-                '.woff': 'file',
-                '.woff2': 'file'
+                '.png': 'dataurl',
+                '.jpg': 'dataurl',
+                '.svg': 'dataurl',
+                '.woff': 'dataurl',
+                '.woff2': 'dataurl',
+                '.eot': 'dataurl',
+                '.ttf': 'dataurl',
+                '.otf': 'dataurl',
+                '.gif': 'dataurl',
+                '.webp': 'dataurl',
+                '.ico': 'dataurl'
             },
             // Alias hỗ trợ import @/*
             alias: {
@@ -72,6 +79,7 @@ app.get(['/*.tsx', '/*.ts'], async (req, res) => {
         res.type('application/javascript').send(result.outputFiles[0].text);
     } catch (err) {
         console.error('Build error:', err);
+        fs.appendFileSync('server.log', `[${new Date().toISOString()}] Build error: ${err.message}\n${err.stack}\n`);
         res.status(500).send(err.message);
     }
 });
