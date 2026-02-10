@@ -4,6 +4,7 @@
 
 import { DataSource, Field, Filter, FilterOperator, DataStats, BIWidget, AggregationType } from '../types';
 import { getFieldValue } from './utils';
+import { DrillDownService } from './DrillDownService';
 
 /**
  * Parse CSV data into structured format

@@ -14,11 +14,8 @@ export default defineConfig(({ mode }) => {
       'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.API_KEY),
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.API_KEY),
       'process.env.GOOGLE_CLIENT_ID': JSON.stringify(env.GOOGLE_CLIENT_ID || ''),
-      'process.env': {
-        API_KEY: env.GEMINI_API_KEY || env.API_KEY,
-        GEMINI_API_KEY: env.GEMINI_API_KEY || env.API_KEY,
-        GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID || ''
-      }
+      // Avoid overwriting the entire process.env object which breaks React/Node internals
+      'process.env.NODE_ENV': JSON.stringify(mode),
     },
     build: {
       rollupOptions: {
