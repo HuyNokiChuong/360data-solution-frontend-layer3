@@ -291,6 +291,21 @@ const Connections: React.FC<ConnectionsProps> = ({
                 <li>Data is fetched using the service account's identity.</li>
               </ul>
             </div>
+
+            <details className="group mb-4">
+              <summary className="cursor-pointer text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2 mb-2 select-none hover:text-indigo-600 transition-colors">
+                <i className="fas fa-question-circle"></i> How to get Service Account Key?
+                <i className="fas fa-chevron-down group-open:rotate-180 transition-transform"></i>
+              </summary>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 pl-4 space-y-2 border-l-2 border-indigo-100 dark:border-indigo-500/20 ml-1 animate-in slide-in-from-top-2 duration-200">
+                <p>1. Go to <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener noreferrer" className="text-indigo-500 font-bold hover:underline">GCP Service Accounts Page</a>.</p>
+                <p>2. Click <strong>Create Service Account</strong> and give it a name.</p>
+                <p>3. Grant these roles: <strong className="text-slate-700 dark:text-slate-300">BigQuery Data Viewer</strong> & <strong className="text-slate-700 dark:text-slate-300">BigQuery Job User</strong>.</p>
+                <p>4. Click the created account in the list &rarr; Go to <strong>Keys</strong> tab.</p>
+                <p>5. Click <strong>Add Key</strong> &rarr; <strong>Create new key</strong> &rarr; Select <strong>JSON</strong>.</p>
+                <p>6. Upload the downloaded JSON file below.</p>
+              </div>
+            </details>
             <label className={labelClass}>GCP Service Account JSON</label>
             <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-indigo-500/50 bg-white/[0.02]">
               <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
