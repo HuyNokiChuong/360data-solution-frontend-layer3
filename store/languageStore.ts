@@ -306,7 +306,7 @@ const translations: Record<Language, Record<string, string>> = {
 export const useLanguageStore = create<LanguageState>()(
     persist(
         (set, get) => ({
-            language: 'vi',
+            language: 'en',
             setLanguage: (lang) => set({ language: lang }),
             t: (key) => {
                 const { language } = get();
