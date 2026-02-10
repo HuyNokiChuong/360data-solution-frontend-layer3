@@ -741,6 +741,30 @@ export const runQuery = async (token: string, projectId: string, query: string, 
                 waitTime = Math.min(waitTime * 1.5, 5000);
             }
         }
+
+        let allRows = data.rows || [];
+        // Handle pagination for runQuery where initial results might be partial
+        while (data.pageToken) {
+            const jobId = data.jobReference.jobId;
+            const location = data.jobReference.location;
+            const nextUrl = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}`);
+            nextUrl.searchParams.append('pageToken', data.pageToken);
+            nextUrl.searchParams.append('maxResults', '10000'); // Fetch larger chunks
+            if (location) nextUrl.searchParams.append('location', location);
+
+            const nextResp = await fetch(nextUrl.toString(), {
+                headers: { Authorization: `Bearer ${token}` },
+                signal
+            });
+
+            if (!nextResp.ok) break;
+
+            data = await nextResp.json();
+            if (data.rows) {
+                allRows = [...allRows, ...data.rows];
+            }
+        }
+        data.rows = allRows; // ensuring we return complete set
         return parseBigQueryResponse(data);
     } catch (error) {
         // console.error("Query Execution Error:", error);
