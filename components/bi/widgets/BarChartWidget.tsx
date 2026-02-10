@@ -228,8 +228,9 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                             const leftRawFormat = (leftConfig?.format && leftConfig.format !== 'standard' ? leftConfig.format : null) || widget.valueFormat;
                             const rightRawFormat = (rightConfig?.format && rightConfig.format !== 'standard' ? rightConfig.format : null) || widget.valueFormat;
 
-                            const leftFormat = (!leftRawFormat || leftRawFormat === 'standard') ? 'smart_axis' : leftRawFormat;
-                            const rightFormat = (!rightRawFormat || rightRawFormat === 'standard') ? 'smart_axis' : rightRawFormat;
+                            const overrideFormats = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'];
+                            const leftFormat = (!leftRawFormat || overrideFormats.includes(leftRawFormat)) ? 'smart_axis' : leftRawFormat;
+                            const rightFormat = (!rightRawFormat || overrideFormats.includes(rightRawFormat)) ? 'smart_axis' : rightRawFormat;
 
                             const hasRightAxis = series.some(s => widget.yAxisConfigs?.find(c => c.field === s)?.yAxisId === 'right') ||
                                 lineSeries.some(s => widget.lineAxisConfigs?.find(c => c.field === s)?.yAxisId === 'right');
@@ -294,11 +295,8 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             type="number"
                                             stroke="#94a3b8"
                                             tickFormatter={(val) => formatBIValue(val, leftFormat)}
-                                            fontSize={10}
-                                            tickLine={false}
-                                            axisLine={false}
-                                            width={70}
-                                            fontFamily="Outfit"
+                                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                            width={80}
                                         />
                                         {hasRightAxis && (
                                             <YAxis
@@ -306,11 +304,8 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 orientation="right"
                                                 stroke="#94a3b8"
                                                 tickFormatter={(val) => formatBIValue(val, rightFormat)}
-                                                fontSize={10}
-                                                tickLine={false}
-                                                axisLine={false}
-                                                width={70}
-                                                fontFamily="Outfit"
+                                                style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                                width={80}
                                             />
                                         )}
                                     </>
@@ -409,7 +404,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         position={isHorizontal ? "right" : "top"}
                                         fill="#94a3b8"
                                         fontSize={10}
-                                        formatter={(val: any) => formatBIValue(val, widget.labelFormat || widget.valueFormat || 'compact')}
+                                        formatter={(val: any) => {
+                                            const overrideFormats = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'];
+                                            const selectedFormat = (!widget.valueFormat || overrideFormats.includes(widget.valueFormat)) ? 'smart_axis' : widget.valueFormat;
+                                            return formatBIValue(val, widget.labelFormat || selectedFormat || 'compact');
+                                        }}
                                     />
                                 )}
                             </Bar>

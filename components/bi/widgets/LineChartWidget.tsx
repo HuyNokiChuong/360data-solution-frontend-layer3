@@ -281,8 +281,9 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                             const leftRawFormat = (leftConfig?.format && leftConfig.format !== 'standard' ? leftConfig.format : null) || widget.valueFormat;
                             const rightRawFormat = (rightConfig?.format && rightConfig.format !== 'standard' ? rightConfig.format : null) || widget.valueFormat;
 
-                            const leftFormat = (!leftRawFormat || leftRawFormat === 'standard') ? 'smart_axis' : leftRawFormat;
-                            const rightFormat = (!rightRawFormat || rightRawFormat === 'standard') ? 'smart_axis' : rightRawFormat;
+                            const overrideFormats = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'];
+                            const leftFormat = (!leftRawFormat || overrideFormats.includes(leftRawFormat)) ? 'smart_axis' : leftRawFormat;
+                            const rightFormat = (!rightRawFormat || overrideFormats.includes(rightRawFormat)) ? 'smart_axis' : rightRawFormat;
 
                             return (
                                 <>

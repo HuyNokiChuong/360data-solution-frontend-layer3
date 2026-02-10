@@ -187,7 +187,11 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                         />
                         <YAxis
                             stroke="#94a3b8"
-                            tickFormatter={(val) => formatBIValue(val, (!widget.valueFormat || widget.valueFormat === 'standard') ? 'smart_axis' : widget.valueFormat)}
+                            tickFormatter={(val) => {
+                                const overrideFormats = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'];
+                                const format = (!widget.valueFormat || overrideFormats.includes(widget.valueFormat)) ? 'smart_axis' : widget.valueFormat;
+                                return formatBIValue(val, format);
+                            }}
                             style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
                             width={80}
                         />
