@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { AI_MODELS } from '../constants';
 import { testApiKey } from '../services/ai';
-import { apiService } from '../services/apiService';
 
 const AISettings: React.FC = () => {
   const [openaiKey, setOpenaiKey] = useState(localStorage.getItem('openai_api_key') || '');
@@ -10,38 +9,11 @@ const AISettings: React.FC = () => {
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const settings = await apiService.get('/ai/settings');
-        settings.forEach((s: any) => {
-          if (s.provider === 'OpenAI') setOpenaiKey(s.apiKey);
-          if (s.provider === 'Anthropic') setAnthropicKey(s.apiKey);
-          if (s.provider === 'Gemini') setGeminiKey(s.apiKey);
-        });
-      } catch (err) {
-        console.error('Failed to load AI settings:', err);
-      }
-    };
-    loadSettings();
-  }, []);
-
-  const saveAll = async () => {
-    try {
-      const promises = [];
-      if (openaiKey) promises.push(apiService.post('/ai/settings', { provider: 'OpenAI', apiKey: openaiKey.trim() }));
-      if (anthropicKey) promises.push(apiService.post('/ai/settings', { provider: 'Anthropic', apiKey: anthropicKey.trim() }));
-      if (geminiKey) promises.push(apiService.post('/ai/settings', { provider: 'Gemini', apiKey: geminiKey.trim() }));
-
-      await Promise.all(promises);
-
-      localStorage.setItem('openai_api_key', openaiKey.trim());
-      localStorage.setItem('anthropic_api_key', anthropicKey.trim());
-      localStorage.setItem('gemini_api_key', geminiKey.trim());
-      alert('Đã lưu cấu hình API Key vào Database!');
-    } catch (err: any) {
-      alert('Lỗi khi lưu: ' + err.message);
-    }
+  const saveAll = () => {
+    localStorage.setItem('openai_api_key', openaiKey.trim());
+    localStorage.setItem('anthropic_api_key', anthropicKey.trim());
+    localStorage.setItem('gemini_api_key', geminiKey.trim());
+    alert('Đã lưu cấu hình API Key!');
   };
 
   const handleTestKey = async (provider: string, key: string) => {

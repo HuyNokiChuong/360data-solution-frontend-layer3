@@ -4,7 +4,6 @@ import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
 import { generateReportInsight } from '../services/ai';
 import { useLanguageStore } from '../store/languageStore';
-import { apiService } from '../services/apiService';
 
 interface ReportsProps {
   tables: SyncedTable[];
@@ -132,16 +131,9 @@ const Reports: React.FC<ReportsProps> = ({
               messages: [userMsg]
             };
             setActiveSessionId(newId);
-
-            // Sync new session to backend
-            apiService.post('/sessions', { id: newId, title: newSession.title }).catch(e => console.error(e));
-
             return [newSession];
           }
         }
-
-        // Sync new message to existing session
-        apiService.post(`/sessions/${targetSessionId}/messages`, userMsg).catch(e => console.error(e));
 
         return prev.map(s =>
           s.id === targetSessionId
@@ -223,10 +215,6 @@ const Reports: React.FC<ReportsProps> = ({
         return prev.map(s => {
           if (s.id !== sessionToUpdate.id) return s;
           if (s.messages.some(m => m.id === aiMsg.id)) return s;
-
-          // Sync AI response to backend
-          apiService.post(`/sessions/${s.id}/messages`, aiMsg).catch(e => console.error(e));
-
           return { ...s, messages: [...s.messages, aiMsg] };
         });
       });
@@ -302,32 +290,39 @@ const Reports: React.FC<ReportsProps> = ({
   };
 
   const handleDeleteSession = (id: string) => {
-    // Sync deletion to backend
-    apiService.delete(`/sessions/${id}`).catch(e => console.error('Failed to delete session:', e));
-
     setSessions((prev: ReportSession[]) => {
       const remaining = prev.filter(s => s.id !== id);
+      if (activeSessionId === id) {
+        if (remaining.length > 0) setActiveSessionId(remaining[0].id);
+        else {
+          // If no sessions left, create a new one automatically or handle empty state
+          // For now, let's just clear selection? Or create new.
+          // Creating new inside setState callback is tricky, let's do it outside or just wait for sidebar logic
+          // Actually, sidebar has a button for new session.
+          // But we should probably select something or null.
+          // If we select nothing, the chat interface might show empty.
+          // Let's create a partial new session if really needed, but here just updating state.
+        }
+      }
       return remaining;
     });
 
     // Safety check for active session if we deleted it
     if (activeSessionId === id && sessions.length > 1) {
+      // This logic is slightly complex inside setState updater for 'remaining'.
+      // Let's rely on the useEffect or just simpler logic.
       const remaining = sessions.filter(s => s.id !== id);
       if (remaining.length > 0) setActiveSessionId(remaining[0].id);
       else {
         // Create default
         const newId = `s-${Date.now()}`;
-        const newSession = { id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] };
-        setSessions([newSession]);
+        setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
         setActiveSessionId(newId);
-        apiService.post('/sessions', { id: newId, title: 'New Analysis' }).catch(e => console.error(e));
       }
     } else if (sessions.length === 1 && sessions[0].id === id) {
       const newId = `s-${Date.now()}`;
-      const newSession = { id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] };
-      setSessions([newSession]);
+      setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
       setActiveSessionId(newId);
-      apiService.post('/sessions', { id: newId, title: 'New Analysis' }).catch(e => console.error(e));
     }
   };
 

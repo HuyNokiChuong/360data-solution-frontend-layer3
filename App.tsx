@@ -6,7 +6,6 @@ import { initGoogleAuth } from './services/googleAuth';
 import { PersistentStorage } from './services/storage';
 import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
-import { apiService } from './services/apiService';
 
 const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
@@ -81,13 +80,16 @@ const App: React.FC = () => {
     return null;
   });
 
-  // Proactive Background Token Refresh
+  // Proactive Background Token Refresh (Only if already has a token)
   useEffect(() => {
+    if (!googleToken) return;
+
     const refreshInterval = setInterval(async () => {
       const clientId = process.env.GOOGLE_CLIENT_ID || '';
       if (!clientId) return;
 
       const { getValidToken } = await import('./services/googleAuth');
+      // Silent refresh will return null if user interaction is needed
       const validToken = await getValidToken(clientId);
 
       if (validToken && validToken !== googleToken) {
@@ -99,15 +101,30 @@ const App: React.FC = () => {
     return () => clearInterval(refreshInterval);
   }, [googleToken]);
 
-  // Initialize token from storage on mount
+  // 1. Verify Session with Backend on mount
   useEffect(() => {
-    const initToken = async () => {
-      const { getValidToken } = await import('./services/googleAuth');
-      const token = await getValidToken(process.env.GOOGLE_CLIENT_ID || '');
-      if (token) setGoogleToken(token);
-    };
-    initToken();
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetch('http://localhost:3001/api/auth/me', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+        .then(res => res.json())
+        .then(resData => {
+          if (resData.success) {
+            setCurrentUser(resData.data);
+            setIsAuthenticated(true);
+          } else {
+            // Token invalid or expired
+            handleLogout();
+          }
+        })
+        .catch((err) => {
+          console.error("Session verification failed:", err);
+          // If backend is unreachable, we stick with local currentUser for offline-ish mode
+        });
+    }
   }, []);
+
 
   const [reportSessions, setReportSessions] = useState<ReportSession[]>([]);
   const [activeReportSessionId, setActiveReportSessionId] = useState<string>('s-1');
@@ -160,39 +177,69 @@ const App: React.FC = () => {
       setConnections(load('connections', []));
       setTables(load('tables', []));
 
-      // Load Data from Backend
-      const loadAllData = async () => {
+      // NEW: Sync from Backend
+      const token = localStorage.getItem('auth_token');
+      if (token) {
+        // Sync connections
+        fetch('http://localhost:3001/api/connections', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+          .then(res => res.json())
+          .then(resData => { if (resData.success) setConnections(resData.data); })
+          .catch(console.error);
+
+        // Sync Dashboards & Folders (handled mainly in BIMain store, but keeping here for consistency if needed)
+        // Actually, reportSessions are managed in App.tsx state.
+        fetch('http://localhost:3001/api/sessions', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+          .then(res => res.json())
+          .then(resData => {
+            if (resData.success && resData.data.length > 0) {
+              setReportSessions(resData.data);
+            }
+          })
+          .catch(console.error);
+      }
+
+      // Load Sessions from IndexedDB (PersistentStorage) as they can be large
+      const loadSessions = async () => {
         try {
-          const [conns, fetchedUsers, dbAI] = await Promise.all([
-            apiService.get('/connections'),
-            apiService.get('/users'),
-            apiService.get('/ai/settings')
-          ]);
-
-          setConnections(conns || []);
-          setUsers(fetchedUsers || [currentUser]);
-
-          // Sync AI settings to localStorage for components that still expect it
-          dbAI?.forEach((s: any) => {
-            const map: Record<string, string> = { 'OpenAI': 'openai_api_key', 'Gemini': 'gemini_api_key', 'Anthropic': 'anthropic_api_key' };
-            if (map[s.provider]) localStorage.setItem(map[s.provider], s.apiKey);
-          });
-
-          // Load Sessions from IndexedDB (Large Data)
           const loadedSessions = await PersistentStorage.get(`${d}_reportSessions`);
-          if (loadedSessions) setReportSessions(loadedSessions);
+          const loadedActiveId = await PersistentStorage.get(`${d}_activeReportSessionId`) || 's-1';
 
+          if (loadedSessions && Array.isArray(loadedSessions) && loadedSessions.length > 0) {
+            setReportSessions(loadedSessions);
+            if (loadedSessions.some((s: ReportSession) => s.id === loadedActiveId)) {
+              setActiveReportSessionId(loadedActiveId);
+            } else {
+              setActiveReportSessionId(loadedSessions[0].id);
+            }
+          } else {
+            // Fallback: Try localStorage for backward compatibility or initial state
+            const legacySessions = load('reportSessions', null);
+            if (legacySessions) {
+              setReportSessions(legacySessions);
+              setActiveReportSessionId(localStorage.getItem(`${d}_activeReportSessionId`) || legacySessions[0]?.id || 's-1');
+            } else {
+              const newId = `s-${Date.now()}`;
+              const defaultSession = { id: newId, title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] };
+              setReportSessions([defaultSession]);
+              setActiveReportSessionId(newId);
+            }
+          }
         } catch (err) {
-          console.error("Failed to load data from backend:", err);
-          // Fallback to local if backend fails but we are authenticated
-          setConnections(load('connections', []));
-          setUsers(load('users', [currentUser]));
+          console.error("Failed to load sessions from PersistentStorage:", err);
+          setReportSessions([{ id: 's-1', title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] }]);
+          setActiveReportSessionId('s-1');
         } finally {
+          setGoogleToken(localStorage.getItem(`${d}_googleToken`));
+          setUsers(load('users', [currentUser]));
           setTimeout(() => setIsReady(true), 150);
         }
       };
 
-      loadAllData();
+      loadSessions();
     } else {
       setIsReady(true);
     }
@@ -321,10 +368,13 @@ const App: React.FC = () => {
 
           const user = data.data.user;
           const token = data.data.token;
+          if (token) localStorage.setItem('auth_token', token);
 
-          localStorage.setItem('auth_token', token);
           setCurrentUser(user);
           setIsAuthenticated(true);
+
+          // Sync optional local storage if needed, but backend is source of truth now
+          localStorage.setItem(`${d}_users`, JSON.stringify([user]));
         })
         .catch(err => {
           setAuthError(err.message);
@@ -334,21 +384,26 @@ const App: React.FC = () => {
   };
 
   const handleOnboardingComplete = (finalUser: User) => {
-    const d = finalUser.email.split('@')[1];
-    // Save user
-    const savedUsersJson = localStorage.getItem(`${d}_users`);
-    let workspaceUsers: User[] = savedUsersJson ? JSON.parse(savedUsersJson) : [];
-
-    const userToSave: User = { ...finalUser, status: 'Active' };
-
-    // If updating existing user
-    if (workspaceUsers.some(u => u.id === userToSave.id)) {
-      workspaceUsers = workspaceUsers.map(u => u.id === userToSave.id ? userToSave : u);
-    } else {
-      workspaceUsers.push(userToSave);
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetch('http://localhost:3001/api/users/profile', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(finalUser)
+      })
+        .then(res => res.json())
+        .then(resData => {
+          if (resData.success) {
+            setCurrentUser(resData.data);
+          }
+        })
+        .catch(console.error);
     }
 
-    localStorage.setItem(`${d}_users`, JSON.stringify(workspaceUsers));
+    const userToSave: User = { ...finalUser, status: 'Active' };
     setCurrentUser(userToSave);
     setIsAuthenticated(true);
     setPendingUser(null);
@@ -361,12 +416,50 @@ const App: React.FC = () => {
     navigate('/');
   };
 
-  const addConnection = (conn: Connection, selectedTables: SyncedTable[]) => {
-    setConnections([...connections, conn]);
-    // Filter duplicates just in case
-    const currentTableIdentifiers = new Set(tables.map(t => `${t.connectionId}:${t.datasetName}.${t.tableName}`));
-    const uniqueNewTables = selectedTables.filter(t => !currentTableIdentifiers.has(`${t.connectionId}:${t.datasetName}.${t.tableName}`));
-    setTables([...tables, ...uniqueNewTables]);
+  const addConnection = async (conn: Connection, selectedTables: SyncedTable[]) => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      // Fallback if not logged in or token missing
+      setConnections([...connections, conn]);
+      setTables([...tables, ...selectedTables]);
+      return;
+    }
+
+    try {
+      // 1. Create Connection
+      const connRes = await fetch('http://localhost:3001/api/connections', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(conn)
+      });
+      const connData = await connRes.json();
+      if (!connRes.ok) throw new Error(connData.message);
+
+      const savedConn = connData.data;
+
+      // 2. Save Tables linked to this connection
+      if (selectedTables.length > 0) {
+        await fetch(`http://localhost:3001/api/connections/${savedConn.id}/tables`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ tables: selectedTables })
+        });
+      }
+
+      setConnections([...connections, savedConn]);
+      setTables([...tables, ...selectedTables]);
+    } catch (err) {
+      console.error('Failed to persist connection:', err);
+      // Still update local state so UI works, but it won't be in DB
+      setConnections([...connections, conn]);
+      setTables([...tables, ...selectedTables]);
+    }
   };
 
   const updateConnection = (conn: Connection, newTables?: SyncedTable[]) => {

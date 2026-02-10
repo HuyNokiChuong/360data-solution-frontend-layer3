@@ -7,7 +7,8 @@ import { connectionsRouter } from './routes/connections.js';
 import { dashboardsRouter } from './routes/dashboards.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { foldersRouter } from './routes/folders.js';
-import { aiRouter } from './routes/ai.js';
+import { aiSettingsRouter } from './routes/ai-settings.js';
+import { sharesRouter } from './routes/shares.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authMiddleware } from './middleware/auth.js';
 import { requestLogger } from './middleware/requestLogger.js';
@@ -50,7 +51,8 @@ app.use('/api/connections', authMiddleware, connectionsRouter);
 app.use('/api/dashboards', authMiddleware, dashboardsRouter);
 app.use('/api/sessions', authMiddleware, sessionsRouter);
 app.use('/api/folders', authMiddleware, foldersRouter);
-app.use('/api/ai', authMiddleware, aiRouter);
+app.use('/api/ai-settings', authMiddleware, aiSettingsRouter);
+app.use('/api/shares', authMiddleware, sharesRouter);
 
 // Error handler
 app.use(errorHandler);

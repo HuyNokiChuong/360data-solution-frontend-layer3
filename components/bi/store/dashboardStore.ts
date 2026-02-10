@@ -4,7 +4,6 @@
 
 import { create } from 'zustand';
 import { BIDashboard, BIFolder, BIWidget, GlobalFilter, DashboardPage, SharePermission } from '../types';
-import { apiService } from '../../../services/apiService';
 
 interface DashboardState {
     // Data
@@ -86,13 +85,28 @@ interface DashboardState {
 
 const getStorageKey = (domain: string | null) => domain ? `${domain}_bi_dashboard_data` : 'bi_dashboard_data';
 
-const saveToStorage = async (state: DashboardState) => {
-    if (!state.isHydrated || !state.domain) return;
+const saveToStorage = (state: DashboardState) => {
+    if (!state.isHydrated || !state.domain) {
+        // console.warn('Sync skipped: Store not hydrated or domain missing');
+        return;
+    }
 
     try {
         const storageKey = getStorageKey(state.domain);
 
-        // Save to LocalStorage for offline/speed
+        // Safety check: don't save empty state if we previously had data
+        // This is a last-resort guard against race conditions
+        if (state.dashboards.length === 0 && state.folders.length === 0) {
+            const existing = localStorage.getItem(storageKey);
+            if (existing) {
+                const parsed = JSON.parse(existing);
+                if (parsed.dashboards?.length > 0 || parsed.folders?.length > 0) {
+                    console.warn('⚠️ Prevented overwriting non-empty storage with empty state');
+                    return;
+                }
+            }
+        }
+
         localStorage.setItem(storageKey, JSON.stringify({
             folders: state.folders,
             dashboards: state.dashboards,
@@ -101,12 +115,12 @@ const saveToStorage = async (state: DashboardState) => {
             autoReloadSchedule: state.autoReloadSchedule,
             lastReloadTimestamp: state.lastReloadTimestamp
         }));
-
-        // In a full implementation, we would sync each change to the backend here.
-        // For now, most actions in this store are local-first.
-        // The backend routes for folders/dashboards are available.
     } catch (e) {
-        console.error('Failed to save dashboard data', e);
+        if (e instanceof Error && e.name === 'QuotaExceededError') {
+            console.error('🛑 LocalStorage quota exceeded for Dashboards');
+        } else {
+            console.error('Failed to save dashboard data', e);
+        }
     }
 };
 
@@ -306,11 +320,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     createFolder: (name, parentId, createdBy) => {
+        const tempId = `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         set((state) => ({
             folders: [
                 ...state.folders,
                 {
-                    id: `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                    id: tempId,
                     name,
                     parentId,
                     createdAt: new Date().toISOString(),
@@ -323,6 +338,24 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 }
             ]
         }));
+
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch('http://localhost:3001/api/folders', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ name, parentId })
+            })
+                .then(res => res.json())
+                .then(resData => {
+                    if (resData.success) {
+                        set((state) => ({
+                            folders: state.folders.map(f => f.id === tempId ? resData.data : f)
+                        }));
+                    }
+                }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -381,6 +414,32 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             dashboards: [...state.dashboards, newDashboard],
             activeDashboardId: newDashboard.id
         }));
+
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch('http://localhost:3001/api/dashboards', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({
+                    title: dashboard.title,
+                    description: dashboard.description,
+                    folderId: dashboard.folderId,
+                    dataSourceId: dashboard.dataSourceId,
+                    dataSourceName: dashboard.dataSourceName
+                })
+            })
+                .then(res => res.json())
+                .then(resData => {
+                    if (resData.success) {
+                        // Update with real backend data (including real ID)
+                        set((state) => ({
+                            dashboards: state.dashboards.map(d => d.id === newDashboard.id ? resData.data : d),
+                            activeDashboardId: state.activeDashboardId === newDashboard.id ? resData.data.id : state.activeDashboardId
+                        }));
+                    }
+                }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -799,55 +858,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         return widgets?.find(w => w.id === editingWidgetId);
     },
 
-    loadFromStorage: async (domain) => {
+    loadFromStorage: (domain) => {
         if (!domain) return;
-
-        const loadFromAPI = async () => {
-            try {
-                const [dashboardsRes, foldersRes] = await Promise.all([
-                    apiService.get('/dashboards'),
-                    apiService.get('/folders')
-                ]);
-
-                if (dashboardsRes && foldersRes) {
-                    const migratedDashboards = (dashboardsRes || []).map((d: any) => {
-                        if (!d.pages || d.pages.length === 0) {
-                            const pageId = `pg-default-${d.id}`;
-                            return {
-                                ...d,
-                                pages: [{ id: pageId, title: 'Page 1', widgets: d.widgets || [] }],
-                                activePageId: pageId,
-                                widgets: d.widgets || []
-                            };
-                        }
-                        return d;
-                    });
-
-                    const savedActiveDashboardId = localStorage.getItem(`${domain}_activeDashboardId`);
-
-                    set({
-                        folders: foldersRes || [],
-                        dashboards: migratedDashboards,
-                        activeDashboardId: migratedDashboards.some((d: any) => d.id === savedActiveDashboardId)
-                            ? savedActiveDashboardId
-                            : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null),
-                        history: [migratedDashboards],
-                        historyIndex: 0,
-                        domain,
-                        isHydrated: true
-                    });
-                    return true;
-                }
-            } catch (e) {
-                console.warn('[DashboardStore] API load failed:', e);
-            }
-            return false;
-        };
-
-        const success = await loadFromAPI();
-        if (success) return;
-
-        // Fallback to localStorage
         try {
             const storageKey = getStorageKey(domain);
             const data = localStorage.getItem(storageKey);
@@ -870,6 +882,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     return d;
                 });
 
+                // Ensure activeDashboardId is valid, or pick the first one if one exists
                 const activeDashboardId = migratedDashboards.some(d => d.id === savedActiveDashboardId)
                     ? savedActiveDashboardId
                     : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null);
@@ -886,6 +899,24 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     lastReloadTimestamp: parsed.lastReloadTimestamp || null,
                     isHydrated: true
                 });
+
+                // Sync from Backend
+                const token = localStorage.getItem('auth_token');
+                if (token) {
+                    Promise.all([
+                        fetch('http://localhost:3001/api/folders', { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()),
+                        fetch('http://localhost:3001/api/dashboards', { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json())
+                    ]).then(([folderRes, dashboardRes]) => {
+                        if (folderRes.success && dashboardRes.success) {
+                            set({
+                                folders: folderRes.data,
+                                dashboards: dashboardRes.data,
+                                isHydrated: true
+                            });
+                        }
+                    }).catch(console.error);
+                }
+                // console.log(`✅ Loaded ${migratedDashboards.length} dashboards for domain ${domain}`);
             } else {
                 set({
                     folders: [],
@@ -896,10 +927,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     history: [[]],
                     historyIndex: 0
                 });
+                // console.log(`ℹ️ No dashboards found for domain ${domain}`);
             }
         } catch (e) {
-            console.error('Failed to load dashboard data from local', e);
-            set({ isHydrated: true, domain });
+            console.error('Failed to load dashboard data', e);
+            set({ isHydrated: true, domain }); // Still mark as hydrated to allow saving new data
         }
     },
 

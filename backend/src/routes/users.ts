@@ -34,6 +34,29 @@ usersRouter.get('/', async (req: AuthRequest, res: Response, next: NextFunction)
         next(error);
     }
 });
+// PUT /api/users/profile - Update own profile
+usersRouter.put('/profile', async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+        const { name, jobTitle, level, department, phoneNumber, industry, companySize } = req.body;
+
+        const user = await prisma.user.update({
+            where: { id: req.user!.id },
+            data: {
+                ...(name && { name }),
+                ...(jobTitle && { jobTitle }),
+                ...(level && { level }),
+                ...(department && { department }),
+                ...(phoneNumber && { phoneNumber }),
+                ...(industry && { industry }),
+                ...(companySize && { companySize })
+            }
+        });
+
+        res.json({ success: true, data: user });
+    } catch (error) {
+        next(error);
+    }
+});
 
 // PUT /api/users/:id - Update user (Admin only)
 usersRouter.put('/:id', requireRole('Admin'), async (req: AuthRequest, res: Response, next: NextFunction) => {
