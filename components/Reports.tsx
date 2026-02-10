@@ -4,6 +4,7 @@ import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
 import { generateReportInsight } from '../services/ai';
 import { useLanguageStore } from '../store/languageStore';
+import { sessionsApi } from '../services/apiClient';
 
 interface ReportsProps {
   tables: SyncedTable[];
@@ -218,6 +219,14 @@ const Reports: React.FC<ReportsProps> = ({
           return { ...s, messages: [...s.messages, aiMsg] };
         });
       });
+      // Sync AI message to backend
+      sessionsApi.addMessage(targetSessionId, {
+        role: 'assistant',
+        content: aiMsg.content,
+        visualData: aiMsg.visualData,
+        sqlTrace: aiMsg.sqlTrace,
+        executionTime: aiMsg.executionTime
+      }).catch(e => console.error('Failed to sync AI message:', e));
       abortControllerRef.current = null;
 
     } catch (e: any) {
@@ -287,6 +296,7 @@ const Reports: React.FC<ReportsProps> = ({
 
   const handleRenameSession = (id: string, newTitle: string) => {
     setSessions((prev: ReportSession[]) => prev.map(s => s.id === id ? { ...s, title: newTitle } : s));
+    sessionsApi.update(id, { title: newTitle }).catch(e => console.error('Failed to rename session:', e));
   };
 
   const handleDeleteSession = (id: string) => {
@@ -294,35 +304,28 @@ const Reports: React.FC<ReportsProps> = ({
       const remaining = prev.filter(s => s.id !== id);
       if (activeSessionId === id) {
         if (remaining.length > 0) setActiveSessionId(remaining[0].id);
-        else {
-          // If no sessions left, create a new one automatically or handle empty state
-          // For now, let's just clear selection? Or create new.
-          // Creating new inside setState callback is tricky, let's do it outside or just wait for sidebar logic
-          // Actually, sidebar has a button for new session.
-          // But we should probably select something or null.
-          // If we select nothing, the chat interface might show empty.
-          // Let's create a partial new session if really needed, but here just updating state.
-        }
       }
       return remaining;
     });
 
+    // Sync deletion to backend
+    sessionsApi.delete(id).catch(e => console.error('Failed to delete session:', e));
+
     // Safety check for active session if we deleted it
     if (activeSessionId === id && sessions.length > 1) {
-      // This logic is slightly complex inside setState updater for 'remaining'.
-      // Let's rely on the useEffect or just simpler logic.
       const remaining = sessions.filter(s => s.id !== id);
       if (remaining.length > 0) setActiveSessionId(remaining[0].id);
       else {
-        // Create default
         const newId = `s-${Date.now()}`;
         setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
         setActiveSessionId(newId);
+        sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create default session:', e));
       }
     } else if (sessions.length === 1 && sessions[0].id === id) {
       const newId = `s-${Date.now()}`;
       setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
       setActiveSessionId(newId);
+      sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create default session:', e));
     }
   };
 
@@ -538,6 +541,8 @@ const Reports: React.FC<ReportsProps> = ({
             };
             setSessions([newSession, ...sessions]);
             setActiveSessionId(newId);
+            // Sync new session to backend
+            sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create session:', e));
           }}
         />
 

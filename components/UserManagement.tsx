@@ -3,13 +3,15 @@ import { User, UserRole } from '../types';
 import { isCorporateDomain } from '../utils/domain';
 import { useDashboardStore } from './bi/store/dashboardStore';
 import { SharePermission } from './bi/types';
+import { usersApi } from '../services/apiClient';
 
 interface UserManagementProps {
   users: User[];
   setUsers: React.Dispatch<React.SetStateAction<User[]>>;
+  currentUser: User;
 }
 
-const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
+const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, currentUser }) => {
   const { dashboards, shareDashboard } = useDashboardStore();
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -17,23 +19,19 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
   const [newUser, setNewUser] = useState({ name: '', email: '', role: 'Viewer' as UserRole });
   const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
 
-  // Initialize granular roles when modal opens
-  useEffect(() => {
-    if (isInviteModalOpen) {
-      const initial: Record<string, SharePermission['permission'] | 'none'> = {};
-      dashboards.forEach(d => {
-        initial[d.id] = 'none'; // Default to Don't Share - explicit permission required
-      });
-      setGranularRoles(initial);
-    }
-  }, [isInviteModalOpen, dashboards]);
+  const workspaceDomain = currentUser.email.split('@')[1]?.toLowerCase();
 
-  const deleteUser = (id: string) => {
+  const deleteUser = async (id: string) => {
     setUsers(users.filter(u => u.id !== id));
+    try { await usersApi.delete(id); } catch (e) { console.error('Failed to delete user in DB:', e); }
   };
 
-  const toggleStatus = (id: string) => {
-    setUsers(users.map(u => u.id === id ? { ...u, status: u.status === 'Active' ? 'Disabled' : 'Active' } : u));
+  const toggleStatus = async (id: string) => {
+    const user = users.find(u => u.id === id);
+    if (!user) return;
+    const newStatus = user.status === 'Active' ? 'Disabled' : 'Active';
+    setUsers(users.map(u => u.id === id ? { ...u, status: newStatus } : u));
+    try { await usersApi.update(id, { status: newStatus }); } catch (e) { console.error('Failed to toggle user status in DB:', e); }
   };
 
   const triggerToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -41,12 +39,10 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
     setTimeout(() => setShowToast(null), 3000);
   };
 
-  const handleInvite = (e: React.FormEvent) => {
+  const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const emailDomain = newUser.email.split('@')[1]?.toLowerCase();
-    const adminEmail = users.find(u => u.role === 'Admin')?.email;
-    const workspaceDomain = adminEmail?.split('@')[1]?.toLowerCase();
 
     if (!isCorporateDomain(newUser.email)) {
       triggerToast(`Access restricted: Only corporate email accounts can be invited.`, 'error');
@@ -66,18 +62,24 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
 
     setIsSending(true);
 
-    // Simulate SMTP dispatch and permission propagation
-    setTimeout(() => {
+    try {
+      // Call backend API to invite user
+      const res = await usersApi.invite({
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role,
+      });
+
       const user: User = {
-        id: Date.now().toString(),
+        id: res.data?.id || Date.now().toString(),
         name: newUser.name,
         email: newUser.email,
         role: newUser.role,
-        status: 'Active',
+        status: 'Pending',
         joinedAt: new Date().toISOString().split('T')[0]
       };
 
-      // 1. Add User
+      // 1. Add User to local state
       setUsers([...users, user]);
 
       // 2. Propagate Granular Dashboard Permissions
@@ -96,11 +98,14 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers }) => {
         }
       });
 
-      setIsSending(false);
       setIsInviteModalOpen(false);
       setNewUser({ name: '', email: '', role: 'Viewer' });
       triggerToast(`Invitation sent and permissions provisioned for ${user.email}`, 'success');
-    }, 1500);
+    } catch (err: any) {
+      triggerToast(err.message || 'Failed to invite user', 'error');
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (

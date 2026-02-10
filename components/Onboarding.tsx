@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User } from '../types';
 import { emailService } from '../services/emailService';
+import { authApi, setAuthToken } from '../services/apiClient';
 
 interface OnboardingProps {
     currentUser: User;
@@ -45,34 +46,9 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     const triggerEmail = async () => {
         setLoading(true);
         try {
-            await fetch('http://localhost:3001/api/auth/register', {
-                method: 'POST', // Re-register triggers resend/update in our logic? 
-                // Actually, backend register throws "User already exists".
-                // We need a specific "resend-code" endpoint or modify register.
-                // For now, let's assume user just registered.
-                // If this is a RESEND, we should probably have an endpoint.
-                // Let's use a new endpoint or just tell user to check email.
-                // Wait, I didn't add /resend endpoint.
-                // I'll add a quick /resend endpoint to auth.ts in next step or reuse verify logic? No.
-                // For this iteration, let's assume the user JUST got the email.
-                // If they need resend, we need that endpoint.
-                // I will update auth.ts to support resend or handle "pending" user in register to resend.
-
-                // My auth.ts update handled: "If pending ... throw account pending".
-                // I should allow it to resend.
-                // Let's modify frontend to hit /register again, but I need to update backend to allow resend.
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: currentUser.email,
-                    password: 'REDACTED', // Problem. We don't have password here.
-                    // We can't use register for resend without password.
-                    // Implementation Gap: I need a /resend-verification endpoint.
-                })
-            });
-            // Placeholder: Assume success for now to unblock flow until backend updated
-            setSentCode('123456'); // Mocking for now if API fails? No, must use real.
+            await authApi.resendCode({ email: currentUser.email });
         } catch (e) {
-            console.error(e);
+            console.error('Failed to trigger email:', e);
         } finally {
             setLoading(false);
         }
@@ -118,22 +94,18 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setErrorMessage(null);
         setLoading(true);
 
-        fetch('http://localhost:3001/api/auth/verify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                email: currentUser.email,
-                code
-            })
-        })
-            .then(async (res) => {
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.message || 'Verification failed');
+        authApi.verify({ email: currentUser.email, code })
+            .then((data) => {
+                // Store JWT token from verify response
+                if (data.data?.token) {
+                    setAuthToken(data.data.token);
+                }
 
                 // Save data
                 const updatedUser: User = {
                     ...currentUser,
                     ...formData,
+                    id: data.data?.user?.id || currentUser.id,
                     status: 'Active'
                 };
                 onUpdateUser(updatedUser);
@@ -155,15 +127,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setVerificationCode(['', '', '', '', '', '']);
 
         try {
-            const res = await fetch('http://localhost:3001/api/auth/resend-code', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: currentUser.email })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.message || 'Failed to resend code');
-
-            // Success feedback could be added here if needed
+            await authApi.resendCode({ email: currentUser.email });
         } catch (err: any) {
             setErrorMessage(err.message || "Failed to resend code");
             setCanResend(true);

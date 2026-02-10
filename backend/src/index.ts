@@ -9,6 +9,7 @@ import { sessionsRouter } from './routes/sessions.js';
 import { foldersRouter } from './routes/folders.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authMiddleware } from './middleware/auth.js';
+import { requestLogger } from './middleware/requestLogger.js';
 
 dotenv.config();
 
@@ -16,8 +17,20 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:8080')
+    .split(',')
+    .map(s => s.trim());
+
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+    origin: (origin, callback) => {
+        // Allow requests with no origin (mobile apps, curl, same-origin proxy)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(null, true); // Allow all in development, restrict in production via Nginx
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));

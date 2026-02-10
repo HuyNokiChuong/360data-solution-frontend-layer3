@@ -107,3 +107,46 @@ usersRouter.delete('/:id', requireRole('Admin'), async (req: AuthRequest, res: R
         next(error);
     }
 });
+
+// POST /api/users/invite - Invite a user to workspace (Admin only)
+usersRouter.post('/invite', requireRole('Admin'), async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+        const { email, name, role } = req.body;
+
+        if (!email || !name) {
+            throw new ApiError('Email and name are required', 400);
+        }
+
+        // Check if user already exists in this workspace
+        const existing = await prisma.user.findFirst({
+            where: { email: email.toLowerCase(), workspaceId: req.user!.workspaceId }
+        });
+
+        if (existing) {
+            throw new ApiError('User already exists in this workspace', 409);
+        }
+
+        const user = await prisma.user.create({
+            data: {
+                email: email.toLowerCase(),
+                name,
+                role: role || 'Viewer',
+                status: 'Pending',
+                passwordHash: '', // Invited users set password on first login
+                workspaceId: req.user!.workspaceId
+            },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                role: true,
+                status: true,
+                joinedAt: true
+            }
+        });
+
+        res.status(201).json({ success: true, data: user, message: 'User invited successfully' });
+    } catch (error) {
+        next(error);
+    }
+});
