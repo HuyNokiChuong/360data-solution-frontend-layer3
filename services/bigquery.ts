@@ -321,13 +321,6 @@ export const fetchTableData = async (
                     }
                 };
             }
-            if (type === 'BOOLEAN' || type === 'BOOL') {
-                return (rowData: any, val: any) => {
-                    if (val === 'true' || val === true) rowData[name] = true;
-                    else if (val === 'false' || val === false) rowData[name] = false;
-                    else rowData[name] = null;
-                };
-            }
             return (rowData: any, val: any) => {
                 rowData[name] = val;
             };
@@ -389,6 +382,7 @@ export const fetchTableData = async (
         }
 
         let parsedRows = await parseRowsAsync(currentRows);
+        const allRows = [...parsedRows];
 
         if (onPartialResults) {
             onPartialResults(parsedRows, totalRows);
@@ -449,6 +443,7 @@ export const fetchTableData = async (
                         if (rowCount > 0) {
                             // Optimized parsing without heavy yielding for sub-chunks
                             const parsed = await parseRowsAsync(rows);
+                            allRows.push(...parsed);
                             if (onPartialResults) {
                                 onPartialResults(parsed, totalRows);
                             }
@@ -502,7 +497,7 @@ export const fetchTableData = async (
         }
 
         // console.log(`✅ Parallel Data Sync Complete.`);
-        return { rows: [], schema }; // Return empty rows because they are already pushed via onPartialResults
+        return { rows: allRows, schema };
     } catch (error: any) {
         if (error.name === 'AbortError') {
             // console.log('⏹️ fetchTableData aborted.');
@@ -741,30 +736,6 @@ export const runQuery = async (token: string, projectId: string, query: string, 
                 waitTime = Math.min(waitTime * 1.5, 5000);
             }
         }
-
-        let allRows = data.rows || [];
-        // Handle pagination for runQuery where initial results might be partial
-        while (data.pageToken) {
-            const jobId = data.jobReference.jobId;
-            const location = data.jobReference.location;
-            const nextUrl = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}`);
-            nextUrl.searchParams.append('pageToken', data.pageToken);
-            nextUrl.searchParams.append('maxResults', '10000'); // Fetch larger chunks
-            if (location) nextUrl.searchParams.append('location', location);
-
-            const nextResp = await fetch(nextUrl.toString(), {
-                headers: { Authorization: `Bearer ${token}` },
-                signal
-            });
-
-            if (!nextResp.ok) break;
-
-            data = await nextResp.json();
-            if (data.rows) {
-                allRows = [...allRows, ...data.rows];
-            }
-        }
-        data.rows = allRows; // ensuring we return complete set
         return parseBigQueryResponse(data);
     } catch (error) {
         // console.error("Query Execution Error:", error);
@@ -783,10 +754,6 @@ export const parseBigQueryResponse = (data: any): any[] => {
                 let val = cell.v;
                 if (['INTEGER', 'FLOAT', 'FLOAT64', 'INT64', 'NUMERIC'].includes(field.type)) {
                     val = val !== null && val !== undefined ? parseFloat(val) : null;
-                } else if (['BOOLEAN', 'BOOL'].includes(field.type)) {
-                    if (val === 'true') val = true;
-                    else if (val === 'false') val = false;
-                    else val = null;
                 }
                 rowData[field.name] = val;
             });
