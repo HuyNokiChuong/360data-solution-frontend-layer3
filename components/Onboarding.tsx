@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User } from '../types';
-import { emailService } from '../services/emailService';
-import { authApi, setAuthToken } from '../services/apiClient';
+import { apiService } from '../services/apiService';
 
 interface OnboardingProps {
     currentUser: User;
@@ -43,16 +42,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     // We remove the auto-trigger effect because registration (step 0 effectively) triggered it.
     // If we want to be safe, we could have a check, but backend handles initial send.
 
-    const triggerEmail = async () => {
-        setLoading(true);
-        try {
-            await authApi.resendCode({ email: currentUser.email });
-        } catch (e) {
-            console.error('Failed to trigger email:', e);
-        } finally {
-            setLoading(false);
-        }
-    };
 
     useEffect(() => {
         if (step === 4 && timeLeft > 0) {
@@ -94,23 +83,20 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setErrorMessage(null);
         setLoading(true);
 
-        authApi.verify({ email: currentUser.email, code })
-            .then((data) => {
-                // Store JWT token from verify response
-                if (data.data?.token) {
-                    setAuthToken(data.data.token);
-                }
-
+        apiService.post('/auth/verify', {
+            email: currentUser.email,
+            code
+        })
+            .then((data: any) => {
                 // Save data
                 const updatedUser: User = {
                     ...currentUser,
                     ...formData,
-                    id: data.data?.user?.id || currentUser.id,
                     status: 'Active'
                 };
                 onUpdateUser(updatedUser);
             })
-            .catch(err => {
+            .catch((err: any) => {
                 setErrorMessage(err.message || "Mã xác thực không hợp lệ");
             })
             .finally(() => setLoading(false));
@@ -127,7 +113,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setVerificationCode(['', '', '', '', '', '']);
 
         try {
-            await authApi.resendCode({ email: currentUser.email });
+            await apiService.post('/auth/resend-code', { email: currentUser.email });
         } catch (err: any) {
             setErrorMessage(err.message || "Failed to resend code");
             setCanResend(true);

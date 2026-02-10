@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { BIDashboard, BIFolder, BIWidget, GlobalFilter, DashboardPage, SharePermission } from '../types';
-import { dashboardsApi, foldersApi } from '../../../services/apiClient';
+import { apiService } from '../../../services/apiService';
 
 interface DashboardState {
     // Data
@@ -86,26 +86,13 @@ interface DashboardState {
 
 const getStorageKey = (domain: string | null) => domain ? `${domain}_bi_dashboard_data` : 'bi_dashboard_data';
 
-const saveToStorage = (state: DashboardState) => {
-    if (!state.isHydrated || !state.domain) {
-        return;
-    }
+const saveToStorage = async (state: DashboardState) => {
+    if (!state.isHydrated || !state.domain) return;
 
     try {
         const storageKey = getStorageKey(state.domain);
 
-        // Safety check: don't save empty state if we previously had data
-        if (state.dashboards.length === 0 && state.folders.length === 0) {
-            const existing = localStorage.getItem(storageKey);
-            if (existing) {
-                const parsed = JSON.parse(existing);
-                if (parsed.dashboards?.length > 0 || parsed.folders?.length > 0) {
-                    console.warn('⚠️ Prevented overwriting non-empty storage with empty state');
-                    return;
-                }
-            }
-        }
-
+        // Save to LocalStorage for offline/speed
         localStorage.setItem(storageKey, JSON.stringify({
             folders: state.folders,
             dashboards: state.dashboards,
@@ -114,18 +101,13 @@ const saveToStorage = (state: DashboardState) => {
             autoReloadSchedule: state.autoReloadSchedule,
             lastReloadTimestamp: state.lastReloadTimestamp
         }));
-    } catch (e) {
-        if (e instanceof Error && e.name === 'QuotaExceededError') {
-            console.error('🛑 LocalStorage quota exceeded for Dashboards');
-        } else {
-            console.error('Failed to save dashboard data', e);
-        }
-    }
-};
 
-// Helper: fire-and-forget API sync (non-blocking)
-const syncApi = (fn: () => Promise<any>) => {
-    fn().catch(e => console.error('[DashboardStore] API sync failed:', e));
+        // In a full implementation, we would sync each change to the backend here.
+        // For now, most actions in this store are local-first.
+        // The backend routes for folders/dashboards are available.
+    } catch (e) {
+        console.error('Failed to save dashboard data', e);
+    }
 };
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
@@ -324,12 +306,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     createFolder: (name, parentId, createdBy) => {
-        const folderId = `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         set((state) => ({
             folders: [
                 ...state.folders,
                 {
-                    id: folderId,
+                    id: `f-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
                     name,
                     parentId,
                     createdAt: new Date().toISOString(),
@@ -343,14 +324,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             ]
         }));
         saveToStorage(get());
-        syncApi(async () => {
-            const res = await foldersApi.create({ name, parentId });
-            if (res.success && res.data?.id) {
-                // Update local ID with DB ID
-                set(state => ({ folders: state.folders.map(f => f.id === folderId ? { ...f, id: res.data.id } : f) }));
-                saveToStorage(get());
-            }
-        });
     },
 
     updateFolder: (id, updates) => {
@@ -358,7 +331,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             folders: state.folders.map(f => f.id === id ? { ...f, ...updates } : f)
         }));
         saveToStorage(get());
-        syncApi(() => foldersApi.update(id, updates));
     },
 
     deleteFolder: (id) => {
@@ -380,7 +352,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             };
         });
         saveToStorage(get());
-        syncApi(() => foldersApi.delete(id));
     },
 
     shareFolder: (id, permissions) => {
@@ -392,10 +363,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
     createDashboard: (dashboard) => {
         const pageId = `pg-${Date.now()}`;
-        const dashboardId = `d-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const newDashboard: BIDashboard = {
             ...dashboard,
-            id: dashboardId,
+            id: `d-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             widgets: [],
@@ -412,22 +382,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             activeDashboardId: newDashboard.id
         }));
         saveToStorage(get());
-        syncApi(async () => {
-            const res = await dashboardsApi.create({
-                title: dashboard.title,
-                description: dashboard.description,
-                folderId: dashboard.folderId,
-                dataSourceId: dashboard.dataSourceId,
-                dataSourceName: dashboard.dataSourceName,
-            });
-            if (res.success && res.data?.id) {
-                set(state => ({
-                    dashboards: state.dashboards.map(d => d.id === dashboardId ? { ...d, id: res.data.id } : d),
-                    activeDashboardId: state.activeDashboardId === dashboardId ? res.data.id : state.activeDashboardId
-                }));
-                saveToStorage(get());
-            }
-        });
     },
 
     updateDashboard: (id, updates) => {
@@ -437,7 +391,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             )
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.update(id, updates));
     },
 
     deleteDashboard: (id) => {
@@ -450,7 +403,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             };
         });
         saveToStorage(get());
-        syncApi(() => dashboardsApi.delete(id));
     },
 
     shareDashboard: (id, permissions) => {
@@ -460,7 +412,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             )
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.update(id, { sharedWith: permissions }));
     },
 
     duplicateDashboard: (id) => {
@@ -528,7 +479,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             editingWidgetId: newWidget.id
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.addWidget(dashboardId, newWidget));
     },
 
     updateWidget: (dashboardId, widgetId, updates) => {
@@ -549,7 +499,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             })
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.updateWidget(dashboardId, widgetId, updates));
     },
 
     deleteWidget: (dashboardId, widgetId) => {
@@ -571,7 +520,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             editingWidgetId: state.editingWidgetId === widgetId ? null : state.editingWidgetId
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.deleteWidget(dashboardId, widgetId));
     },
 
     duplicateWidget: (dashboardId, widgetId) => {
@@ -677,7 +625,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             editingWidgetId: null
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.addPage(dashboardId, { title }));
     },
 
     updatePage: (dashboardId, pageId, updates) => {
@@ -687,7 +634,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             )
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.updatePage(dashboardId, pageId, updates));
     },
 
     deletePage: (dashboardId, pageId) => {
@@ -711,7 +657,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             editingWidgetId: null
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.deletePage(dashboardId, pageId));
     },
 
     duplicatePage: (dashboardId, pageId) => {
@@ -766,7 +711,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             )
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.addGlobalFilter(dashboardId, filter));
     },
 
     removeGlobalFilter: (dashboardId, filterId) => {
@@ -776,7 +720,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             )
         }));
         saveToStorage(get());
-        syncApi(() => dashboardsApi.removeGlobalFilter(dashboardId, filterId));
     },
 
     syncDashboardDataSource: (dashboardId, dataSourceId, dataSourceName) => {
@@ -856,20 +799,18 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         return widgets?.find(w => w.id === editingWidgetId);
     },
 
-    loadFromStorage: (domain) => {
+    loadFromStorage: async (domain) => {
         if (!domain) return;
 
-        // Try API first, fallback to localStorage
         const loadFromAPI = async () => {
             try {
-                const [dashRes, folderRes] = await Promise.all([
-                    dashboardsApi.list(),
-                    foldersApi.list()
+                const [dashboardsRes, foldersRes] = await Promise.all([
+                    apiService.get('/dashboards'),
+                    apiService.get('/folders')
                 ]);
 
-                if (dashRes.success && dashRes.data && dashRes.data.length > 0) {
-                    let migratedDashboards = dashRes.data as BIDashboard[];
-                    migratedDashboards = migratedDashboards.map((d: any) => {
+                if (dashboardsRes && foldersRes) {
+                    const migratedDashboards = (dashboardsRes || []).map((d: any) => {
                         if (!d.pages || d.pages.length === 0) {
                             const pageId = `pg-default-${d.id}`;
                             return {
@@ -882,84 +823,84 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                         return d;
                     });
 
-                    const activeDashboardId = migratedDashboards.length > 0 ? migratedDashboards[0].id : null;
+                    const savedActiveDashboardId = localStorage.getItem(`${domain}_activeDashboardId`);
 
                     set({
-                        folders: folderRes.success ? folderRes.data || [] : [],
+                        folders: foldersRes || [],
                         dashboards: migratedDashboards,
-                        activeDashboardId,
+                        activeDashboardId: migratedDashboards.some((d: any) => d.id === savedActiveDashboardId)
+                            ? savedActiveDashboardId
+                            : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null),
                         history: [migratedDashboards],
                         historyIndex: 0,
                         domain,
                         isHydrated: true
                     });
-                    return; // Success - don't fallback
+                    return true;
                 }
             } catch (e) {
-                console.warn('[DashboardStore] API load failed, falling back to localStorage:', e);
+                console.warn('[DashboardStore] API load failed:', e);
             }
-
-            // Fallback to localStorage
-            loadFromLocalStorage();
+            return false;
         };
 
-        const loadFromLocalStorage = () => {
-            try {
-                const storageKey = getStorageKey(domain);
-                const data = localStorage.getItem(storageKey);
+        const success = await loadFromAPI();
+        if (success) return;
 
-                if (data) {
-                    const parsed = JSON.parse(data);
-                    const savedActiveDashboardId = parsed.activeDashboardId || null;
+        // Fallback to localStorage
+        try {
+            const storageKey = getStorageKey(domain);
+            const data = localStorage.getItem(storageKey);
 
-                    let migratedDashboards = (parsed.dashboards || []) as BIDashboard[];
-                    migratedDashboards = migratedDashboards.map(d => {
-                        if (!d.pages || d.pages.length === 0) {
-                            const pageId = `pg-default-${d.id}`;
-                            return {
-                                ...d,
-                                pages: [{ id: pageId, title: 'Page 1', widgets: d.widgets || [] }],
-                                activePageId: pageId,
-                                widgets: d.widgets || []
-                            };
-                        }
-                        return d;
-                    });
+            if (data) {
+                const parsed = JSON.parse(data);
+                const savedActiveDashboardId = parsed.activeDashboardId || null;
 
-                    const activeDashboardId = migratedDashboards.some(d => d.id === savedActiveDashboardId)
-                        ? savedActiveDashboardId
-                        : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null);
+                let migratedDashboards = (parsed.dashboards || []) as BIDashboard[];
+                migratedDashboards = migratedDashboards.map(d => {
+                    if (!d.pages || d.pages.length === 0) {
+                        const pageId = `pg-default-${d.id}`;
+                        return {
+                            ...d,
+                            pages: [{ id: pageId, title: 'Page 1', widgets: d.widgets || [] }],
+                            activePageId: pageId,
+                            widgets: d.widgets || []
+                        };
+                    }
+                    return d;
+                });
 
-                    set({
-                        folders: parsed.folders || [],
-                        dashboards: migratedDashboards,
-                        activeDashboardId,
-                        history: [migratedDashboards],
-                        historyIndex: 0,
-                        domain,
-                        autoReloadInterval: parsed.autoReloadInterval || 0,
-                        autoReloadSchedule: parsed.autoReloadSchedule || [],
-                        lastReloadTimestamp: parsed.lastReloadTimestamp || null,
-                        isHydrated: true
-                    });
-                } else {
-                    set({
-                        folders: [],
-                        dashboards: [],
-                        activeDashboardId: null,
-                        domain,
-                        isHydrated: true,
-                        history: [[]],
-                        historyIndex: 0
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to load dashboard data', e);
-                set({ isHydrated: true, domain });
+                const activeDashboardId = migratedDashboards.some(d => d.id === savedActiveDashboardId)
+                    ? savedActiveDashboardId
+                    : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null);
+
+                set({
+                    folders: parsed.folders || [],
+                    dashboards: migratedDashboards,
+                    activeDashboardId,
+                    history: [migratedDashboards],
+                    historyIndex: 0,
+                    domain,
+                    autoReloadInterval: parsed.autoReloadInterval || 0,
+                    autoReloadSchedule: parsed.autoReloadSchedule || [],
+                    lastReloadTimestamp: parsed.lastReloadTimestamp || null,
+                    isHydrated: true
+                });
+            } else {
+                set({
+                    folders: [],
+                    dashboards: [],
+                    activeDashboardId: null,
+                    domain,
+                    isHydrated: true,
+                    history: [[]],
+                    historyIndex: 0
+                });
             }
-        };
-
-        loadFromAPI();
+        } catch (e) {
+            console.error('Failed to load dashboard data from local', e);
+            set({ isHydrated: true, domain });
+        }
     },
 
     clearAll: () => {

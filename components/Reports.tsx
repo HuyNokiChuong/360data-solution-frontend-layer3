@@ -4,7 +4,7 @@ import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
 import { generateReportInsight } from '../services/ai';
 import { useLanguageStore } from '../store/languageStore';
-import { sessionsApi } from '../services/apiClient';
+import { apiService } from '../services/apiService';
 
 interface ReportsProps {
   tables: SyncedTable[];
@@ -132,9 +132,16 @@ const Reports: React.FC<ReportsProps> = ({
               messages: [userMsg]
             };
             setActiveSessionId(newId);
+
+            // Sync new session to backend
+            apiService.post('/sessions', { id: newId, title: newSession.title }).catch(e => console.error(e));
+
             return [newSession];
           }
         }
+
+        // Sync new message to existing session
+        apiService.post(`/sessions/${targetSessionId}/messages`, userMsg).catch(e => console.error(e));
 
         return prev.map(s =>
           s.id === targetSessionId
@@ -216,17 +223,13 @@ const Reports: React.FC<ReportsProps> = ({
         return prev.map(s => {
           if (s.id !== sessionToUpdate.id) return s;
           if (s.messages.some(m => m.id === aiMsg.id)) return s;
+
+          // Sync AI response to backend
+          apiService.post(`/sessions/${s.id}/messages`, aiMsg).catch(e => console.error(e));
+
           return { ...s, messages: [...s.messages, aiMsg] };
         });
       });
-      // Sync AI message to backend
-      sessionsApi.addMessage(targetSessionId, {
-        role: 'assistant',
-        content: aiMsg.content,
-        visualData: aiMsg.visualData,
-        sqlTrace: aiMsg.sqlTrace,
-        executionTime: aiMsg.executionTime
-      }).catch(e => console.error('Failed to sync AI message:', e));
       abortControllerRef.current = null;
 
     } catch (e: any) {
@@ -296,36 +299,35 @@ const Reports: React.FC<ReportsProps> = ({
 
   const handleRenameSession = (id: string, newTitle: string) => {
     setSessions((prev: ReportSession[]) => prev.map(s => s.id === id ? { ...s, title: newTitle } : s));
-    sessionsApi.update(id, { title: newTitle }).catch(e => console.error('Failed to rename session:', e));
   };
 
   const handleDeleteSession = (id: string) => {
+    // Sync deletion to backend
+    apiService.delete(`/sessions/${id}`).catch(e => console.error('Failed to delete session:', e));
+
     setSessions((prev: ReportSession[]) => {
       const remaining = prev.filter(s => s.id !== id);
-      if (activeSessionId === id) {
-        if (remaining.length > 0) setActiveSessionId(remaining[0].id);
-      }
       return remaining;
     });
-
-    // Sync deletion to backend
-    sessionsApi.delete(id).catch(e => console.error('Failed to delete session:', e));
 
     // Safety check for active session if we deleted it
     if (activeSessionId === id && sessions.length > 1) {
       const remaining = sessions.filter(s => s.id !== id);
       if (remaining.length > 0) setActiveSessionId(remaining[0].id);
       else {
+        // Create default
         const newId = `s-${Date.now()}`;
-        setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
+        const newSession = { id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] };
+        setSessions([newSession]);
         setActiveSessionId(newId);
-        sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create default session:', e));
+        apiService.post('/sessions', { id: newId, title: 'New Analysis' }).catch(e => console.error(e));
       }
     } else if (sessions.length === 1 && sessions[0].id === id) {
       const newId = `s-${Date.now()}`;
-      setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
+      const newSession = { id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] };
+      setSessions([newSession]);
       setActiveSessionId(newId);
-      sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create default session:', e));
+      apiService.post('/sessions', { id: newId, title: 'New Analysis' }).catch(e => console.error(e));
     }
   };
 
@@ -541,8 +543,6 @@ const Reports: React.FC<ReportsProps> = ({
             };
             setSessions([newSession, ...sessions]);
             setActiveSessionId(newId);
-            // Sync new session to backend
-            sessionsApi.create({ title: 'New Analysis' }).catch(e => console.error('Failed to create session:', e));
           }}
         />
 

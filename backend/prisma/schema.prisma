@@ -29,8 +29,25 @@ model Workspace {
   reportSessions ReportSession[]
   systemLogs     SystemLog[]
   syncedTables   SyncedTable[]
+  aiSettings     AISetting[]
 
   @@map("workspaces")
+}
+
+model AISetting {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  provider    String   // OpenAI, Gemini, Anthropic
+  apiKey      String   @map("api_key")
+  settings    Json     @default("{}")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@index([workspaceId])
+  @@map("ai_settings")
 }
 
 model User {

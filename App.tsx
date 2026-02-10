@@ -6,7 +6,7 @@ import { initGoogleAuth } from './services/googleAuth';
 import { PersistentStorage } from './services/storage';
 import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
-import { authApi, connectionsApi, usersApi, sessionsApi, setAuthToken, clearAuthToken, getAuthToken } from './services/apiClient';
+import { apiService } from './services/apiService';
 
 const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
@@ -157,134 +157,42 @@ const App: React.FC = () => {
         }
       };
 
-      // Load from API first (source of truth), fallback to localStorage
-      const loadFromAPI = async () => {
-        const token = getAuthToken();
-        if (token) {
-          try {
-            // Load connections from API
-            const connRes = await connectionsApi.list();
-            if (connRes.success && connRes.data) {
-              setConnections(connRes.data);
-              // Also load tables for each connection
-              const allTables: SyncedTable[] = [];
-              for (const conn of connRes.data) {
-                try {
-                  const tablesRes = await connectionsApi.getTables(conn.id);
-                  if (tablesRes.success && tablesRes.data) {
-                    allTables.push(...tablesRes.data);
-                  }
-                } catch { /* skip failed table loads */ }
-              }
-              if (allTables.length > 0) {
-                setTables(allTables);
-              } else {
-                setTables(load('tables', []));
-              }
-            } else {
-              setConnections(load('connections', []));
-              setTables(load('tables', []));
-            }
-          } catch {
-            console.warn('API unavailable, loading from localStorage');
-            setConnections(load('connections', []));
-            setTables(load('tables', []));
-          }
+      setConnections(load('connections', []));
+      setTables(load('tables', []));
 
-          try {
-            // Load users from API
-            const usersRes = await usersApi.list();
-            if (usersRes.success && usersRes.data) {
-              setUsers(usersRes.data);
-            } else {
-              setUsers(load('users', [currentUser]));
-            }
-          } catch {
-            setUsers(load('users', [currentUser]));
-          }
-
-          try {
-            // Load sessions from API
-            const sessRes = await sessionsApi.list();
-            if (sessRes.success && sessRes.data && sessRes.data.length > 0) {
-              // Load full session data with messages
-              const fullSessions: ReportSession[] = [];
-              for (const s of sessRes.data) {
-                try {
-                  const fullSession = await sessionsApi.get(s.id);
-                  if (fullSession.success && fullSession.data) {
-                    fullSessions.push({
-                      id: fullSession.data.id,
-                      title: fullSession.data.title || 'Untitled',
-                      timestamp: fullSession.data.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0],
-                      messages: (fullSession.data.messages || []).map((m: any) => ({
-                        id: m.id,
-                        role: m.role,
-                        content: m.content,
-                        visualData: m.visualData,
-                        sqlTrace: m.sqlTrace,
-                        executionTime: m.executionTime
-                      }))
-                    });
-                  }
-                } catch { /* skip failed session loads */ }
-              }
-              if (fullSessions.length > 0) {
-                setReportSessions(fullSessions);
-                setActiveReportSessionId(fullSessions[0].id);
-              } else {
-                await loadSessionsFallback(d, load);
-              }
-            } else {
-              await loadSessionsFallback(d, load);
-            }
-          } catch {
-            await loadSessionsFallback(d, load);
-          }
-        } else {
-          // No token, load from localStorage
-          setConnections(load('connections', []));
-          setTables(load('tables', []));
-          setUsers(load('users', [currentUser]));
-          await loadSessionsFallback(d, load);
-        }
-
-        setGoogleToken(localStorage.getItem(`${d}_googleToken`));
-        setTimeout(() => setIsReady(true), 150);
-      };
-
-      const loadSessionsFallback = async (d: string, load: (key: string, def: any) => any) => {
+      // Load Data from Backend
+      const loadAllData = async () => {
         try {
-          const loadedSessions = await PersistentStorage.get(`${d}_reportSessions`);
-          const loadedActiveId = await PersistentStorage.get(`${d}_activeReportSessionId`) || 's-1';
+          const [conns, fetchedUsers, dbAI] = await Promise.all([
+            apiService.get('/connections'),
+            apiService.get('/users'),
+            apiService.get('/ai/settings')
+          ]);
 
-          if (loadedSessions && Array.isArray(loadedSessions) && loadedSessions.length > 0) {
-            setReportSessions(loadedSessions);
-            if (loadedSessions.some((s: ReportSession) => s.id === loadedActiveId)) {
-              setActiveReportSessionId(loadedActiveId);
-            } else {
-              setActiveReportSessionId(loadedSessions[0].id);
-            }
-          } else {
-            const legacySessions = load('reportSessions', null);
-            if (legacySessions) {
-              setReportSessions(legacySessions);
-              setActiveReportSessionId(localStorage.getItem(`${d}_activeReportSessionId`) || legacySessions[0]?.id || 's-1');
-            } else {
-              const newId = `s-${Date.now()}`;
-              const defaultSession = { id: newId, title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] };
-              setReportSessions([defaultSession]);
-              setActiveReportSessionId(newId);
-            }
-          }
+          setConnections(conns || []);
+          setUsers(fetchedUsers || [currentUser]);
+
+          // Sync AI settings to localStorage for components that still expect it
+          dbAI?.forEach((s: any) => {
+            const map: Record<string, string> = { 'OpenAI': 'openai_api_key', 'Gemini': 'gemini_api_key', 'Anthropic': 'anthropic_api_key' };
+            if (map[s.provider]) localStorage.setItem(map[s.provider], s.apiKey);
+          });
+
+          // Load Sessions from IndexedDB (Large Data)
+          const loadedSessions = await PersistentStorage.get(`${d}_reportSessions`);
+          if (loadedSessions) setReportSessions(loadedSessions);
+
         } catch (err) {
-          console.error("Failed to load sessions from PersistentStorage:", err);
-          setReportSessions([{ id: 's-1', title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] }]);
-          setActiveReportSessionId('s-1');
+          console.error("Failed to load data from backend:", err);
+          // Fallback to local if backend fails but we are authenticated
+          setConnections(load('connections', []));
+          setUsers(load('users', [currentUser]));
+        } finally {
+          setTimeout(() => setIsReady(true), 150);
         }
       };
 
-      loadFromAPI();
+      loadAllData();
     } else {
       setIsReady(true);
     }
@@ -362,10 +270,26 @@ const App: React.FC = () => {
       const companySize = formData.get('companySize') as string;
 
       // Call Backend Register API
-      authApi.register({ email, password, name, phoneNumber, level, department, industry, companySize })
-        .then((data) => {
+      fetch('http://localhost:3001/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          name,
+          phoneNumber,
+          level,
+          department,
+          industry,
+          companySize
+        })
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.message || 'Registration failed');
+
           setPendingUser({
-            id: 'pending',
+            id: 'pending', // ID will be real from backend later or we can use data.data.id if returned
             name,
             email,
             phoneNumber,
@@ -386,19 +310,21 @@ const App: React.FC = () => {
 
     } else {
       // Call Backend Login API
-      authApi.login({ email, password })
-        .then((data) => {
-          // Store JWT token for authenticated API calls
-          if (data.data?.token) {
-            setAuthToken(data.data.token);
-          }
+      fetch('http://localhost:3001/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.message || 'Login failed');
 
           const user = data.data.user;
+          const token = data.data.token;
+
+          localStorage.setItem('auth_token', token);
           setCurrentUser(user);
           setIsAuthenticated(true);
-
-          // Cache user in localStorage
-          localStorage.setItem(`${d}_users`, JSON.stringify([user]));
         })
         .catch(err => {
           setAuthError(err.message);
@@ -427,110 +353,43 @@ const App: React.FC = () => {
     setIsAuthenticated(true);
     setPendingUser(null);
     navigate('/connections');
-
-    // Sync profile to backend (non-blocking)
-    usersApi.update(userToSave.id, {
-      name: userToSave.name,
-      jobTitle: userToSave.jobTitle,
-      phoneNumber: userToSave.phoneNumber,
-      companySize: userToSave.companySize,
-      level: userToSave.level,
-      department: userToSave.department,
-      industry: userToSave.industry,
-      status: 'Active',
-    }).catch(e => console.error('Failed to sync user profile after onboarding:', e));
   };
 
   const handleLogout = () => {
-    // Clear JWT token and call backend logout
-    authApi.logout().catch(() => { });
-    clearAuthToken();
     setIsAuthenticated(false);
     setCurrentUser(null);
     navigate('/');
   };
 
-  const addConnection = async (conn: Connection, selectedTables: SyncedTable[]) => {
-    // Optimistic update: update state first
+  const addConnection = (conn: Connection, selectedTables: SyncedTable[]) => {
     setConnections([...connections, conn]);
+    // Filter duplicates just in case
     const currentTableIdentifiers = new Set(tables.map(t => `${t.connectionId}:${t.datasetName}.${t.tableName}`));
     const uniqueNewTables = selectedTables.filter(t => !currentTableIdentifiers.has(`${t.connectionId}:${t.datasetName}.${t.tableName}`));
     setTables([...tables, ...uniqueNewTables]);
-
-    // Sync to backend API
-    try {
-      const res = await connectionsApi.create({
-        name: conn.name,
-        type: conn.type,
-        authType: conn.authType,
-        email: conn.email,
-        projectId: conn.projectId,
-        serviceAccountKey: conn.serviceAccountKey,
-      });
-      if (res.success && res.data) {
-        // Update local state with real DB id
-        const dbConn = res.data;
-        setConnections(prev => prev.map(c => c.id === conn.id ? { ...c, id: dbConn.id } : c));
-        // Sync tables to backend
-        if (uniqueNewTables.length > 0) {
-          connectionsApi.syncTables(dbConn.id, uniqueNewTables.map(t => ({
-            tableName: t.tableName,
-            datasetName: t.datasetName,
-            rowCount: t.rowCount,
-            schema: t.schema,
-          }))).catch(e => console.error('Failed to sync tables:', e));
-        }
-      }
-    } catch (e) {
-      console.error('Failed to create connection in DB:', e);
-    }
   };
 
-  const updateConnection = async (conn: Connection, newTables?: SyncedTable[]) => {
+  const updateConnection = (conn: Connection, newTables?: SyncedTable[]) => {
     setConnections(prevConns => prevConns.map(c => c.id === conn.id ? conn : c));
 
     if (newTables) {
       setTables(prevTables => {
+        // Remove old tables for this connection and add the new set
         const otherConnectionsTables = prevTables.filter(t => t.connectionId !== conn.id);
+
+        // Ensure uniqueness within the new set
         const uniqueNewTablesMap = new Map();
         newTables.forEach(t => uniqueNewTablesMap.set(`${t.datasetName}.${t.tableName}`, t));
         const finalNewTables = Array.from(uniqueNewTablesMap.values());
+
         return [...otherConnectionsTables, ...finalNewTables];
       });
     }
-
-    // Sync to backend API
-    try {
-      await connectionsApi.update(conn.id, {
-        name: conn.name,
-        status: conn.status,
-        projectId: conn.projectId,
-        serviceAccountKey: conn.serviceAccountKey,
-      });
-      // Sync tables if provided
-      if (newTables && newTables.length > 0) {
-        connectionsApi.syncTables(conn.id, newTables.map(t => ({
-          tableName: t.tableName,
-          datasetName: t.datasetName,
-          rowCount: t.rowCount,
-          schema: t.schema,
-        }))).catch(e => console.error('Failed to sync tables:', e));
-      }
-    } catch (e) {
-      console.error('Failed to update connection in DB:', e);
-    }
   };
 
-  const deleteConnection = async (id: string) => {
+  const deleteConnection = (id: string) => {
     setConnections(connections.filter(c => c.id !== id));
     setTables(tables.filter(t => t.connectionId !== id));
-
-    // Sync to backend API
-    try {
-      await connectionsApi.delete(id);
-    } catch (e) {
-      console.error('Failed to delete connection in DB:', e);
-    }
   };
 
   const toggleTableStatus = (id: string) => {

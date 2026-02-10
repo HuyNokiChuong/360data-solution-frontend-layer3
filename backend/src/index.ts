@@ -7,6 +7,7 @@ import { connectionsRouter } from './routes/connections.js';
 import { dashboardsRouter } from './routes/dashboards.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { foldersRouter } from './routes/folders.js';
+import { aiRouter } from './routes/ai.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authMiddleware } from './middleware/auth.js';
 import { requestLogger } from './middleware/requestLogger.js';
@@ -49,6 +50,7 @@ app.use('/api/connections', authMiddleware, connectionsRouter);
 app.use('/api/dashboards', authMiddleware, dashboardsRouter);
 app.use('/api/sessions', authMiddleware, sessionsRouter);
 app.use('/api/folders', authMiddleware, foldersRouter);
+app.use('/api/ai', authMiddleware, aiRouter);
 
 // Error handler
 app.use(errorHandler);

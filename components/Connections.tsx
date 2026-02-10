@@ -5,6 +5,7 @@ import { WAREHOUSE_OPTIONS, DISCOVERABLE_TABLES } from '../constants';
 import { getGoogleToken, initGoogleAuth, getServiceAccountToken } from '../services/googleAuth';
 import { fetchProjects, fetchDatasets, fetchTables } from '../services/bigquery';
 import { useLanguageStore } from '../store/languageStore';
+import { apiService } from '../services/apiService';
 
 interface ConnectionsProps {
   connections: Connection[];
@@ -183,42 +184,50 @@ const Connections: React.FC<ConnectionsProps> = ({
     }
   };
 
-  const handleSave = () => {
-    const connId = editingConnId || `conn-${Date.now()}`;
+  const handleSave = async () => {
+    try {
+      // Prepare connection data
+      const connData = {
+        name: tempConn.name,
+        type: tempConn.type,
+        authType: tempConn.authType,
+        email: tempConn.email,
+        projectId: tempConn.type === 'BigQuery' ? (selectedContext || tempConn.projectId) : undefined,
+        serviceAccountKey: tempConn.serviceAccountKey
+      };
 
-    // Prepare tables to sync
-    const tablesToSync = displayedTables
-      .filter(t => selectedTables.includes(t.name))
-      .map(t => ({
-        id: `tbl-${Math.random().toString(36).substr(2, 9)}`,
-        connectionId: connId,
-        tableName: t.name,
-        datasetName: t.dataset,
-        rowCount: t.rows,
-        status: 'Active' as const,
-        lastSync: new Date().toISOString().replace('T', ' ').substr(0, 16),
-        schema: t.schema || []
-      }));
+      let savedConn;
+      if (editingConnId) {
+        savedConn = await apiService.put(`/connections/${editingConnId}`, connData);
+      } else {
+        savedConn = await apiService.post('/connections', connData);
+      }
 
-    const finalConn: Connection = {
-      ...tempConn as Connection,
-      id: connId,
-      status: 'Connected',
-      createdAt: editingConnId
-        ? connections.find(c => c.id === editingConnId)?.createdAt || new Date().toISOString()
-        : new Date().toISOString().split('T')[0],
-      tableCount: selectedTables.length,
-      projectId: tempConn.type === 'BigQuery' ? (selectedContext || tempConn.projectId) : undefined,
-      serviceAccountKey: tempConn.serviceAccountKey // Pass through
-    };
+      // Prepare tables to sync
+      const tablesToSync = displayedTables
+        .filter(t => selectedTables.includes(t.name))
+        .map(t => ({
+          tableName: t.name,
+          datasetName: t.dataset,
+          rowCount: t.rows,
+          schema: t.schema || []
+        }));
 
-    if (editingConnId) {
-      onUpdateConnection(finalConn, tablesToSync);
-    } else {
-      // @ts-ignore
-      onAddConnection(finalConn, tablesToSync);
+      // Sync tables to backend
+      if (tablesToSync.length > 0) {
+        await apiService.post(`/connections/${savedConn.id}/tables`, { tables: tablesToSync });
+      }
+
+      // Refresh frontend state
+      if (editingConnId) {
+        onUpdateConnection(savedConn, tablesToSync);
+      } else {
+        onAddConnection(savedConn, tablesToSync);
+      }
+      closeWizard();
+    } catch (err: any) {
+      alert(err.message);
     }
-    closeWizard();
   };
 
   const closeWizard = () => {
