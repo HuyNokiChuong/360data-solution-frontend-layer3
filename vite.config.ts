@@ -33,7 +33,7 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'react-grid-layout': path.resolve(__dirname, 'node_modules/react-grid-layout/dist/react-grid-layout.min.js'), // Use legacy bundle which has proper exports
+        'react-grid-layout': path.resolve(__dirname, 'node_modules/react-grid-layout/dist/legacy.js'), // Use legacy bundle which has proper exports
       }
     }
   };
