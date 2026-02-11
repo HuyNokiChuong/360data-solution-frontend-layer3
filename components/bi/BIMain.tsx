@@ -844,11 +844,12 @@ const BIMain: React.FC<BIMainProps> = ({
             const activePage = activeDashboard.pages?.find((p: any) => p.id === activePageId);
             const pageDS = activePage?.dataSourceId;
 
-            const effectiveDS = activeWidget?.dataSourceId || pageDS || dashboardDS;
+            const effectiveDS = pageDS || activeWidget?.dataSourceId || dashboardDS;
             if (effectiveDS && (effectiveDS !== selectedDataSourceId)) {
+                setSelectedDataSource(effectiveDS);
             }
         }
-    }, [activeDashboardId, activeDashboard?.activePageId, editingWidgetId, activeWidget?.dataSourceId]);
+    }, [activeDashboardId, activeDashboard?.activePageId, editingWidgetId, activeWidget?.dataSourceId, selectedDataSourceId, setSelectedDataSource]);
 
     // Load actual data on demand for all required data sources
     const syncQueueControllerRef = useRef<AbortController | null>(null);

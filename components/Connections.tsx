@@ -607,6 +607,7 @@ const Connections: React.FC<ConnectionsProps> = ({
   const renderConnectionForm = () => {
     const inputClass = "w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm";
     const labelClass = "block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1";
+    const hasStoredBigQueryServiceKey = !!editingConnId && tempConn.authType === 'ServiceAccount' && !!tempConn.serviceAccountKey && !uploadedFile;
 
     const renderBigQueryForm = () => (
       <div className="space-y-6 animate-in fade-in">
@@ -733,8 +734,47 @@ const Connections: React.FC<ConnectionsProps> = ({
                 <p className="text-[10px] text-slate-500 mt-1 truncate px-1">Email: {tempConn.email}</p>
               </div>
             )}
+            {hasStoredBigQueryServiceKey && (
+              <div className="p-4 bg-sky-500/5 border border-sky-500/20 rounded-xl">
+                <p className="text-[10px] font-bold text-sky-400">
+                  <i className="fas fa-lock mr-2"></i> Saved credentials are active.
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  No re-verification needed. Use <strong>Update Credentials</strong> only when you want to replace the key.
+                </p>
+              </div>
+            )}
+            {hasStoredBigQueryServiceKey && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+              >
+                Update Credentials
+              </button>
+            )}
             <button
               onClick={async () => {
+                if (hasStoredBigQueryServiceKey) {
+                  setAuthSuccess(true);
+                  if (tempConn.projectId) {
+                    setSelectedContext(tempConn.projectId);
+                    try {
+                      setIsAuthenticating(true);
+                      const saToken = await getServiceAccountToken(tempConn.serviceAccountKey || '');
+                      if (saToken) {
+                        const datasets = await fetchDatasets(saToken, tempConn.projectId);
+                        setBqDatasets(datasets);
+                      }
+                    } catch (err) {
+                      console.warn('Continue with saved credentials: dataset preload failed', err);
+                    } finally {
+                      setIsAuthenticating(false);
+                    }
+                  }
+                  setStep(3);
+                  return;
+                }
+
                 if (!tempConn.serviceAccountKey && !editingConnId) return;
                 setIsAuthenticating(true);
 
@@ -764,7 +804,11 @@ const Connections: React.FC<ConnectionsProps> = ({
               disabled={(!tempConn.serviceAccountKey && !editingConnId) || isAuthenticating}
               className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-95"
             >
-              {isAuthenticating ? <i className="fas fa-circle-notch animate-spin"></i> : (editingConnId ? 'Verify & Continue' : 'Verify Credentials')}
+              {isAuthenticating
+                ? <i className="fas fa-circle-notch animate-spin"></i>
+                : hasStoredBigQueryServiceKey
+                  ? 'Continue with Saved Credentials'
+                  : (editingConnId ? 'Update & Verify' : 'Verify Credentials')}
             </button>
           </div>
         )}

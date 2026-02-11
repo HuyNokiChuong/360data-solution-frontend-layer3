@@ -587,9 +587,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const activePage = activeDashboard?.pages?.find(p => p.id === (activeDashboard as any).activePageId);
-    const editingWidgetId = useDashboardStore(state => state.editingWidgetId);
-
-    const effectiveDataSourceId = activeWidget?.dataSourceId || activePage?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
+    const effectiveDataSourceId = activePage?.dataSourceId || activeWidget?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
 
 
     const [isAddingCalc, setIsAddingCalc] = useState(false);
@@ -853,6 +851,25 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         ...widgetQuickMeasures
     ];
 
+    React.useEffect(() => {
+        if (!activeDashboard?.activePageId || activePage?.dataSourceId || !activeWidget?.dataSourceId) return;
+        syncPageDataSource(
+            activeDashboard.id,
+            activeDashboard.activePageId,
+            activeWidget.dataSourceId,
+            activeWidget.dataSourceName,
+            activeWidget.dataSourcePipelineName
+        );
+    }, [
+        activeDashboard?.id,
+        activeDashboard?.activePageId,
+        activePage?.dataSourceId,
+        activeWidget?.dataSourceId,
+        activeWidget?.dataSourceName,
+        activeWidget?.dataSourcePipelineName,
+        syncPageDataSource
+    ]);
+
     const getSourceKey = (ds: DataSource) => {
         if (ds.connectionId) {
             return `conn:${ds.connectionId}`;
@@ -924,16 +941,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
         const dashboard = getActiveDashboard();
         if (dashboard) {
-            if (editingWidgetId) {
-                if (activeWidget) {
-                    onUpdateWidget({
-                        ...activeWidget,
-                        dataSourceId: dsId,
-                        dataSourceName: dsName,
-                        dataSourcePipelineName: dsPipelineName
-                    });
-                }
-            } else if (dashboard.activePageId) {
+            if (dashboard.activePageId) {
                 syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName, dsPipelineName);
             } else {
                 syncDashboardDataSource(dashboard.id, dsId, dsName, dsPipelineName);
@@ -1140,7 +1148,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                 {/* SHOW MISSING TABLE OPTION IF ID EXISTS BUT NOT IN LIST */}
                                 {effectiveDataSourceId && !dataSources.find(ds => ds.id === effectiveDataSourceId) && (
                                     <option value={effectiveDataSourceId} disabled>
-                                        ⚠️ Missing: {activeWidget?.dataSourceName || activePage?.dataSourceName || activeDashboard?.dataSourceName || 'Unknown Table'}
+                                        ⚠️ Missing: {activePage?.dataSourceName || activeWidget?.dataSourceName || activeDashboard?.dataSourceName || 'Unknown Table'}
                                     </option>
                                 )}
                             </select>
@@ -1149,7 +1157,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                             {/* DATA SOURCE STATUS & AUTO-RECOVERY UI */}
                             {(effectiveDataSourceId) && (() => {
                                 const ds = dataSources.find(ds => ds.id === effectiveDataSourceId);
-                                const savedName = activeWidget?.dataSourceName || activePage?.dataSourceName || activeDashboard?.dataSourceName;
+                                const savedName = activePage?.dataSourceName || activeWidget?.dataSourceName || activeDashboard?.dataSourceName;
                                 const isMissing = !ds;
 
                                 // --- UI: STATUS INDICATOR ---
