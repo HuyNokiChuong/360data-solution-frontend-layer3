@@ -143,15 +143,29 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
 
   const handleBulkDelete = () => {
     if (selectedTableIds.size === 0) return;
-    if (window.confirm(`Bạn có chắc chắn muốn xóa ${selectedTableIds.size} thực thể đã chọn?`)) {
-      if (onDeleteTables) {
-        onDeleteTables(Array.from(selectedTableIds));
-      } else {
-        Array.from(selectedTableIds).forEach(id => onDeleteTable(id));
-      }
+
+    // Delegate confirmation to parent handler (onDeleteTables)
+    if (onDeleteTables) {
+      onDeleteTables(Array.from(selectedTableIds));
+    } else {
+      // Fallback if no bulk handler (legacy support)
+      Array.from(selectedTableIds).forEach(id => onDeleteTable(id));
       setSelectedTableIds(new Set());
     }
   };
+
+  // Sync selection with available tables
+  React.useEffect(() => {
+    setSelectedTableIds(prev => {
+      const next = new Set<string>();
+      let changed = false;
+      prev.forEach(id => {
+        if (tables.some(t => t.id === id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [tables]);
 
   // Effect to fetch real data when preview starts
   React.useEffect(() => {

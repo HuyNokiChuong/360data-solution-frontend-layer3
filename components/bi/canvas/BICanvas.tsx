@@ -328,13 +328,13 @@ const BICanvas: React.FC<BICanvasProps> = ({
         return (
             <div className="flex items-center justify-center h-full p-12">
                 <div className="text-center max-w-lg">
-                    <div className="w-24 h-24 bg-gradient-to-br from-indigo-500/20 to-cyan-500/10 rounded-[2.5rem] flex items-center justify-center mx-auto mb-8 border border-white/10 shadow-2xl relative group overflow-hidden">
+                    <div className="w-24 h-24 bg-gradient-to-br from-indigo-50 to-cyan-50 dark:from-indigo-500/20 dark:to-cyan-500/10 rounded-[2.5rem] flex items-center justify-center mx-auto mb-8 border border-slate-200 dark:border-white/10 shadow-2xl relative group overflow-hidden">
                         <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <i className="fas fa-rocket text-4xl text-indigo-400 group-hover:scale-110 transition-transform duration-500"></i>
+                        <i className="fas fa-rocket text-4xl text-indigo-600 dark:text-indigo-400 group-hover:scale-110 transition-transform duration-500"></i>
                     </div>
 
-                    <h2 className="text-4xl font-black text-white mb-4 uppercase tracking-tighter italic">Start Building</h2>
-                    <p className="text-slate-400 text-sm mb-10 leading-relaxed font-medium">
+                    <h2 className="text-4xl font-black text-slate-900 dark:text-white mb-4 uppercase tracking-tighter italic">Start Building</h2>
+                    <p className="text-slate-600 dark:text-slate-400 text-sm mb-10 leading-relaxed font-medium">
                         Your strategic workspace is ready. Select a <b>data table</b> from the left sidebar to unlock real-time analysis, then drag fields to create your first visualization.
                     </p>
 
@@ -348,19 +348,19 @@ const BICanvas: React.FC<BICanvasProps> = ({
                         </button>
 
                         {!dashboard.dataSourceId ? (
-                            <div className="flex items-center gap-2 px-4 py-2 bg-slate-800/50 rounded-full border border-white/5 animate-pulse">
-                                <i className="fas fa-arrow-left text-indigo-400 text-xs"></i>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Select data source in sidebar</span>
+                            <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-800/50 rounded-full border border-slate-200 dark:border-white/5 animate-pulse">
+                                <i className="fas fa-arrow-left text-indigo-500 dark:text-indigo-400 text-xs"></i>
+                                <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">Select data source in sidebar</span>
                             </div>
                         ) : (
-                            <div className="flex items-center gap-2 px-4 py-2 bg-indigo-500/10 rounded-full border border-indigo-500/20">
-                                <i className="fas fa-check-circle text-emerald-400 text-xs"></i>
-                                <span className="text-[10px] font-black text-indigo-300 uppercase tracking-widest">Data Connected: Ready to build</span>
+                            <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 dark:bg-indigo-500/10 rounded-full border border-indigo-100 dark:border-indigo-500/20">
+                                <i className="fas fa-check-circle text-emerald-500 dark:text-emerald-400 text-xs"></i>
+                                <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-300 uppercase tracking-widest">Data Connected: Ready to build</span>
                             </div>
                         )}
                     </div>
 
-                    <div className="mt-16 pt-8 border-t border-white/5 flex items-center justify-center gap-8 opacity-20 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-700">
+                    <div className="mt-16 pt-8 border-t border-slate-200 dark:border-white/5 flex items-center justify-center gap-8 opacity-20 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-700 text-slate-900 dark:text-white">
                         <div className="flex flex-col items-center gap-2">
                             <i className="fas fa-chart-column text-2xl"></i>
                             <span className="text-[8px] font-black uppercase">Charts</span>

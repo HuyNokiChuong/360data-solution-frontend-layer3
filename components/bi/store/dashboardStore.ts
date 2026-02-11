@@ -363,6 +363,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         set((state) => ({
             folders: state.folders.map(f => f.id === id ? { ...f, ...updates } : f)
         }));
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/folders/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(updates)
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -384,6 +393,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 )
             };
         });
+        // Sync to Backend (cascade deletes children via FK)
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/folders/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -391,6 +408,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         set((state) => ({
             folders: state.folders.map(f => f.id === id ? { ...f, sharedWith: permissions } : f)
         }));
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/folders/${id}/share`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ permissions })
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -449,6 +475,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 d.id === id ? { ...d, ...updates, updatedAt: new Date().toISOString() } : d
             )
         }));
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/dashboards/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(updates)
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -461,6 +496,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 activeDashboardId: newActiveId
             };
         });
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/dashboards/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 
@@ -470,6 +513,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 d.id === id ? { ...d, sharedWith: permissions, updatedAt: new Date().toISOString() } : d
             )
         }));
+        // Sync to Backend
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            fetch(`http://localhost:3001/api/dashboards/${id}/share`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ permissions })
+            }).catch(console.error);
+        }
         saveToStorage(get());
     },
 

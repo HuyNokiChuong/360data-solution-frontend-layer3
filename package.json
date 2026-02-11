@@ -1,10 +1,11 @@
 {
   "name": "360data-solutions-bi",
   "version": "1.0.0",
+  "type": "module",
   "private": true,
   "scripts": {
     "dev": "vite",
-    "start": "node server.js",
+    "start": "vite preview --host --port 8080",
     "build": "vite build"
   },
   "dependencies": {
@@ -16,14 +17,13 @@
     "alasql": "^4.17.0",
     "date-fns": "^4.1.0",
     "dotenv": "^16.3.1",
-    "esbuild": "^0.20.1",
-    "express": "^4.18.2",
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.14.0",
     "jspdf": "^4.0.0",
+    "pg": "^8.18.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "react-colorful": "^5.6.1",
+    "react-dom": "^19.0.0",
     "react-grid-layout": "^2.2.2",
     "react-markdown": "^10.1.0",
     "react-resizable": "^3.0.5",

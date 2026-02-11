@@ -13,6 +13,23 @@ const AISettings: React.FC = () => {
     localStorage.setItem('openai_api_key', openaiKey.trim());
     localStorage.setItem('anthropic_api_key', anthropicKey.trim());
     localStorage.setItem('gemini_api_key', geminiKey.trim());
+
+    // Sync to Backend
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetch('http://localhost:3001/api/ai-settings/bulk', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          settings: [
+            { provider: 'gemini', apiKey: geminiKey.trim() },
+            { provider: 'openai', apiKey: openaiKey.trim() },
+            { provider: 'anthropic', apiKey: anthropicKey.trim() },
+          ]
+        })
+      }).catch(console.error);
+    }
+
     alert('Đã lưu cấu hình API Key!');
   };
 

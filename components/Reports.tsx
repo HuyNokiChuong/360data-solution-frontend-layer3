@@ -290,39 +290,27 @@ const Reports: React.FC<ReportsProps> = ({
   };
 
   const handleDeleteSession = (id: string) => {
-    setSessions((prev: ReportSession[]) => {
-      const remaining = prev.filter(s => s.id !== id);
-      if (activeSessionId === id) {
-        if (remaining.length > 0) setActiveSessionId(remaining[0].id);
-        else {
-          // If no sessions left, create a new one automatically or handle empty state
-          // For now, let's just clear selection? Or create new.
-          // Creating new inside setState callback is tricky, let's do it outside or just wait for sidebar logic
-          // Actually, sidebar has a button for new session.
-          // But we should probably select something or null.
-          // If we select nothing, the chat interface might show empty.
-          // Let's create a partial new session if really needed, but here just updating state.
-        }
-      }
-      return remaining;
-    });
+    // 1. Calculate result based on current prop
+    const remaining = sessions.filter(s => s.id !== id);
 
-    // Safety check for active session if we deleted it
-    if (activeSessionId === id && sessions.length > 1) {
-      // This logic is slightly complex inside setState updater for 'remaining'.
-      // Let's rely on the useEffect or just simpler logic.
-      const remaining = sessions.filter(s => s.id !== id);
-      if (remaining.length > 0) setActiveSessionId(remaining[0].id);
-      else {
-        // Create default
-        const newId = `s-${Date.now()}`;
-        setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
-        setActiveSessionId(newId);
-      }
-    } else if (sessions.length === 1 && sessions[0].id === id) {
+    if (remaining.length === 0) {
+      // If deleting the last session, reset to a fresh state
       const newId = `s-${Date.now()}`;
-      setSessions([{ id: newId, title: 'New Analysis', timestamp: new Date().toLocaleDateString(), messages: [] }]);
+      setSessions([{
+        id: newId,
+        title: 'New Analysis',
+        timestamp: new Date().toLocaleDateString(),
+        messages: []
+      }]);
       setActiveSessionId(newId);
+    } else {
+      // Normal delete
+      setSessions(remaining);
+
+      // If we deleted the active session, switch to the first available one
+      if (activeSessionId === id) {
+        setActiveSessionId(remaining[0].id);
+      }
     }
   };
 

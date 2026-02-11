@@ -1,0 +1,197 @@
+// ============================================
+// Folder Routes - CRUD + Share
+// ============================================
+const express = require('express');
+const { query, getClient, isValidUUID } = require('../config/db');
+const { authenticate } = require('../middleware/auth');
+
+const router = express.Router();
+
+router.use(authenticate);
+
+/**
+ * GET /api/folders - List workspace folders
+ */
+router.get('/', async (req, res) => {
+    try {
+        const result = await query(
+            `SELECT f.*,
+        COALESCE(
+          (SELECT json_agg(json_build_object('userId', fs.user_id, 'permission', fs.permission, 'sharedAt', fs.shared_at))
+           FROM folder_shares fs WHERE fs.folder_id = f.id), '[]'
+        ) as shared_with
+       FROM folders f
+       WHERE f.workspace_id = $1 AND f.is_deleted = FALSE ORDER BY f.name`,
+            [req.user.workspace_id]
+        );
+
+        res.json({ success: true, data: result.rows.map(formatFolder) });
+    } catch (err) {
+        console.error('List folders error:', err);
+        res.status(500).json({ success: false, message: 'Failed to list folders' });
+    }
+});
+
+/**
+ * POST /api/folders - Create folder
+ */
+router.post('/', async (req, res) => {
+    try {
+        const { name, parentId, icon, color } = req.body;
+
+        // Validate parentId
+        const validParentId = isValidUUID(parentId) ? parentId : null;
+
+        const result = await query(
+            `INSERT INTO folders (workspace_id, created_by, name, parent_id, icon, color)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+            [req.user.workspace_id, req.user.id, name || 'New Folder', validParentId, icon, color]
+        );
+
+        // Auto-share with creator
+        await query(
+            `INSERT INTO folder_shares (folder_id, user_id, permission) VALUES ($1, $2, 'admin')
+       ON CONFLICT (folder_id, user_id) DO NOTHING`,
+            [result.rows[0].id, req.user.email]
+        );
+
+        res.status(201).json({ success: true, data: formatFolder(result.rows[0]) });
+    } catch (err) {
+        console.error('Create folder error:', err);
+        res.status(500).json({ success: false, message: 'Failed to create folder' });
+    }
+});
+
+
+/**
+ * PUT /api/folders/:id - Update folder
+ */
+router.put('/:id', async (req, res) => {
+    try {
+        const { name, parentId, icon, color } = req.body;
+        const folderId = req.params.id;
+        const workspaceId = req.user.workspace_id;
+
+        // Build dynamic update query
+        const fields = [];
+        const values = [];
+        let idx = 1;
+
+        if (name !== undefined) {
+            fields.push(`name = $${idx++}`);
+            values.push(name);
+        }
+        if (parentId !== undefined) {
+            // Prevent self-parenting
+            if (parentId === folderId) {
+                return res.status(400).json({ success: false, message: 'Folder cannot be its own parent' });
+            }
+            fields.push(`parent_id = $${idx++}`);
+            // Validate UUID: if invalid string or null, set to null
+            values.push(isValidUUID(parentId) ? parentId : null);
+        }
+        if (icon !== undefined) {
+            fields.push(`icon = $${idx++}`);
+            values.push(icon);
+        }
+        if (color !== undefined) {
+            fields.push(`color = $${idx++}`);
+            values.push(color);
+        }
+
+        if (fields.length === 0) {
+            // Nothing to update, check existence and return
+            const existing = await query('SELECT * FROM folders WHERE id = $1 AND workspace_id = $2', [folderId, workspaceId]);
+            if (existing.rows.length === 0) return res.status(404).json({ success: false, message: 'Folder not found' });
+            return res.json({ success: true, data: formatFolder(existing.rows[0]) });
+        }
+
+        values.push(folderId);
+        values.push(workspaceId);
+
+        const result = await query(
+            `UPDATE folders SET ${fields.join(', ')}
+             WHERE id = $${idx++} AND workspace_id = $${idx++}
+             RETURNING *`,
+            values
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Folder not found' });
+        }
+
+        res.json({ success: true, data: formatFolder(result.rows[0]) });
+    } catch (err) {
+        console.error('Update folder error:', err);
+        res.status(500).json({ success: false, message: 'Failed to update folder' });
+    }
+});
+
+/**
+ * DELETE /api/folders/:id - Delete folder (cascade children)
+ */
+router.delete('/:id', async (req, res) => {
+    try {
+        const result = await query(
+            'UPDATE folders SET is_deleted = TRUE, updated_at = NOW() WHERE id = $1 AND workspace_id = $2 RETURNING id',
+            [req.params.id, req.user.workspace_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Folder not found' });
+        }
+
+        res.json({ success: true, message: 'Folder deleted' });
+    } catch (err) {
+        console.error('Delete folder error:', err);
+        res.status(500).json({ success: false, message: 'Failed to delete folder' });
+    }
+});
+
+/**
+ * POST /api/folders/:id/share
+ */
+router.post('/:id/share', async (req, res) => {
+    const client = await getClient();
+    try {
+        const { permissions } = req.body;
+        const folderId = req.params.id;
+
+        await client.query('BEGIN');
+
+        await client.query('DELETE FROM folder_shares WHERE folder_id = $1', [folderId]);
+
+        for (const perm of (permissions || [])) {
+            await client.query(
+                `INSERT INTO folder_shares (folder_id, user_id, permission) VALUES ($1, $2, $3)
+         ON CONFLICT (folder_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, shared_at = NOW()`,
+                [folderId, perm.userId, perm.permission]
+            );
+        }
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: 'Folder permissions updated' });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Share folder error:', err);
+        res.status(500).json({ success: false, message: 'Failed to share folder' });
+    } finally {
+        client.release();
+    }
+});
+
+function formatFolder(row) {
+    return {
+        id: row.id,
+        name: row.name,
+        parentId: row.parent_id || undefined,
+        icon: row.icon || undefined,
+        color: row.color || undefined,
+        createdAt: row.created_at,
+        createdBy: row.created_by,
+        sharedWith: row.shared_with || [],
+    };
+}
+
+module.exports = router;

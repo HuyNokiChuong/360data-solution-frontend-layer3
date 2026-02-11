@@ -292,21 +292,53 @@ const Connections: React.FC<ConnectionsProps> = ({
               </ul>
             </div>
 
-            <details className="group mb-4">
-              <summary className="cursor-pointer text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2 mb-2 select-none hover:text-indigo-600 transition-colors">
-                <i className="fas fa-question-circle"></i> How to get Service Account Key?
-                <i className="fas fa-chevron-down group-open:rotate-180 transition-transform"></i>
-              </summary>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 pl-4 space-y-2 border-l-2 border-indigo-100 dark:border-indigo-500/20 ml-1 animate-in slide-in-from-top-2 duration-200">
-                <p>1. Go to <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener noreferrer" className="text-indigo-500 font-bold hover:underline">GCP Service Accounts Page</a>.</p>
-                <p>2. Click <strong>Create Service Account</strong> and give it a name.</p>
-                <p>3. Grant these roles: <strong className="text-slate-700 dark:text-slate-300">BigQuery Data Viewer</strong> & <strong className="text-slate-700 dark:text-slate-300">BigQuery Job User</strong>.</p>
-                <p>4. Click the created account in the list &rarr; Go to <strong>Keys</strong> tab.</p>
-                <p>5. Click <strong>Add Key</strong> &rarr; <strong>Create new key</strong> &rarr; Select <strong>JSON</strong>.</p>
-                <p>6. Upload the downloaded JSON file below.</p>
+            <div className="mb-6 bg-slate-50 dark:bg-white/[0.02] rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden transition-all hover:border-indigo-500/20">
+              <div className="px-5 py-3 border-b border-slate-100 dark:border-white/5 flex justify-between items-center bg-slate-100/50 dark:bg-white/[0.02]">
+                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <i className="fas fa-info-circle text-indigo-500"></i> Quick Setup Guide
+                </div>
+                <a
+                  href="https://console.cloud.google.com/iam-admin/serviceaccounts"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] font-black text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 uppercase tracking-widest flex items-center gap-1 transition-colors"
+                >
+                  Create Key <i className="fas fa-external-link-alt text-[9px]"></i>
+                </a>
               </div>
-            </details>
-            <label className={labelClass}>GCP Service Account JSON</label>
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                <div className="space-y-1.5">
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">1.</span>
+                    <span>Go to <strong>Google Cloud Console (IAM)</strong>.</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">2.</span>
+                    <span>Create <strong>Service Account</strong>.</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">3.</span>
+                    <span>Roles: <strong>BigQuery Data Viewer</strong> & <strong>Job User</strong>.</span>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">4.</span>
+                    <span>Select account &rarr; <strong>Keys</strong> tab.</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">5.</span>
+                    <span>Add Key &rarr; Create new key &rarr; <strong>JSON</strong>.</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="text-indigo-500 font-bold">6.</span>
+                    <span>Upload the downloaded file below.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <label className={labelClass}>Google Service Account Key (JSON)</label>
             <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-indigo-500/50 bg-white/[0.02]">
               <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
               {uploadedFile ? (

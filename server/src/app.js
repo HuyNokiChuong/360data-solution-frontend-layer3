@@ -1,0 +1,127 @@
+// ============================================
+// 360data Solutions - Backend Server
+// Port: 3001
+// ============================================
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { pool } = require('./config/db');
+const { auditLog } = require('./middleware/audit');
+
+const app = express();
+const PORT = process.env.BACKEND_PORT || 3001;
+
+// ============================================
+// Security & Middleware
+// ============================================
+app.use(helmet());
+app.use(cors({
+    origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://0.0.0.0:8080'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Rate limiting DISABLED for dev
+/*
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, 
+    max: 5000, 
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many requests, please try again later' },
+});
+app.use('/api/', apiLimiter);
+*/
+
+// Request logging
+app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        if (req.path.startsWith('/api/')) {
+            console.log(`${req.method} ${req.path} → ${res.statusCode} (${duration}ms)`);
+        }
+    });
+    next();
+});
+
+// Audit logging for write operations
+app.use(auditLog);
+
+// ============================================
+// Routes
+// ============================================
+
+// UUID validation for :id params — prevents PostgreSQL UUID parse errors
+const { isValidUUID } = require('./config/db');
+app.param('id', (req, res, next, value) => {
+    // Only validate if the route expects a UUID (skip auth routes etc)
+    if (req.path.includes('/auth/') || req.path.includes('/health')) return next();
+    if (!isValidUUID(value)) {
+        return res.status(400).json({ success: false, message: `Invalid ID format: ${value}. Expected UUID.` });
+    }
+    next();
+});
+
+app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/users', require('./routes/user.routes'));
+app.use('/api/connections', require('./routes/connection.routes'));
+app.use('/api/dashboards', require('./routes/dashboard.routes'));
+app.use('/api/folders', require('./routes/folder.routes'));
+app.use('/api/sessions', require('./routes/session.routes'));
+app.use('/api/ai-settings', require('./routes/ai-settings.routes'));
+app.use('/api/logs', require('./routes/audit.routes'));
+
+// Health check
+app.get('/api/health', async (req, res) => {
+    try {
+        const dbResult = await pool.query('SELECT NOW() as time, current_database() as db');
+        res.json({
+            success: true,
+            status: 'healthy',
+            server: '360data-backend',
+            database: {
+                connected: true,
+                name: dbResult.rows[0].db,
+                time: dbResult.rows[0].time,
+            },
+            uptime: process.uptime(),
+        });
+    } catch (err) {
+        res.status(503).json({
+            success: false,
+            status: 'unhealthy',
+            database: { connected: false, error: err.message },
+        });
+    }
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ success: false, message: `Route not found: ${req.method} ${req.path}` });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+    console.error('❌ Unhandled error:', err);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+});
+
+// ============================================
+// Start Server
+// ============================================
+app.listen(PORT, '0.0.0.0', () => {
+    console.log('');
+    console.log('╔══════════════════════════════════════════╗');
+    console.log('║   360data Solutions - Backend Server     ║');
+    console.log(`║   Running on http://0.0.0.0:${PORT}         ║`);
+    console.log('║   Frontend:   http://localhost:8080      ║');
+    console.log('╚══════════════════════════════════════════╝');
+    console.log('');
+});
+
+module.exports = app;

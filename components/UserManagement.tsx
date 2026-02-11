@@ -21,11 +21,25 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, curren
   const workspaceDomain = currentUser.email.split('@')[1]?.toLowerCase();
 
   const deleteUser = (id: string) => {
+    const token = localStorage.getItem('auth_token');
     setUsers(users.filter(u => u.id !== id));
+    if (token) {
+      fetch(`http://localhost:3001/api/users/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).catch(console.error);
+    }
   };
 
   const toggleStatus = (id: string) => {
     setUsers(users.map(u => u.id === id ? { ...u, status: u.status === 'Active' ? 'Disabled' : 'Active' } : u));
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetch(`http://localhost:3001/api/users/${id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+      }).catch(console.error);
+    }
   };
 
   const triggerToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -56,41 +70,88 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, curren
 
     setIsSending(true);
 
-    // Simulate SMTP dispatch and permission propagation
-    setTimeout(() => {
-      const user: User = {
-        id: Date.now().toString(),
-        name: newUser.name,
-        email: newUser.email,
-        role: newUser.role,
-        status: 'Active',
-        joinedAt: new Date().toISOString().split('T')[0]
-      };
+    const user: User = {
+      id: Date.now().toString(),
+      name: newUser.name,
+      email: newUser.email,
+      role: newUser.role,
+      status: 'Active',
+      joinedAt: new Date().toISOString().split('T')[0]
+    };
 
-      // 1. Add User
-      setUsers([...users, user]);
+    // 1. Sync to Backend
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetch('http://localhost:3001/api/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ name: newUser.name, email: newUser.email, role: newUser.role })
+      })
+        .then(r => r.json())
+        .then(resData => {
+          if (resData.success && resData.data) {
+            // Use backend-assigned ID and data
+            const backendUser = { ...user, ...resData.data };
+            setUsers([...users, backendUser]);
+          } else {
+            // Fallback: still add locally
+            setUsers([...users, user]);
+          }
 
-      // 2. Propagate Granular Dashboard Permissions
-      Object.entries(granularRoles).forEach(([dashboardId, role]) => {
-        if (role === 'none') return;
+          // 2. Propagate Granular Dashboard Permissions
+          Object.entries(granularRoles).forEach(([dashboardId, role]) => {
+            if (role === 'none') return;
+            const dashboard = dashboards.find(d => d.id === dashboardId);
+            if (dashboard) {
+              const newPerm: SharePermission = {
+                userId: user.email,
+                permission: role,
+                sharedAt: new Date().toISOString()
+              };
+              const updatedPerms = [...(dashboard.sharedWith || []), newPerm];
+              shareDashboard(dashboardId, updatedPerms);
+            }
+          });
 
-        const dashboard = dashboards.find(d => d.id === dashboardId);
-        if (dashboard) {
-          const newPerm: SharePermission = {
-            userId: user.email,
-            permission: role,
-            sharedAt: new Date().toISOString()
-          };
-          const updatedPerms = [...(dashboard.sharedWith || []), newPerm];
-          shareDashboard(dashboardId, updatedPerms);
-        }
-      });
+          setIsSending(false);
+          setIsInviteModalOpen(false);
+          setNewUser({ name: '', email: '', role: 'Viewer' });
+          triggerToast(`Invitation sent and permissions provisioned for ${user.email}`, 'success');
+        })
+        .catch(err => {
+          console.error('Invite error:', err);
+          // Fallback: still add locally
+          setUsers([...users, user]);
+          setIsSending(false);
+          setIsInviteModalOpen(false);
+          setNewUser({ name: '', email: '', role: 'Viewer' });
+          triggerToast(`Invitation sent for ${user.email} (offline mode)`, 'success');
+        });
+    } else {
+      // No token: legacy local-only behavior
+      setTimeout(() => {
+        setUsers([...users, user]);
 
-      setIsSending(false);
-      setIsInviteModalOpen(false);
-      setNewUser({ name: '', email: '', role: 'Viewer' });
-      triggerToast(`Invitation sent and permissions provisioned for ${user.email}`, 'success');
-    }, 1500);
+        Object.entries(granularRoles).forEach(([dashboardId, role]) => {
+          if (role === 'none') return;
+          const dashboard = dashboards.find(d => d.id === dashboardId);
+          if (dashboard) {
+            const newPerm: SharePermission = {
+              userId: user.email,
+              permission: role,
+              sharedAt: new Date().toISOString()
+            };
+            const updatedPerms = [...(dashboard.sharedWith || []), newPerm];
+            shareDashboard(dashboardId, updatedPerms);
+          }
+        });
+
+        setIsSending(false);
+        setIsInviteModalOpen(false);
+        setNewUser({ name: '', email: '', role: 'Viewer' });
+        triggerToast(`Invitation sent and permissions provisioned for ${user.email}`, 'success');
+      }, 1500);
+    }
   };
 
   return (

@@ -1,0 +1,20 @@
+{
+    "name": "360data-backend",
+    "version": "1.0.0",
+    "type": "commonjs",
+    "private": true,
+    "scripts": {
+        "dev": "node --watch src/app.js",
+        "start": "node src/app.js",
+        "migrate": "node src/migrate.js"
+    },
+    "dependencies": {
+        "bcryptjs": "^2.4.3",
+        "cors": "^2.8.5",
+        "express": "^4.21.0",
+        "express-rate-limit": "^7.5.0",
+        "helmet": "^8.0.0",
+        "jsonwebtoken": "^9.0.2",
+        "pg": "^8.13.0"
+    }
+}
