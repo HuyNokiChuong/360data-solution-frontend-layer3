@@ -3,7 +3,7 @@
 // ============================================
 
 import React, { useState } from 'react';
-import { BIWidget, ChartType, AggregationType, PivotValue, ConditionalFormat } from './types';
+import { BIWidget, ChartType, AggregationType, PivotValue, ConditionalFormat, DataSource } from './types';
 import { useDataStore } from './store/dataStore';
 import { useDashboardStore } from './store/dashboardStore';
 import ColorPicker from './panels/ColorPicker';
@@ -596,6 +596,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const [newCalcName, setNewCalcName] = useState('');
     const [newCalcFormula, setNewCalcFormula] = useState('');
     const [dsSearchQuery, setDsSearchQuery] = useState('');
+    const [selectedSourceKey, setSelectedSourceKey] = useState('');
 
     const [editingCalcId, setEditingCalcId] = useState<string | null>(null);
 
@@ -852,6 +853,88 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         ...widgetQuickMeasures
     ];
 
+    const getSourceKey = (ds: DataSource) => {
+        if (ds.datasetName) {
+            return `${ds.type}:${ds.connectionId || 'default'}:${ds.datasetName}`;
+        }
+        if (['csv', 'json', 'manual', 'api'].includes(ds.type)) {
+            return `${ds.type}:local`;
+        }
+        return `${ds.type}:${ds.connectionId || 'default'}`;
+    };
+
+    const getSourceLabel = (ds: DataSource) => {
+        if (ds.datasetName) return ds.datasetName;
+        switch (ds.type) {
+            case 'bigquery': return 'BigQuery';
+            case 'excel': return 'Excel';
+            case 'csv': return 'CSV';
+            case 'json': return 'JSON';
+            case 'api': return 'API';
+            default: return 'Manual';
+        }
+    };
+
+    const getTableLabel = (ds: DataSource) => ds.tableName || ds.name;
+
+    const effectiveDataSource = effectiveDataSourceId
+        ? dataSources.find(ds => ds.id === effectiveDataSourceId)
+        : undefined;
+    const effectiveSourceKey = effectiveDataSource ? getSourceKey(effectiveDataSource) : '';
+
+    React.useEffect(() => {
+        setSelectedSourceKey(effectiveSourceKey || '');
+    }, [effectiveSourceKey]);
+
+    const activeSourceKey = selectedSourceKey || effectiveSourceKey;
+
+    const sourceOptions = React.useMemo(() => {
+        const seen = new Map<string, string>();
+        dataSources.forEach(ds => {
+            const key = getSourceKey(ds);
+            if (!seen.has(key)) seen.set(key, getSourceLabel(ds));
+        });
+        return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
+    }, [dataSources]);
+
+    const normalizedDsSearchQuery = dsSearchQuery.toLowerCase().trim();
+    const tableOptions = dataSources
+        .filter(ds => !activeSourceKey || getSourceKey(ds) === activeSourceKey)
+        .filter(ds => {
+            if (!normalizedDsSearchQuery) return true;
+            const haystack = `${getSourceLabel(ds)} ${getTableLabel(ds)}`.toLowerCase();
+            return haystack.includes(normalizedDsSearchQuery);
+        });
+
+    const selectedTableId = effectiveDataSourceId && dataSources.find(ds =>
+        ds.id === effectiveDataSourceId && (!activeSourceKey || getSourceKey(ds) === activeSourceKey)
+    )
+        ? effectiveDataSourceId
+        : '';
+
+    const handleSelectDataSource = (dsId: string) => {
+        const selectedDs = dataSources.find(d => d.id === dsId);
+        const dsName = selectedDs ? (selectedDs.tableName || selectedDs.name) : undefined;
+
+        const dashboard = getActiveDashboard();
+        if (dashboard) {
+            if (editingWidgetId) {
+                if (activeWidget) {
+                    onUpdateWidget({
+                        ...activeWidget,
+                        dataSourceId: dsId,
+                        dataSourceName: dsName
+                    });
+                }
+            } else if (dashboard.activePageId) {
+                syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName);
+            } else {
+                syncDashboardDataSource(dashboard.id, dsId, dsName);
+            }
+        }
+        setSelectedDataSource(dsId || null);
+    };
+
     return (
         <div className="flex flex-col h-full bg-white dark:bg-slate-950 transition-colors duration-300">
             {/* Tabs */}
@@ -1014,58 +1097,38 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                     className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-lg pl-8 pr-3 py-1.5 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-all"
                                 />
                             </div>
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                                Nguồn
+                            </label>
                             <select
-                                value={effectiveDataSourceId || ''}
-                                onChange={(e) => {
-                                    const dsId = e.target.value;
-                                    const selectedDs = dataSources.find(d => d.id === dsId);
-                                    const dsName = selectedDs ? (selectedDs.tableName || selectedDs.name) : undefined;
-
-                                    const dashboard = getActiveDashboard();
-                                    if (dashboard) {
-                                        if (editingWidgetId) {
-                                            if (activeWidget) {
-                                                onUpdateWidget({
-                                                    ...activeWidget,
-                                                    dataSourceId: dsId,
-                                                    dataSourceName: dsName
-                                                });
-                                            }
-                                        } else if (dashboard.activePageId) {
-                                            const page = dashboard.pages.find(p => p.id === dashboard.activePageId);
-                                            // Update page datasource
-                                            // Note: We need a syncPageDataSource that supports name update, or just use generic update if available
-                                            syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName);
-                                            // TODO: Update name in store if supported
-                                        } else {
-                                            syncDashboardDataSource(dashboard.id, dsId, dsName);
-                                            // TODO: Update name in store if supported
-                                        }
-                                    }
-                                    setSelectedDataSource(dsId);
-                                }}
+                                value={selectedSourceKey || effectiveSourceKey || ''}
+                                onChange={(e) => setSelectedSourceKey(e.target.value)}
                                 className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none ${!dataSources.find(ds => ds.id === effectiveDataSourceId) && effectiveDataSourceId
                                     ? 'border-red-500 text-red-500'
                                     : 'border-slate-200 dark:border-white/10'
                                     }`}
                             >
-                                <option value="">Select data table...</option>
-                                {dataSources
-                                    .filter(ds => {
-                                        const displayName = (ds.datasetName && ds.tableName
-                                            ? `[${ds.datasetName}] ${ds.tableName}`
-                                            : `[${ds.type.toUpperCase()}] ${ds.name}`).toLowerCase();
-                                        return displayName.includes(dsSearchQuery.toLowerCase());
-                                    })
-                                    .map(ds => {
-                                        const displayName = ds.datasetName && ds.tableName
-                                            ? `[${ds.datasetName}] ${ds.tableName}`
-                                            : `[${ds.type.toUpperCase()}] ${ds.name}`;
+                                <option value="">Select source...</option>
+                                {sourceOptions.map(source => (
+                                    <option key={source.key} value={source.key}>{source.label}</option>
+                                ))}
+                            </select>
 
-                                        return (
-                                            <option key={ds.id} value={ds.id}>{displayName}</option>
-                                        );
-                                    })}
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mt-3 mb-1">
+                                Tên bảng
+                            </label>
+                            <select
+                                value={selectedTableId || ''}
+                                onChange={(e) => handleSelectDataSource(e.target.value)}
+                                className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none ${!dataSources.find(ds => ds.id === effectiveDataSourceId) && effectiveDataSourceId
+                                    ? 'border-red-500 text-red-500'
+                                    : 'border-slate-200 dark:border-white/10'
+                                    }`}
+                            >
+                                <option value="">Select table name...</option>
+                                {tableOptions.map(ds => (
+                                    <option key={ds.id} value={ds.id}>{getTableLabel(ds)}</option>
+                                ))}
 
                                 {/* SHOW MISSING TABLE OPTION IF ID EXISTS BUT NOT IN LIST */}
                                 {effectiveDataSourceId && !dataSources.find(ds => ds.id === effectiveDataSourceId) && (
@@ -1169,7 +1232,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                             <div className="flex flex-col items-center justify-center pt-10 text-center opacity-40">
                                 <i className="fas fa-mouse-pointer text-3xl mb-3 text-slate-600"></i>
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-6 leading-relaxed">
-                                    Selected table: <span className="text-indigo-400 italic">{(dataSources.find(ds => ds.id === effectiveDataSourceId)?.name || 'none')}</span>
+                                    Selected table: <span className="text-indigo-400 italic">{(dataSources.find(ds => ds.id === effectiveDataSourceId)?.tableName || dataSources.find(ds => ds.id === effectiveDataSourceId)?.name || 'none')}</span>
                                     <br />
                                     Select a widget to bind fields
                                 </p>
