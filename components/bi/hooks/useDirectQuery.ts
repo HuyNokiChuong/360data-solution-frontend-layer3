@@ -13,10 +13,13 @@ import { getFieldValue } from '../engine/utils';
  * This hook replaces useAggregatedData and provides support for Charts, Tables, Pivot Tables, etc.
  */
 export const useDirectQuery = (widget: BIWidget) => {
-    const { getDataSource, googleToken, connections, dataSources, updateDataSource, loadTableData } = useDataStore();
+    const { getDataSource, googleToken, connections, dataSources, updateDataSource, loadTableData, addLog } = useDataStore();
     const { crossFilters, drillDowns, getFiltersForWidget } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
+    const updateWidget = useDashboardStore(state => state.updateWidget);
     const globalFilters = activeDashboard?.globalFilters || [];
+    const lastMissingLogKeyRef = useRef<string | null>(null);
+    const lastRecoveredLogKeyRef = useRef<string | null>(null);
 
     const [data, setData] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -29,7 +32,16 @@ export const useDirectQuery = (widget: BIWidget) => {
         // If ID references a deleted table, try to find it by NAME (Case-Insensitive)
         if (!ds && widget.dataSourceName) {
             const normalizedSavedName = widget.dataSourceName.toLowerCase().trim();
+            const preferredType =
+                widget.dataSourceId?.startsWith('bq:')
+                    ? 'bigquery'
+                    : widget.dataSourceId?.startsWith('excel:')
+                        ? 'excel'
+                        : null;
+
             ds = dataSources.find(d => {
+                if (preferredType && d.type !== preferredType) return false;
+
                 const dName = (d.name || '').toLowerCase().trim();
                 const dTable = (d.tableName || '').toLowerCase().trim();
                 const dFull = (d.datasetName && d.tableName) ? `${d.datasetName}.${d.tableName}`.toLowerCase().trim() : '';
@@ -42,6 +54,98 @@ export const useDirectQuery = (widget: BIWidget) => {
 
         return ds || null;
     }, [widget.dataSourceId, widget.dataSourceName, getDataSource, dataSources]);
+
+    const pipelineNameFromId = useMemo(() => {
+        const resolveByConnection = (connectionId?: string) =>
+            connectionId ? connections.find(c => c.id === connectionId)?.name : undefined;
+
+        if (widget.dataSourceId?.startsWith('bq:')) {
+            const connectionId = widget.dataSourceId.split(':')[1];
+            return resolveByConnection(connectionId);
+        }
+
+        if (dataSource?.connectionId) {
+            return resolveByConnection(dataSource.connectionId);
+        }
+
+        return undefined;
+    }, [widget.dataSourceId, dataSource?.connectionId, connections]);
+
+    const pipelineNameForLog = dataSource?.connectionId
+        ? connections.find(c => c.id === dataSource.connectionId)?.name
+        : undefined;
+    const tableNameForLog = dataSource?.tableName || widget.dataSourceName || dataSource?.name || 'Unknown Table';
+
+    useEffect(() => {
+        if (!activeDashboard || !dataSource || !widget.id) return;
+
+        const currentById = widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
+        const recoveredByName = !currentById && !!widget.dataSourceName;
+        const needsRebind = recoveredByName && widget.dataSourceId !== dataSource.id;
+
+        if (!needsRebind) return;
+
+        updateWidget(activeDashboard.id, widget.id, {
+            dataSourceId: dataSource.id,
+            dataSourceName: dataSource.tableName || dataSource.name,
+            dataSourcePipelineName: pipelineNameForLog || widget.dataSourcePipelineName || pipelineNameFromId
+        });
+
+        const recoverPipeline = pipelineNameForLog || widget.dataSourcePipelineName || pipelineNameFromId || 'Unknown Pipeline';
+        const recoverTable = dataSource.tableName || dataSource.name || widget.dataSourceName || 'Unknown Table';
+        const recoverKey = `${widget.id}:${recoverPipeline}:${recoverTable}:recovered`;
+        if (lastRecoveredLogKeyRef.current !== recoverKey) {
+            addLog({
+                type: 'success',
+                target: recoverTable,
+                message: `Auto-recovered source. Pipeline: ${recoverPipeline} | Table: ${recoverTable}`
+            });
+            lastRecoveredLogKeyRef.current = recoverKey;
+        }
+    }, [
+        activeDashboard,
+        dataSource,
+        addLog,
+        pipelineNameForLog,
+        pipelineNameFromId,
+        widget.id,
+        widget.dataSourceId,
+        widget.dataSourceName,
+        widget.dataSourcePipelineName,
+        getDataSource,
+        updateWidget
+    ]);
+
+    useEffect(() => {
+        if (dataSource) {
+            lastMissingLogKeyRef.current = null;
+            return;
+        }
+
+        if (!widget.dataSourceId && !widget.dataSourceName) return;
+
+        const missingPipeline = widget.dataSourcePipelineName || pipelineNameFromId || 'Unknown Pipeline';
+        const missingTable = tableNameForLog;
+        const missingKey = `${widget.id}:${missingPipeline}:${missingTable}:missing`;
+
+        if (lastMissingLogKeyRef.current === missingKey) return;
+
+        addLog({
+            type: 'error',
+            target: missingTable,
+            message: `Missing source detected. Pipeline: ${missingPipeline} | Table: ${missingTable}`
+        });
+        lastMissingLogKeyRef.current = missingKey;
+    }, [
+        dataSource,
+        addLog,
+        pipelineNameFromId,
+        tableNameForLog,
+        widget.id,
+        widget.dataSourceId,
+        widget.dataSourceName,
+        widget.dataSourcePipelineName
+    ]);
 
     // Identify Dimensions and Measures based on widget type
     const { dimensions, measures } = useMemo(() => {

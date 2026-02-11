@@ -65,8 +65,8 @@ interface DashboardState {
     // Global filter actions
     addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => void;
     removeGlobalFilter: (dashboardId: string, filterId: string) => void;
-    syncDashboardDataSource: (dashboardId: string, dataSourceId: string, dataSourceName?: string) => void;
-    syncPageDataSource: (dashboardId: string, pageId: string, dataSourceId: string, dataSourceName?: string) => void;
+    syncDashboardDataSource: (dashboardId: string, dataSourceId: string, dataSourceName?: string, dataSourcePipelineName?: string) => void;
+    syncPageDataSource: (dashboardId: string, pageId: string, dataSourceId: string, dataSourceName?: string, dataSourcePipelineName?: string) => void;
     selectAll: () => void;
 
     // History actions
@@ -833,7 +833,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         saveToStorage(get());
     },
 
-    syncDashboardDataSource: (dashboardId, dataSourceId, dataSourceName) => {
+    syncDashboardDataSource: (dashboardId, dataSourceId, dataSourceName, dataSourcePipelineName) => {
         set((state) => ({
             dashboards: state.dashboards.map(d =>
                 d.id === dashboardId ? {
@@ -844,9 +844,19 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                         ...p,
                         dataSourceId: p.dataSourceId || dataSourceId,
                         dataSourceName: p.dataSourceName || dataSourceName,
-                        widgets: p.widgets.map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId, dataSourceName: w.dataSourceName || dataSourceName }))
+                        widgets: p.widgets.map(w => ({
+                            ...w,
+                            dataSourceId: w.dataSourceId || dataSourceId,
+                            dataSourceName: w.dataSourceName || dataSourceName,
+                            dataSourcePipelineName: w.dataSourcePipelineName || dataSourcePipelineName
+                        }))
                     })),
-                    widgets: (d.widgets || []).map(w => ({ ...w, dataSourceId: w.dataSourceId || dataSourceId, dataSourceName: w.dataSourceName || dataSourceName })),
+                    widgets: (d.widgets || []).map(w => ({
+                        ...w,
+                        dataSourceId: w.dataSourceId || dataSourceId,
+                        dataSourceName: w.dataSourceName || dataSourceName,
+                        dataSourcePipelineName: w.dataSourcePipelineName || dataSourcePipelineName
+                    })),
                     updatedAt: new Date().toISOString()
                 } : d
             )
@@ -854,7 +864,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         saveToStorage(get());
     },
 
-    syncPageDataSource: (dashboardId, pageId, dataSourceId, dataSourceName) => {
+    syncPageDataSource: (dashboardId, pageId, dataSourceId, dataSourceName, dataSourcePipelineName) => {
         set((state) => ({
             dashboards: state.dashboards.map(d =>
                 d.id === dashboardId ? {
@@ -864,7 +874,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                             ...p,
                             dataSourceId,
                             dataSourceName,
-                            widgets: p.widgets.map(w => ({ ...w, dataSourceId, dataSourceName }))
+                            widgets: p.widgets.map(w => ({ ...w, dataSourceId, dataSourceName, dataSourcePipelineName }))
                         } : p
                     ),
                     updatedAt: new Date().toISOString()

@@ -580,7 +580,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     activeTab,
     setActiveTab
 }) => {
-    const { dataSources, selectedDataSourceId, setSelectedDataSource } = useDataStore();
+    const { dataSources, selectedDataSourceId, setSelectedDataSource, connections } = useDataStore();
     const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource, syncPageDataSource } = useDashboardStore();
 
 
@@ -854,17 +854,20 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     ];
 
     const getSourceKey = (ds: DataSource) => {
-        if (ds.datasetName) {
-            return `${ds.type}:${ds.connectionId || 'default'}:${ds.datasetName}`;
+        if (ds.connectionId) {
+            return `conn:${ds.connectionId}`;
         }
         if (['csv', 'json', 'manual', 'api'].includes(ds.type)) {
             return `${ds.type}:local`;
         }
-        return `${ds.type}:${ds.connectionId || 'default'}`;
+        return `${ds.type}:default`;
     };
 
     const getSourceLabel = (ds: DataSource) => {
-        if (ds.datasetName) return ds.datasetName;
+        if (ds.connectionId) {
+            const conn = connections.find((c: any) => c.id === ds.connectionId);
+            if (conn?.name) return conn.name;
+        }
         switch (ds.type) {
             case 'bigquery': return 'BigQuery';
             case 'excel': return 'Excel';
@@ -895,7 +898,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
             if (!seen.has(key)) seen.set(key, getSourceLabel(ds));
         });
         return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
-    }, [dataSources]);
+    }, [dataSources, connections]);
 
     const normalizedDsSearchQuery = dsSearchQuery.toLowerCase().trim();
     const tableOptions = dataSources
@@ -915,6 +918,9 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const handleSelectDataSource = (dsId: string) => {
         const selectedDs = dataSources.find(d => d.id === dsId);
         const dsName = selectedDs ? (selectedDs.tableName || selectedDs.name) : undefined;
+        const dsPipelineName = selectedDs?.connectionId
+            ? connections.find((c: any) => c.id === selectedDs.connectionId)?.name
+            : undefined;
 
         const dashboard = getActiveDashboard();
         if (dashboard) {
@@ -923,13 +929,14 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                     onUpdateWidget({
                         ...activeWidget,
                         dataSourceId: dsId,
-                        dataSourceName: dsName
+                        dataSourceName: dsName,
+                        dataSourcePipelineName: dsPipelineName
                     });
                 }
             } else if (dashboard.activePageId) {
-                syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName);
+                syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName, dsPipelineName);
             } else {
-                syncDashboardDataSource(dashboard.id, dsId, dsName);
+                syncDashboardDataSource(dashboard.id, dsId, dsName, dsPipelineName);
             }
         }
         setSelectedDataSource(dsId || null);

@@ -77,6 +77,7 @@ export interface BIWidget {
     // Data configuration
     dataSourceId?: string;
     dataSourceName?: string; // Backup for recovery if ID is lost
+    dataSourcePipelineName?: string;
     chartType?: ChartType;
     dataset?: string; // Legacy support
 
