@@ -3,6 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { SyncedTable, Connection } from '../types';
 import { MOCK_DATA_MAP } from '../constants';
 import { fetchTableData } from '../services/bigquery';
+import { fetchExcelTableData } from '../services/excel';
 import { getGoogleToken } from '../services/googleAuth';
 
 interface TablesProps {
@@ -16,8 +17,12 @@ interface TablesProps {
 }
 
 // Helper function to format cell values, especially timestamps
-const formatCellValue = (value: any, columnType: string): string => {
+const formatCellValue = (value: any, columnType: string, preserveRaw = false): string => {
   if (value === null || value === undefined) return '-';
+
+  if (preserveRaw) {
+    return String(value);
+  }
 
   // Check if the column type is TIMESTAMP or the value looks like a timestamp
   const isTimestampType = columnType?.toUpperCase().includes('TIMESTAMP');
@@ -202,6 +207,19 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
           console.error("❌ Failed to load real data", error);
           setPreviewSchema(previewTable.schema);
           setPreviewData([]); // Ensure data is cleared on error
+        } finally {
+          setIsLoadingPreview(false);
+        }
+      } else if (conn?.type === 'Excel' || conn?.type === 'GoogleSheets') {
+        setIsLoadingPreview(true);
+        try {
+          const result = await fetchExcelTableData(previewTable.id, 0, 1000);
+          setPreviewSchema((result.schema && result.schema.length > 0) ? result.schema : previewTable.schema);
+          setPreviewData(result.rows || []);
+        } catch (error) {
+          console.error("❌ Failed to load Excel preview data", error);
+          setPreviewSchema(previewTable.schema);
+          setPreviewData([]);
         } finally {
           setIsLoadingPreview(false);
         }
@@ -570,7 +588,11 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                           <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
                             {previewSchema.map(col => (
                               <td key={col.name} className="px-6 py-4 text-xs font-medium text-slate-600 dark:text-slate-400 whitespace-nowrap">
-                                {formatCellValue(row[col.name], col.type)}
+                                {formatCellValue(
+                                  row[col.name],
+                                  col.type,
+                                  ['Excel', 'GoogleSheets'].includes(connections.find(c => c.id === previewTable.connectionId)?.type || '')
+                                )}
                               </td>
                             ))}
                           </tr>

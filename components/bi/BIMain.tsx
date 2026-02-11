@@ -660,33 +660,44 @@ const BIMain: React.FC<BIMainProps> = ({
 
     useEffect(() => {
         const loadTablesIntoBI = async () => {
-            const { loadBigQueryTable, deleteDataSource, dataSources } = useDataStore.getState();
+            const { loadBigQueryTable, loadExcelTable, deleteDataSource, dataSources } = useDataStore.getState();
+
+            const connectionMap = new Map(connections.map((conn) => [conn.id, conn]));
+            const resolveSourceId = (table: SyncedTable) => {
+                const conn = connectionMap.get(table.connectionId);
+                if (!conn) return null;
+                if (conn.type === 'BigQuery') return `bq:${table.connectionId}:${table.datasetName}:${table.tableName}`;
+                if (conn.type === 'Excel' || conn.type === 'GoogleSheets') return `excel:${table.id}`;
+                return null;
+            };
 
             // 1. DEDUPLICATE & SYNC WITH REGISTRY
             const activeTableMap = new Map<string, SyncedTable>();
-            tables.forEach(t => {
-                const identifier = `bq:${t.connectionId}:${t.datasetName}:${t.tableName}`;
+            tables.forEach((table) => {
+                const identifier = resolveSourceId(table);
+                if (!identifier) return;
                 if (!activeTableMap.has(identifier)) {
-                    activeTableMap.set(identifier, t);
+                    activeTableMap.set(identifier, table);
                 }
             });
 
             // 1b. PRUNE: Remove data sources that are no longer in the registry
-            const dsToDelete = dataSources.filter(ds =>
-                ds.type === 'bigquery' && !activeTableMap.has(ds.id)
+            const dsToDelete = dataSources.filter((ds) =>
+                (ds.type === 'bigquery' || ds.type === 'excel') && !activeTableMap.has(ds.id)
             );
 
             if (dsToDelete.length > 0) {
-                console.log(`🧹 Pruning ${dsToDelete.length} orphaned BigQuery sources from BI`);
-                dsToDelete.forEach(ds => deleteDataSource(ds.id));
+                console.log(`🧹 Pruning ${dsToDelete.length} orphaned sources from BI`);
+                dsToDelete.forEach((ds) => deleteDataSource(ds.id));
             }
 
-            // 2. IDENTIFY TABLES TO PROCESS (Metadata load): 
+            // 2. IDENTIFY TABLES TO PROCESS (Metadata load):
             // - Only process if Active AND (new OR forced reload)
             const currentDSIds = new Set(useDataStore.getState().dataSources.map(ds => ds.id));
-            const tablesToProcess = Array.from(activeTableMap.values()).filter(t => {
-                const id = `bq:${t.connectionId}:${t.datasetName}:${t.tableName}`;
-                if (t.status !== 'Active') return false;
+            const tablesToProcess = Array.from(activeTableMap.values()).filter((table) => {
+                const id = resolveSourceId(table);
+                if (!id) return false;
+                if (table.status !== 'Active') return false;
                 if (metadataReloadTrigger > 0) return true; // Force refresh all
                 return !currentDSIds.has(id) && !loadingTablesRef.current.has(id);
             });
@@ -694,7 +705,10 @@ const BIMain: React.FC<BIMainProps> = ({
             if (tablesToProcess.length === 0) return;
 
             // Mark as loading to prevent double trigger
-            tablesToProcess.forEach(t => loadingTablesRef.current.add(`bq:${t.connectionId}:${t.datasetName}:${t.tableName}`));
+            tablesToProcess.forEach((table) => {
+                const id = resolveSourceId(table);
+                if (id) loadingTablesRef.current.add(id);
+            });
 
             const normalizeType = (bqType: string): 'string' | 'number' | 'date' | 'boolean' => {
                 const t = bqType.toUpperCase();
@@ -704,9 +718,43 @@ const BIMain: React.FC<BIMainProps> = ({
                 return 'string';
             };
 
+            const normalizeExcelType = (excelType: string): 'string' | 'number' | 'date' | 'boolean' => {
+                const t = String(excelType || '').toUpperCase();
+                if (t === 'NUMBER' || t === 'NUMERIC' || t === 'INT' || t === 'INTEGER' || t === 'FLOAT') return 'number';
+                if (t === 'BOOLEAN' || t === 'BOOL') return 'boolean';
+                if (t === 'DATE') return 'date';
+                return 'string';
+            };
+
+            const excelTablesToProcess = tablesToProcess.filter((table) => {
+                const type = connectionMap.get(table.connectionId)?.type;
+                return type === 'Excel' || type === 'GoogleSheets';
+            });
+            for (const table of excelTablesToProcess) {
+                const dsIdentifier = resolveSourceId(table);
+                try {
+                    loadExcelTable(
+                        table.id,
+                        table.connectionId,
+                        table.tableName,
+                        table.datasetName,
+                        (table.schema || []).map((field: any) => ({
+                            name: field.name,
+                            type: normalizeExcelType(field.type),
+                        })),
+                        table.rowCount
+                    );
+                } catch (e) {
+                    console.error(`Failed metadata for Excel table ${table.tableName}:`, e);
+                } finally {
+                    if (dsIdentifier) loadingTablesRef.current.delete(dsIdentifier);
+                }
+            }
+
             // 3. GROUP BY DATASET
             const tablesByDataset = new Map<string, { connection: any, tables: SyncedTable[] }>();
-            for (const table of tablesToProcess) {
+            const bqTablesToProcess = tablesToProcess.filter((table) => connectionMap.get(table.connectionId)?.type === 'BigQuery');
+            for (const table of bqTablesToProcess) {
                 const connection = connections.find(c => c.id === table.connectionId);
                 if (!connection?.projectId) continue;
 
@@ -718,6 +766,10 @@ const BIMain: React.FC<BIMainProps> = ({
             }
 
             // 4. BATCH LOAD metadata
+            if (tablesByDataset.size === 0) {
+                return;
+            }
+
             const { fetchBatchTableMetadata } = await import('../../services/bigquery-batch');
             const { getTokenForConnection } = await import('../../services/googleAuth');
             const clientId = process.env.GOOGLE_CLIENT_ID || '';
@@ -746,7 +798,7 @@ const BIMain: React.FC<BIMainProps> = ({
                         );
 
                         await Promise.all(datasetTables.map(async (table) => {
-                            const dsIdentifier = `bq:${table.connectionId}:${table.datasetName}:${table.tableName}`;
+                            const dsIdentifier = resolveSourceId(table);
                             try {
                                 const metadata = metadataMap[table.tableName];
                                 if (!metadata) return;
@@ -761,7 +813,7 @@ const BIMain: React.FC<BIMainProps> = ({
                             } catch (e) {
                                 console.error(`Failed metadata for ${table.tableName}:`, e);
                             } finally {
-                                loadingTablesRef.current.delete(dsIdentifier);
+                                if (dsIdentifier) loadingTablesRef.current.delete(dsIdentifier);
                             }
                         }));
                     } catch (error: any) {
@@ -769,7 +821,10 @@ const BIMain: React.FC<BIMainProps> = ({
                         if (error.message === 'UNAUTHORIZED' && connection.authType === 'GoogleMail') {
                             setIsAuthRequired(true);
                         }
-                        datasetTables.forEach(t => loadingTablesRef.current.delete(`bq:${t.connectionId}:${t.datasetName}:${t.tableName}`));
+                        datasetTables.forEach((table) => {
+                            const id = resolveSourceId(table);
+                            if (id) loadingTablesRef.current.delete(id);
+                        });
                     }
                 })
             );
@@ -815,11 +870,22 @@ const BIMain: React.FC<BIMainProps> = ({
             // 1. Collect required IDs
             const requiredIds = new Set<string>();
             const isManualReload = lastReloadTriggerRef.current !== reloadTrigger;
+            const resolveTableSourceId = (table: SyncedTable): string | null => {
+                const conn = connections.find((c) => c.id === table.connectionId);
+                if (!conn) return null;
+                if (conn.type === 'BigQuery') return `bq:${table.connectionId}:${table.datasetName}:${table.tableName}`;
+                if (conn.type === 'Excel' || conn.type === 'GoogleSheets') return `excel:${table.id}`;
+                return null;
+            };
+            const isSourceActive = (sourceId: string) =>
+                tables.some((table) => resolveTableSourceId(table) === sourceId && table.status === 'Active');
 
             // If manual reload or dashboard is empty (Start Building screen), sync EVERYTHING in parallel
             if (isManualReload || dashboard.widgets.length === 0) {
                 const { dataSources } = useDataStore.getState();
-                dataSources.filter(ds => ds.type === 'bigquery').forEach(ds => requiredIds.add(ds.id));
+                dataSources
+                    .filter(ds => ds.type === 'bigquery' || ds.type === 'excel')
+                    .forEach(ds => requiredIds.add(ds.id));
 
                 // Update ref to avoid repeated full syncs on unrelated state changes
                 lastReloadTriggerRef.current = reloadTrigger;
@@ -842,7 +908,7 @@ const BIMain: React.FC<BIMainProps> = ({
                 const { updateDataSource, getDataSource } = useDataStore.getState();
                 queue.forEach(id => {
                     const ds = getDataSource(id);
-                    const isTableActive = tables.find(t => `bq:${t.connectionId}:${t.datasetName}:${t.tableName}` === id)?.status === 'Active';
+                    const isTableActive = isSourceActive(id);
 
                     if (ds && ds.type === 'bigquery' && isTableActive && DataAssetService.needsSync(id)) {
                         updateDataSource(id, { syncStatus: 'queued' });
@@ -860,7 +926,7 @@ const BIMain: React.FC<BIMainProps> = ({
                         const ds = dataSources.find(d => d.id === dsId);
                         const connection = connections.find(c => c.id === ds?.connectionId);
 
-                        const isTableActive = tables.find(t => `bq:${t.connectionId}:${t.datasetName}:${t.tableName}` === dsId)?.status === 'Active';
+                        const isTableActive = isSourceActive(dsId);
 
                         if (ds && ds.type === 'bigquery' && connection && isTableActive && DataAssetService.needsSync(dsId)) {
                             // Retry logic loop to ensure 100% completion

@@ -2,14 +2,42 @@
 import React, { useState, useRef } from 'react';
 import { Connection, WarehouseType, SyncedTable } from '../types';
 import { WAREHOUSE_OPTIONS, DISCOVERABLE_TABLES } from '../constants';
-import { getGoogleToken, initGoogleAuth, getServiceAccountToken } from '../services/googleAuth';
+import { getGoogleToken, initGoogleAuth, getServiceAccountToken, getGoogleAuthCode } from '../services/googleAuth';
 import { fetchProjects, fetchDatasets, fetchTables } from '../services/bigquery';
+import { fetchExcelDatasets, uploadExcelForPreview } from '../services/excel';
+import {
+  connectGoogleSheetsOAuth,
+  listGoogleSheetsFiles,
+  resolveGoogleSheetsUrl,
+  listGoogleSheetsTabs,
+  preflightGoogleSheetsImport,
+  GoogleSheetSelectionInput
+} from '../services/googleSheets';
 import { useLanguageStore } from '../store/languageStore';
+
+type SelectedGoogleSheet = {
+  sheetId: number;
+  sheetName: string;
+  headerMode: 'first_row' | 'auto_columns';
+};
 
 interface ConnectionsProps {
   connections: Connection[];
   tables: SyncedTable[];
   onAddConnection: (conn: Connection, selectedTables: any[]) => void;
+  onCreateExcelConnection: (conn: Connection, file: File, datasetName: string, sheetNames: string[]) => Promise<void>;
+  onCreateGoogleSheetsConnection: (payload: {
+    connectionId?: string;
+    connectionName: string;
+    authCode: string;
+    fileId: string;
+    fileName?: string;
+    sheets: GoogleSheetSelectionInput[];
+    allowEmptySheets?: boolean;
+    confirmOverwrite?: boolean;
+    syncMode?: 'manual' | 'interval';
+    syncIntervalMinutes?: number;
+  }) => Promise<void>;
   onUpdateConnection: (conn: Connection, selectedTables?: any[]) => void;
   onDeleteConnection: (id: string) => void;
   googleToken: string | null;
@@ -20,6 +48,8 @@ const Connections: React.FC<ConnectionsProps> = ({
   connections,
   tables,
   onAddConnection,
+  onCreateExcelConnection,
+  onCreateGoogleSheetsConnection,
   onUpdateConnection,
   onDeleteConnection,
   googleToken,
@@ -33,6 +63,23 @@ const Connections: React.FC<ConnectionsProps> = ({
   const [authSuccess, setAuthSuccess] = useState(false);
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [excelSheets, setExcelSheets] = useState<{ sheetName: string; rowCount: number; columnCount: number; isEmpty: boolean; warnings?: string[] }[]>([]);
+  const [selectedExcelSheets, setSelectedExcelSheets] = useState<string[]>([]);
+  const [excelDatasets, setExcelDatasets] = useState<string[]>([]);
+  const [selectedExcelDataset, setSelectedExcelDataset] = useState('');
+  const [importStage, setImportStage] = useState<'idle' | 'uploading' | 'parsing' | 'importing' | 'completed'>('idle');
+  const [googleSheetsConnectionId, setGoogleSheetsConnectionId] = useState<string>('');
+  const [googleSheetsAuthCode, setGoogleSheetsAuthCode] = useState<string>('');
+  const [googleFiles, setGoogleFiles] = useState<{ id: string; name: string; modifiedTime?: string }[]>([]);
+  const [googleFileSearch, setGoogleFileSearch] = useState('');
+  const [googleFileUrl, setGoogleFileUrl] = useState('');
+  const [selectedGoogleFile, setSelectedGoogleFile] = useState<{ id: string; name: string } | null>(null);
+  const [googleTabs, setGoogleTabs] = useState<{ sheetId: number; title: string; index: number; gridProperties?: { rowCount?: number; columnCount?: number } }[]>([]);
+  const [selectedGoogleSheets, setSelectedGoogleSheets] = useState<SelectedGoogleSheet[]>([]);
+  const [googleSyncMode, setGoogleSyncMode] = useState<'manual' | 'interval'>('manual');
+  const [googleSyncIntervalMinutes, setGoogleSyncIntervalMinutes] = useState<number>(15);
+  const [googleFlowStage, setGoogleFlowStage] = useState<'idle' | 'connecting' | 'fetching_files' | 'reading_sheet' | 'importing' | 'completed'>('idle');
   const [sheetUrl, setSheetUrl] = useState('');
   const [bqProjects, setBqProjects] = useState<any[]>([]);
   const [bqDatasets, setBqDatasets] = useState<any[]>([]);
@@ -44,6 +91,7 @@ const Connections: React.FC<ConnectionsProps> = ({
   const [connSearchTerm, setConnSearchTerm] = useState('');
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const excelFileInputRef = useRef<HTMLInputElement>(null);
 
   const [tempConn, setTempConn] = useState<Partial<Connection>>({
     name: '',
@@ -64,6 +112,13 @@ const Connections: React.FC<ConnectionsProps> = ({
   React.useEffect(() => {
     initGoogleAuth(process.env.GOOGLE_CLIENT_ID || '').catch(console.error);
   }, []);
+
+  // Excel flow skips stage 3 (dataset screen) and jumps directly to stage 4.
+  React.useEffect(() => {
+    if (isWizardOpen && tempConn.type === 'Excel' && step === 3) {
+      setStep(4);
+    }
+  }, [isWizardOpen, tempConn.type, step]);
 
   const displayedTables = (tempConn.type === 'BigQuery' && bqTables.length > 0)
     ? bqTables
@@ -105,6 +160,22 @@ const Connections: React.FC<ConnectionsProps> = ({
       setStep(1);
       setAuthSuccess(true);
       setSelectedContext(MOCK_CONTEXTS[conn.type][0]);
+      setExcelFile(null);
+      setExcelSheets([]);
+      setSelectedExcelSheets([]);
+      setSelectedExcelDataset('');
+      setImportStage('idle');
+      setGoogleSheetsConnectionId(conn.type === 'GoogleSheets' ? conn.id : '');
+      setGoogleSheetsAuthCode('');
+      setGoogleFiles([]);
+      setGoogleFileSearch('');
+      setGoogleFileUrl('');
+      setSelectedGoogleFile(null);
+      setGoogleTabs([]);
+      setSelectedGoogleSheets([]);
+      setGoogleSyncMode('manual');
+      setGoogleSyncIntervalMinutes(15);
+      setGoogleFlowStage('idle');
     } else {
       setEditingConnId(null);
       setTempConn({ name: '', type: 'BigQuery', authType: 'ServiceAccount' });
@@ -120,6 +191,23 @@ const Connections: React.FC<ConnectionsProps> = ({
       setProjectSearchTerm('');
       setConnSearchTerm('');
       setSelectedDatasetId(null);
+      setExcelFile(null);
+      setExcelSheets([]);
+      setSelectedExcelSheets([]);
+      setExcelDatasets([]);
+      setSelectedExcelDataset('');
+      setImportStage('idle');
+      setGoogleSheetsConnectionId('');
+      setGoogleSheetsAuthCode('');
+      setGoogleFiles([]);
+      setGoogleFileSearch('');
+      setGoogleFileUrl('');
+      setSelectedGoogleFile(null);
+      setGoogleTabs([]);
+      setSelectedGoogleSheets([]);
+      setGoogleSyncMode('manual');
+      setGoogleSyncIntervalMinutes(15);
+      setGoogleFlowStage('idle');
     }
     setSearchTerm('');
     setIsWizardOpen(true);
@@ -183,8 +271,190 @@ const Connections: React.FC<ConnectionsProps> = ({
     }
   };
 
-  const handleSave = () => {
-    const connId = editingConnId || `conn-${Date.now()}`;
+  const loadExcelDatasetOptions = async () => {
+    try {
+      const datasets = await fetchExcelDatasets();
+      setExcelDatasets(datasets);
+      if (datasets.length > 0) {
+        setSelectedExcelDataset(datasets[0]);
+        return datasets[0];
+      }
+      setSelectedExcelDataset('excel_default');
+      return 'excel_default';
+    } catch (error: any) {
+      setSelectedExcelDataset('excel_default');
+      return 'excel_default';
+    }
+  };
+
+  const handleExcelFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!(file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls'))) {
+      alert('Please upload a valid Excel file (.xlsx or .xls).');
+      return;
+    }
+
+    setExcelFile(file);
+    setSelectedExcelSheets([]);
+    setImportStage('uploading');
+
+    try {
+      setImportStage('parsing');
+      const preview = await uploadExcelForPreview(file);
+      setExcelSheets(preview.sheets || []);
+      setAuthSuccess(true);
+      await loadExcelDatasetOptions();
+    } catch (error: any) {
+      setAuthSuccess(false);
+      setExcelSheets([]);
+      alert(error.message || 'Failed to parse Excel file');
+    } finally {
+      setImportStage('idle');
+    }
+  };
+
+  const toggleExcelSheet = (sheetName: string) => {
+    setSelectedExcelSheets(prev =>
+      prev.includes(sheetName)
+        ? prev.filter(name => name !== sheetName)
+        : [...prev, sheetName]
+    );
+  };
+
+  const loadGoogleFiles = async (search = '', connectionIdOverride?: string) => {
+    const connectionId = connectionIdOverride || googleSheetsConnectionId;
+    if (!connectionId) return;
+    setGoogleFlowStage('fetching_files');
+    try {
+      const result = await listGoogleSheetsFiles(connectionId, {
+        search: search.trim(),
+        pageSize: 50
+      });
+      setGoogleFiles((result.files || []).map(f => ({
+        id: f.id,
+        name: f.name,
+        modifiedTime: f.modifiedTime
+      })));
+    } catch (error: any) {
+      alert(error.message || 'Failed to fetch Google Sheets files');
+    } finally {
+      setGoogleFlowStage('idle');
+    }
+  };
+
+  const loadGoogleTabs = async (fileId: string, fileName: string) => {
+    if (!googleSheetsConnectionId) return;
+    setGoogleFlowStage('reading_sheet');
+    try {
+      const response = await listGoogleSheetsTabs(googleSheetsConnectionId, fileId);
+      const tabs = response.sheets || [];
+      setSelectedGoogleFile({ id: fileId, name: fileName });
+      setGoogleTabs(tabs.map(s => ({
+        sheetId: Number(s.sheetId),
+        title: s.title,
+        index: s.index,
+        gridProperties: s.gridProperties
+      })));
+      setSelectedGoogleSheets([]);
+    } catch (error: any) {
+      alert(error.message || 'Failed to read Google Sheets tabs');
+    } finally {
+      setGoogleFlowStage('idle');
+    }
+  };
+
+  const toggleGoogleSheet = (sheet: { sheetId: number; title: string }) => {
+    setSelectedGoogleSheets(prev => {
+      const exists = prev.some(item => item.sheetId === sheet.sheetId);
+      if (exists) {
+        return prev.filter(item => item.sheetId !== sheet.sheetId);
+      }
+      return [...prev, { sheetId: sheet.sheetId, sheetName: sheet.title, headerMode: 'first_row' }];
+    });
+  };
+
+  const updateGoogleSheetHeaderMode = (sheetId: number, headerMode: 'first_row' | 'auto_columns') => {
+    setSelectedGoogleSheets(prev => prev.map(item => item.sheetId === sheetId ? { ...item, headerMode } : item));
+  };
+
+  const handleGoogleSheetsConnect = async () => {
+    try {
+      setIsAuthenticating(true);
+      setGoogleFlowStage('connecting');
+      const clientId = process.env.GOOGLE_CLIENT_ID || '';
+      const authCode = await getGoogleAuthCode(clientId);
+      setGoogleSheetsAuthCode(authCode);
+
+      const connected = await connectGoogleSheetsOAuth({
+        authCode,
+        connectionId: tempConn.type === 'GoogleSheets' && editingConnId ? editingConnId : undefined,
+        connectionName: tempConn.name || 'Google Sheets Connection'
+      });
+
+      setGoogleSheetsConnectionId(connected.id);
+      setAuthSuccess(true);
+      setStep(3);
+      await loadGoogleFiles('', connected.id);
+    } catch (error: any) {
+      console.error('Google Sheets OAuth connect failed', error);
+      alert(error.message || 'Failed to connect Google Sheets account');
+      setAuthSuccess(false);
+    } finally {
+      setIsAuthenticating(false);
+      setGoogleFlowStage('idle');
+    }
+  };
+
+  const handleResolveGoogleFileUrl = async () => {
+    if (!googleSheetsConnectionId) {
+      alert('Connect Google account first.');
+      return;
+    }
+    const raw = googleFileUrl.trim();
+    if (!raw) return;
+    try {
+      setGoogleFlowStage('fetching_files');
+      const file = await resolveGoogleSheetsUrl(googleSheetsConnectionId, raw);
+      await loadGoogleTabs(file.id, file.name);
+    } catch (error: any) {
+      alert(error.message || 'Invalid Google Sheets URL');
+    } finally {
+      setGoogleFlowStage('idle');
+    }
+  };
+
+  const handleSave = async () => {
+    if (tempConn.type === 'Excel') {
+      if (!excelFile) {
+        alert('Please upload an Excel file first.');
+        return;
+      }
+      if (selectedExcelSheets.length === 0) {
+        alert('Please select at least one sheet to import.');
+        return;
+      }
+    }
+    if (tempConn.type === 'GoogleSheets') {
+      if (!googleSheetsConnectionId) {
+        alert('Please connect Google account first.');
+        return;
+      }
+      if (!selectedGoogleFile) {
+        alert('Please select a Google Sheets file.');
+        return;
+      }
+      if (selectedGoogleSheets.length === 0) {
+        alert('Please select at least one sheet.');
+        return;
+      }
+    }
+
+    const connId =
+      (tempConn.type === 'GoogleSheets' ? googleSheetsConnectionId : null) ||
+      editingConnId ||
+      `conn-${Date.now()}`;
 
     // Prepare tables to sync
     const tablesToSync = displayedTables
@@ -207,18 +477,105 @@ const Connections: React.FC<ConnectionsProps> = ({
       createdAt: editingConnId
         ? connections.find(c => c.id === editingConnId)?.createdAt || new Date().toISOString()
         : new Date().toISOString().split('T')[0],
-      tableCount: selectedTables.length,
+      tableCount:
+        tempConn.type === 'Excel'
+          ? selectedExcelSheets.length
+          : tempConn.type === 'GoogleSheets'
+            ? selectedGoogleSheets.length
+            : selectedTables.length,
       projectId: tempConn.type === 'BigQuery' ? (selectedContext || tempConn.projectId) : undefined,
       serviceAccountKey: tempConn.serviceAccountKey // Pass through
     };
 
-    if (editingConnId) {
-      onUpdateConnection(finalConn, tablesToSync);
-    } else {
-      // @ts-ignore
-      onAddConnection(finalConn, tablesToSync);
+    try {
+      if (tempConn.type === 'Excel') {
+        setIsAuthenticating(true);
+        setImportStage('importing');
+        await onCreateExcelConnection(
+          finalConn,
+          excelFile as File,
+          selectedExcelDataset || 'excel_default',
+          selectedExcelSheets
+        );
+        setImportStage('completed');
+        await new Promise(resolve => setTimeout(resolve, 400));
+      } else if (tempConn.type === 'GoogleSheets') {
+        setIsAuthenticating(true);
+        setGoogleFlowStage('reading_sheet');
+        let finalSelections: SelectedGoogleSheet[] = [...selectedGoogleSheets];
+
+        const preflight = await preflightGoogleSheetsImport(googleSheetsConnectionId, {
+          fileId: selectedGoogleFile?.id || '',
+          sheets: finalSelections.map((item) => ({
+            sheetId: item.sheetId,
+            sheetName: item.sheetName,
+            headerMode: item.headerMode
+          }))
+        });
+
+        const requiresHeaderDecision = (preflight?.sheets || []).filter((sheet: any) => {
+          const selected = finalSelections.find(item => item.sheetId === Number(sheet.sheetId));
+          return sheet.requiresHeaderDecision && selected?.headerMode !== 'auto_columns';
+        });
+
+        if (requiresHeaderDecision.length > 0) {
+          const ok = window.confirm(
+            `${requiresHeaderDecision.length} sheet(s) do not have valid header. Switch them to auto Column_1..N and continue?`
+          );
+          if (!ok) return;
+          finalSelections = finalSelections.map((sheet) =>
+            requiresHeaderDecision.some((r: any) => Number(r.sheetId) === sheet.sheetId)
+              ? { ...sheet, headerMode: 'auto_columns' }
+              : sheet
+          );
+          setSelectedGoogleSheets(finalSelections);
+        }
+
+        const emptySheets = (preflight?.sheets || []).filter((sheet: any) => sheet.isEmpty);
+        if (emptySheets.length > 0) {
+          const ok = window.confirm(`${emptySheets.length} selected sheet(s) are empty. Continue importing anyway?`);
+          if (!ok) return;
+        }
+
+        const overwriteConfirmed = window.confirm(
+          'Import may overwrite existing synced tables for the selected sheets. Continue?'
+        );
+        if (!overwriteConfirmed) return;
+
+        setGoogleFlowStage('importing');
+        await onCreateGoogleSheetsConnection({
+          connectionId: googleSheetsConnectionId,
+          connectionName: finalConn.name,
+          authCode: '',
+          fileId: selectedGoogleFile?.id || '',
+          fileName: selectedGoogleFile?.name,
+          sheets: finalSelections.map((sheet) => ({
+            sheetId: sheet.sheetId,
+            sheetName: sheet.sheetName,
+            headerMode: sheet.headerMode
+          })),
+          allowEmptySheets: emptySheets.length > 0,
+          confirmOverwrite: true,
+          syncMode: googleSyncMode,
+          syncIntervalMinutes: googleSyncIntervalMinutes
+        });
+        setGoogleFlowStage('completed');
+        await new Promise(resolve => setTimeout(resolve, 400));
+      } else if (editingConnId) {
+        onUpdateConnection(finalConn, tablesToSync);
+      } else {
+        // @ts-ignore
+        onAddConnection(finalConn, tablesToSync);
+      }
+
+      closeWizard();
+    } catch (error: any) {
+      alert(error.message || 'Failed to save connection');
+    } finally {
+      setIsAuthenticating(false);
+      setImportStage('idle');
+      setGoogleFlowStage('idle');
     }
-    closeWizard();
   };
 
   const closeWizard = () => {
@@ -226,6 +583,25 @@ const Connections: React.FC<ConnectionsProps> = ({
     setEditingConnId(null);
     setStep(1);
     setAuthSuccess(false);
+    setExcelFile(null);
+    setExcelSheets([]);
+    setSelectedExcelSheets([]);
+    setSelectedExcelDataset('');
+    setImportStage('idle');
+    setGoogleSheetsConnectionId('');
+    setGoogleSheetsAuthCode('');
+    setGoogleFiles([]);
+    setGoogleFileSearch('');
+    setGoogleFileUrl('');
+    setSelectedGoogleFile(null);
+    setGoogleTabs([]);
+    setSelectedGoogleSheets([]);
+    setGoogleSyncMode('manual');
+    setGoogleSyncIntervalMinutes(15);
+    setGoogleFlowStage('idle');
+    if (excelFileInputRef.current) {
+      excelFileInputRef.current.value = '';
+    }
   };
 
   const renderConnectionForm = () => {
@@ -509,25 +885,106 @@ const Connections: React.FC<ConnectionsProps> = ({
 
     const renderExcelForm = () => (
       <div className="space-y-6 animate-in fade-in">
-        <label className={labelClass}>Upload Excel File (.xlsx, .csv)</label>
-        <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-green-500/50 bg-white/[0.02]">
-          <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".xlsx,.xls,.csv" />
-          {uploadedFile ? <div className="text-emerald-500 font-bold">{uploadedFile.name}</div> : <div className="text-slate-500 text-sm">Click to Upload</div>}
+        <label className={labelClass}>Upload Excel File (.xlsx, .xls)</label>
+        <div onClick={() => excelFileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-green-500/50 bg-white/[0.02]">
+          <input type="file" ref={excelFileInputRef} onChange={handleExcelFileUpload} className="hidden" accept=".xlsx,.xls" />
+          {excelFile ? <div className="text-emerald-500 font-bold">{excelFile.name}</div> : <div className="text-slate-500 text-sm">Click to Upload</div>}
         </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { key: 'uploading', label: 'Uploading' },
+            { key: 'parsing', label: 'Parsing' },
+            { key: 'importing', label: 'Importing' },
+            { key: 'completed', label: 'Completed' }
+          ].map((stage, index) => {
+            const stageOrder = ['uploading', 'parsing', 'importing', 'completed'];
+            const currentIndex = stageOrder.indexOf(importStage);
+            const stageIndex = stageOrder.indexOf(stage.key);
+            const isActive = importStage === stage.key;
+            const isDone = currentIndex > stageIndex;
+            return (
+              <div key={stage.key} className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest text-center ${isActive ? 'border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-600/10' : isDone ? 'border-emerald-500 text-emerald-500 bg-emerald-500/5' : 'border-slate-200 dark:border-white/10 text-slate-400'}`}>
+                {stage.label}
+              </div>
+            );
+          })}
+        </div>
+
+        {excelSheets.length > 0 && (
+          <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-1">
+              {excelSheets.length} sheets parsed successfully
+            </div>
+            <p className="text-[11px] text-slate-500">Click OK to continue sheet selection.</p>
+          </div>
+        )}
+
+        <button
+          onClick={() => {
+            if (!excelFile || excelSheets.length === 0) return;
+            setStep(4);
+          }}
+          disabled={!excelFile || excelSheets.length === 0}
+          className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          OK
+        </button>
       </div>
     );
 
     const renderSheetsForm = () => (
       <div className="space-y-6 animate-in fade-in">
-        <label className={labelClass}>Google Sheets URL</label>
-        <input
-          className={inputClass}
-          placeholder="https://docs.google.com/spreadsheets/d/..."
-          value={sheetUrl}
-          onChange={(e) => { setSheetUrl(e.target.value); setAuthSuccess(true); }} // Auto-verify for now
-        />
-        <button onClick={handleGoogleLogin} className="w-full py-4 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-200">
-          <i className="fab fa-google mr-2 text-blue-500"></i> Browse Sheets
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          {[
+            { key: 'connecting', label: 'Connecting' },
+            { key: 'fetching_files', label: 'Fetching files' },
+            { key: 'reading_sheet', label: 'Reading sheet' },
+            { key: 'importing', label: 'Importing' },
+            { key: 'completed', label: 'Completed' }
+          ].map((stage) => (
+            <div
+              key={stage.key}
+              className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest text-center ${googleFlowStage === stage.key
+                ? 'border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-600/10'
+                : 'border-slate-200 dark:border-white/10 text-slate-400'
+                }`}
+            >
+              {stage.label}
+            </div>
+          ))}
+        </div>
+
+        <div className="p-5 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+          <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2">Google Sheets OAuth</h4>
+          <p className="text-[11px] text-slate-500 mb-4">
+            This connection requests read-only access to Google Sheets and Drive metadata.
+          </p>
+          <button
+            onClick={handleGoogleSheetsConnect}
+            disabled={isAuthenticating}
+            className="w-full py-4 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-100 transition-all border border-slate-200"
+          >
+            {isAuthenticating ? <i className="fas fa-circle-notch animate-spin mr-2"></i> : <i className="fab fa-google mr-2 text-blue-500"></i>}
+            {authSuccess ? 'Google Account Connected' : 'Connect Google Account'}
+          </button>
+        </div>
+
+        {authSuccess && googleSheetsConnectionId && (
+          <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl text-[11px] text-slate-500">
+            Connection ID: <span className="font-mono">{googleSheetsConnectionId}</span>
+          </div>
+        )}
+
+        <button
+          onClick={() => {
+            if (!authSuccess) return;
+            setStep(3);
+          }}
+          disabled={!authSuccess}
+          className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Continue to File Selection
         </button>
       </div>
     );
@@ -577,7 +1034,7 @@ const Connections: React.FC<ConnectionsProps> = ({
       {/* Quick Stats Row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
         {[
-          { label: t('conn.stat.total_connections'), value: connections.filter(c => c.type !== 'Excel').length, icon: 'fa-project-diagram', color: 'text-indigo-600 dark:text-indigo-400' },
+          { label: t('conn.stat.total_connections'), value: connections.length, icon: 'fa-project-diagram', color: 'text-indigo-600 dark:text-indigo-400' },
           { label: t('conn.stat.active_syncs'), value: connections.length, icon: 'fa-sync-alt', color: 'text-emerald-600 dark:text-emerald-400', pulse: true },
           {
             label: t('conn.stat.total_tables'),
@@ -699,7 +1156,11 @@ const Connections: React.FC<ConnectionsProps> = ({
                         <button
                           key={opt.id}
                           disabled={!!editingConnId}
-                          onClick={() => setTempConn({ ...tempConn, type: opt.id as WarehouseType })}
+                          onClick={() => setTempConn({
+                            ...tempConn,
+                            type: opt.id as WarehouseType,
+                            authType: opt.id === 'Excel' ? 'Password' : (tempConn.authType || 'GoogleMail')
+                          })}
                           className={`flex flex-col items-center gap-4 p-6 rounded-[2rem] border-2 transition-all group ${tempConn.type === opt.id ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5' : 'border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] hover:border-slate-200 dark:hover:border-white/10'
                             } ${editingConnId && tempConn.type !== opt.id ? 'opacity-20 cursor-not-allowed' : ''}`}
                         >
@@ -724,213 +1185,499 @@ const Connections: React.FC<ConnectionsProps> = ({
 
               {step === 3 && (
                 <div className="p-10 space-y-6 animate-in fade-in">
-                  <div className="flex items-center gap-2 text-xs mb-4">
-                    <span className={`font-black uppercase tracking-widest ${!selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-400 dark:text-slate-500'}`}>
-                      Select Project
-                    </span>
-                    <i className="fas fa-chevron-right text-slate-200 dark:text-slate-700"></i>
-                    <span className={`font-black uppercase tracking-widest ${selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-200 dark:text-slate-700'}`}>
-                      Select Dataset
-                    </span>
-                  </div>
-
-                  {!selectedContext ? (
-                    <div className="space-y-3 animate-in slide-in-from-left-4">
-                      <div className="p-4 bg-indigo-50 dark:bg-indigo-600/10 border border-indigo-100 dark:border-indigo-500/20 rounded-2xl mb-4">
-                        <h4 className="text-indigo-600 dark:text-indigo-400 font-black uppercase text-[10px] tracking-widest mb-1">
-                          <i className="fab fa-google-cloud mr-2"></i> Connected to Google Cloud
+                  {tempConn.type === 'Excel' ? (
+                    <div className="space-y-6 animate-in slide-in-from-right-4">
+                      <div className="p-5 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+                        <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2">
+                          Select Dataset
                         </h4>
-                        <p className="text-[11px] text-indigo-400/70 dark:text-indigo-300/70">Select a project to explore its datasets.</p>
-                      </div>
-
-                      <div className="relative mb-4">
-                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
-                        <input
-                          type="text"
-                          value={projectSearchTerm}
-                          onChange={(e) => setProjectSearchTerm(e.target.value)}
-                          placeholder="Search Projects..."
-                          className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                        {tempConn.type === 'BigQuery' && bqProjects
-                          .filter(proj => proj.name.toLowerCase().includes(projectSearchTerm.toLowerCase()) || proj.id.toLowerCase().includes(projectSearchTerm.toLowerCase()))
-                          .map(proj => (
-                            <button
-                              key={proj.id}
-                              onClick={async () => {
-                                setSelectedContext(proj.id);
-                                setBqDatasets([]);
-                                setBqTables([]);
-                                if (googleToken || tempConn.serviceAccountKey) {
-                                  let tokenToUse = googleToken;
-                                  if (tempConn.serviceAccountKey) {
-                                    tokenToUse = await getServiceAccountToken(tempConn.serviceAccountKey);
-                                  }
-                                  if (tokenToUse) {
-                                    fetchDatasets(tokenToUse, proj.id).then(setBqDatasets);
-                                  }
-                                }
-                              }}
-                              className="w-full p-5 rounded-2xl border border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-blue-500/30 transition-all text-left flex items-center justify-between group"
-                            >
-                              <div className="flex items-center gap-4">
-                                <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                                  <i className="fas fa-cloud text-sm"></i>
-                                </div>
-                                <div>
-                                  <div className="font-bold text-sm text-slate-700 dark:text-slate-200 group-hover:text-slate-900 dark:group-hover:text-white">{proj.name}</div>
-                                  <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{proj.id}</div>
-                                </div>
-                              </div>
-                              <i className="fas fa-chevron-right text-slate-300 dark:text-slate-600 group-hover:text-slate-900 dark:group-hover:text-white group-hover:translate-x-1 transition-all"></i>
-                            </button>
-                          ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4 animate-in slide-in-from-right-4">
-                      <div className="flex justify-between items-center">
-                        <button
-                          onClick={() => { setSelectedContext(''); setBqDatasets([]); setDatasetSearchTerm(''); }}
-                          className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-2"
+                        <p className="text-[11px] text-slate-500 mb-4">Choose an existing workspace dataset for imported sheets.</p>
+                        <select
+                          value={selectedExcelDataset}
+                          onChange={(e) => setSelectedExcelDataset(e.target.value)}
+                          className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 px-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
                         >
-                          <i className="fas fa-arrow-left"></i> Back to Projects
+                          {excelDatasets.map(dataset => (
+                            <option key={dataset} value={dataset}>
+                              {dataset}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {excelSheets.some(sheet => sheet.isEmpty) && (
+                        <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
+                          <h4 className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-2">Warning</h4>
+                          <p className="text-[11px] text-slate-500">
+                            One or more sheets are empty. You can still continue to import.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ) : tempConn.type === 'GoogleSheets' ? (
+                    <div className="space-y-5 animate-in slide-in-from-right-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="relative">
+                          <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                          <input
+                            type="text"
+                            value={googleFileSearch}
+                            onChange={(e) => setGoogleFileSearch(e.target.value)}
+                            placeholder="Search Google Sheets file..."
+                            className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
+                          />
+                        </div>
+                        <button
+                          onClick={() => loadGoogleFiles(googleFileSearch)}
+                          disabled={!googleSheetsConnectionId || isAuthenticating}
+                          className="py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40"
+                        >
+                          <i className="fas fa-rotate mr-2"></i>
+                          Fetch Files
                         </button>
                       </div>
 
-                      <div className="relative mb-4">
-                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                      <div className="flex gap-3">
                         <input
                           type="text"
-                          value={datasetSearchTerm}
-                          onChange={(e) => setDatasetSearchTerm(e.target.value)}
-                          placeholder="Search Datasets..."
-                          className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                          value={googleFileUrl}
+                          onChange={(e) => setGoogleFileUrl(e.target.value)}
+                          placeholder="Paste Google Sheets URL..."
+                          className="flex-1 bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 px-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
                         />
+                        <button
+                          onClick={handleResolveGoogleFileUrl}
+                          disabled={!googleSheetsConnectionId || !googleFileUrl.trim()}
+                          className="px-6 py-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
+                        >
+                          Resolve URL
+                        </button>
                       </div>
 
-                      <div className="mt-4">
-                        {bqDatasets.length === 0 ? (
-                          <div className="text-center py-12 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
-                            <i className="fas fa-circle-notch fa-spin text-slate-300 dark:text-slate-600 text-2xl mb-3"></i>
-                            <p className="text-xs text-slate-400 dark:text-slate-500">Fetching Datasets...</p>
+                      <div className="grid grid-cols-1 gap-3 max-h-[430px] overflow-y-auto pr-1 custom-scrollbar">
+                        {googleFiles.length === 0 ? (
+                          <div className="text-center py-16 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
+                            <i className="fas fa-file-spreadsheet text-slate-300 dark:text-slate-700 text-3xl mb-4"></i>
+                            <p className="text-slate-400 dark:text-slate-500 text-sm">No files loaded yet</p>
                           </div>
                         ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
-                            {bqDatasets
-                              .filter(ds => ds.name.toLowerCase().includes(datasetSearchTerm.toLowerCase()))
-                              .map(ds => (
+                          googleFiles.map((file) => (
+                            <button
+                              key={file.id}
+                              onClick={() => loadGoogleTabs(file.id, file.name)}
+                              className={`w-full text-left p-4 rounded-2xl border transition-all ${selectedGoogleFile?.id === file.id
+                                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                : 'border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-400'
+                                }`}
+                            >
+                              <div className="font-bold text-sm text-slate-800 dark:text-slate-100">{file.name}</div>
+                              <div className="text-[10px] font-mono text-slate-400 mt-1">{file.id}</div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+
+                      {selectedGoogleFile && (
+                        <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl text-[11px] text-slate-500">
+                          Selected file: <span className="font-bold text-slate-700 dark:text-slate-200">{selectedGoogleFile.name}</span>
+                          <br />
+                          Tabs loaded: <span className="font-bold">{googleTabs.length}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 text-xs mb-4">
+                        <span className={`font-black uppercase tracking-widest ${!selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-400 dark:text-slate-500'}`}>
+                          Select Project
+                        </span>
+                        <i className="fas fa-chevron-right text-slate-200 dark:text-slate-700"></i>
+                        <span className={`font-black uppercase tracking-widest ${selectedContext ? 'text-slate-900 dark:text-white' : 'text-slate-200 dark:text-slate-700'}`}>
+                          Select Dataset
+                        </span>
+                      </div>
+
+                      {!selectedContext ? (
+                        <div className="space-y-3 animate-in slide-in-from-left-4">
+                          <div className="p-4 bg-indigo-50 dark:bg-indigo-600/10 border border-indigo-100 dark:border-indigo-500/20 rounded-2xl mb-4">
+                            <h4 className="text-indigo-600 dark:text-indigo-400 font-black uppercase text-[10px] tracking-widest mb-1">
+                              <i className="fab fa-google-cloud mr-2"></i> Connected to Google Cloud
+                            </h4>
+                            <p className="text-[11px] text-indigo-400/70 dark:text-indigo-300/70">Select a project to explore its datasets.</p>
+                          </div>
+
+                          <div className="relative mb-4">
+                            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                            <input
+                              type="text"
+                              value={projectSearchTerm}
+                              onChange={(e) => setProjectSearchTerm(e.target.value)}
+                              placeholder="Search Projects..."
+                              className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                            {tempConn.type === 'BigQuery' && bqProjects
+                              .filter(proj => proj.name.toLowerCase().includes(projectSearchTerm.toLowerCase()) || proj.id.toLowerCase().includes(projectSearchTerm.toLowerCase()))
+                              .map(proj => (
                                 <button
-                                  key={ds.id}
-                                  onClick={() => setSelectedDatasetId(ds.id)}
-                                  className={`p-5 rounded-2xl border-2 transition-all text-left flex items-start gap-4 ${selectedDatasetId === ds.id
-                                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
-                                    : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-slate-200 dark:hover:border-white/20'
-                                    }`}
+                                  key={proj.id}
+                                  onClick={async () => {
+                                    setSelectedContext(proj.id);
+                                    setBqDatasets([]);
+                                    setBqTables([]);
+                                    if (googleToken || tempConn.serviceAccountKey) {
+                                      let tokenToUse = googleToken;
+                                      if (tempConn.serviceAccountKey) {
+                                        tokenToUse = await getServiceAccountToken(tempConn.serviceAccountKey);
+                                      }
+                                      if (tokenToUse) {
+                                        fetchDatasets(tokenToUse, proj.id).then(setBqDatasets);
+                                      }
+                                    }
+                                  }}
+                                  className="w-full p-5 rounded-2xl border border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-blue-500/30 transition-all text-left flex items-center justify-between group"
                                 >
-                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${selectedDatasetId === ds.id ? 'bg-indigo-600 text-white' : 'bg-indigo-100 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
-                                    }`}>
-                                    <i className="fas fa-database text-sm"></i>
+                                  <div className="flex items-center gap-4">
+                                    <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                      <i className="fas fa-cloud text-sm"></i>
+                                    </div>
+                                    <div>
+                                      <div className="font-bold text-sm text-slate-700 dark:text-slate-200 group-hover:text-slate-900 dark:group-hover:text-white">{proj.name}</div>
+                                      <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{proj.id}</div>
+                                    </div>
                                   </div>
-                                  <div className={`font-bold text-sm break-words line-clamp-2 mt-2 ${selectedDatasetId === ds.id ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'
-                                    }`}>{ds.name}</div>
+                                  <i className="fas fa-chevron-right text-slate-300 dark:text-slate-600 group-hover:text-slate-900 dark:group-hover:text-white group-hover:translate-x-1 transition-all"></i>
                                 </button>
                               ))}
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4 animate-in slide-in-from-right-4">
+                          <div className="flex justify-between items-center">
+                            <button
+                              onClick={() => { setSelectedContext(''); setBqDatasets([]); setDatasetSearchTerm(''); }}
+                              className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-2"
+                            >
+                              <i className="fas fa-arrow-left"></i> Back to Projects
+                            </button>
+                          </div>
+
+                          <div className="relative mb-4">
+                            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                            <input
+                              type="text"
+                              value={datasetSearchTerm}
+                              onChange={(e) => setDatasetSearchTerm(e.target.value)}
+                              placeholder="Search Datasets..."
+                              className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                            />
+                          </div>
+
+                          <div className="mt-4">
+                            {bqDatasets.length === 0 ? (
+                              <div className="text-center py-12 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
+                                <i className="fas fa-circle-notch fa-spin text-slate-300 dark:text-slate-600 text-2xl mb-3"></i>
+                                <p className="text-xs text-slate-400 dark:text-slate-500">Fetching Datasets...</p>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
+                                {bqDatasets
+                                  .filter(ds => ds.name.toLowerCase().includes(datasetSearchTerm.toLowerCase()))
+                                  .map(ds => (
+                                    <button
+                                      key={ds.id}
+                                      onClick={() => setSelectedDatasetId(ds.id)}
+                                      className={`p-5 rounded-2xl border-2 transition-all text-left flex items-start gap-4 ${selectedDatasetId === ds.id
+                                        ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                        : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-slate-200 dark:hover:border-white/20'
+                                        }`}
+                                    >
+                                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${selectedDatasetId === ds.id ? 'bg-indigo-600 text-white' : 'bg-indigo-100 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
+                                        }`}>
+                                        <i className="fas fa-database text-sm"></i>
+                                      </div>
+                                      <div className={`font-bold text-sm break-words line-clamp-2 mt-2 ${selectedDatasetId === ds.id ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'
+                                        }`}>{ds.name}</div>
+                                    </button>
+                                  ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
 
               {step === 4 && (
                 <div className="animate-in slide-in-from-right-4 px-10 pb-10 flex flex-col h-full overflow-hidden">
-                  <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
-                    <div className="relative">
-                      <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
-                      <input
-                        type="text"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        placeholder="Filter tables by name..."
-                        className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
-                      />
-                    </div>
-
-                    <div className="flex justify-between items-center px-2">
-                      <button
-                        onClick={handleSelectAll}
-                        className="flex items-center gap-3 group"
-                      >
-                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))
-                          ? 'bg-indigo-600 border-indigo-600'
-                          : 'border-slate-200 dark:border-white/10 group-hover:border-slate-300 dark:group-hover:border-white/30'
-                          }`}>
-                          {(filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))) && <i className="fas fa-check text-[10px] text-white"></i>}
+                  {tempConn.type === 'Excel' ? (
+                    <>
+                      <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
+                        <div className="relative">
+                          <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                          <input
+                            type="text"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            placeholder="Filter sheets by name..."
+                            className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                          />
                         </div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
-                          {filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name)) ? 'Deselect All Filtered' : 'Select All Filtered'}
-                        </span>
-                      </button>
-
-                      <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20">
-                        {selectedTables.length} Objects Selected
+                        <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20 w-fit">
+                          {selectedExcelSheets.length} Sheets Selected
+                        </div>
                       </div>
-                    </div>
-                  </div>
 
-                  <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
-                    {filteredTables.length === 0 ? (
-                      <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
-                        <i className="fas fa-search text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
-                        <p className="text-slate-400 dark:text-slate-500 text-sm">No tables match your filter</p>
-                      </div>
-                    ) : (
-                      filteredTables.map(table => (
-                        <div
-                          key={table.name}
-                          onClick={() => toggleTable(table.name)}
-                          className={`flex items-center justify-between p-5 rounded-[2rem] border-2 cursor-pointer transition-all group ${selectedTables.includes(table.name)
-                            ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5'
-                            : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
-                            }`}
-                        >
-                          <div className="flex items-center gap-4">
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 group-hover:text-slate-900 dark:group-hover:text-slate-300'
-                              }`}>
-                              <i className="fas fa-table text-lg"></i>
-                            </div>
-                            <div>
-                              <div className={`font-bold text-sm transition-colors ${selectedTables.includes(table.name) ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
-                                {table.name}
+                      <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
+                        {excelSheets.filter(sheet => sheet.sheetName.toLowerCase().includes(searchTerm.toLowerCase())).length === 0 ? (
+                          <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
+                            <i className="fas fa-search text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
+                            <p className="text-slate-400 dark:text-slate-500 text-sm">No sheets match your filter</p>
+                          </div>
+                        ) : (
+                          excelSheets
+                            .filter(sheet => sheet.sheetName.toLowerCase().includes(searchTerm.toLowerCase()))
+                            .map(sheet => (
+                              <div
+                                key={sheet.sheetName}
+                                onClick={() => toggleExcelSheet(sheet.sheetName)}
+                                className={`flex items-center justify-between p-5 rounded-[2rem] border-2 cursor-pointer transition-all group ${selectedExcelSheets.includes(sheet.sheetName)
+                                  ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5'
+                                  : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
+                                  }`}
+                              >
+                                <div className="flex items-center gap-4">
+                                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selectedExcelSheets.includes(sheet.sheetName) ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 group-hover:text-slate-900 dark:group-hover:text-slate-300'
+                                    }`}>
+                                    <i className="fas fa-table text-lg"></i>
+                                  </div>
+                                  <div>
+                                    <div className={`font-bold text-sm transition-colors ${selectedExcelSheets.includes(sheet.sheetName) ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
+                                      {sheet.sheetName}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">
+                                      {sheet.rowCount.toLocaleString()} rows • {sheet.columnCount} columns
+                                    </div>
+                                    {sheet.isEmpty && (
+                                      <div className="text-[10px] text-amber-500 font-black uppercase tracking-wider mt-1">
+                                        Empty sheet
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selectedExcelSheets.includes(sheet.sheetName) ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-white/10'
+                                  }`}>
+                                  {selectedExcelSheets.includes(sheet.sheetName) && <i className="fas fa-check text-[10px] text-white"></i>}
+                                </div>
                               </div>
-                              {table.dataset && (
-                                <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{table.dataset}</div>
-                              )}
-                            </div>
+                            ))
+                        )}
+                      </div>
+                    </>
+                  ) : tempConn.type === 'GoogleSheets' ? (
+                    <>
+                      <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20">
+                            {selectedGoogleSheets.length} Sheets Selected
                           </div>
-
-                          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-white/10'
-                            }`}>
-                            {selectedTables.includes(table.name) && <i className="fas fa-check text-[10px] text-white"></i>}
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Sync</label>
+                            <select
+                              value={googleSyncMode}
+                              onChange={(e) => setGoogleSyncMode(e.target.value as 'manual' | 'interval')}
+                              className="bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-xl py-2 px-3 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200"
+                            >
+                              <option value="manual">Import Once / Manual</option>
+                              <option value="interval">Auto Sync</option>
+                            </select>
+                            {googleSyncMode === 'interval' && (
+                              <input
+                                type="number"
+                                min={5}
+                                max={1440}
+                                value={googleSyncIntervalMinutes}
+                                onChange={(e) => setGoogleSyncIntervalMinutes(Math.min(1440, Math.max(5, Number(e.target.value || 15))))}
+                                className="w-24 bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-xl py-2 px-3 text-[10px] font-black text-slate-700 dark:text-slate-200"
+                              />
+                            )}
                           </div>
                         </div>
-                      ))
-                    )}
-                  </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
+                        {googleTabs.length === 0 ? (
+                          <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
+                            <i className="fas fa-table text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
+                            <p className="text-slate-400 dark:text-slate-500 text-sm">No sheets loaded for selected file</p>
+                          </div>
+                        ) : (
+                          googleTabs.map((sheet) => {
+                            const selected = selectedGoogleSheets.some(item => item.sheetId === Number(sheet.sheetId));
+                            const selectedConfig = selectedGoogleSheets.find(item => item.sheetId === Number(sheet.sheetId));
+                            return (
+                              <div
+                                key={sheet.sheetId}
+                                onClick={() => toggleGoogleSheet({ sheetId: Number(sheet.sheetId), title: sheet.title })}
+                                className={`p-5 rounded-[2rem] border-2 cursor-pointer transition-all group ${selected
+                                  ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5'
+                                  : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
+                                  }`}
+                              >
+                                <div className="flex items-center justify-between gap-4">
+                                  <div className="flex items-center gap-4">
+                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selected ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'
+                                      }`}>
+                                      <i className="fas fa-table text-lg"></i>
+                                    </div>
+                                    <div>
+                                      <div className={`font-bold text-sm transition-colors ${selected ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
+                                        {sheet.title}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">
+                                        sheetId: {sheet.sheetId} • {sheet.gridProperties?.rowCount || 0} rows • {sheet.gridProperties?.columnCount || 0} columns
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-white/10'
+                                    }`}>
+                                    {selected && <i className="fas fa-check text-[10px] text-white"></i>}
+                                  </div>
+                                </div>
+
+                                {selected && (
+                                  <div className="mt-4">
+                                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                                      Header Mode
+                                    </label>
+                                    <select
+                                      value={selectedConfig?.headerMode || 'first_row'}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => updateGoogleSheetHeaderMode(Number(sheet.sheetId), e.target.value as 'first_row' | 'auto_columns')}
+                                      className="w-full bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-xl py-3 px-3 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200"
+                                    >
+                                      <option value="first_row">Use First Row as Header</option>
+                                      <option value="auto_columns">Auto Column_1..N</option>
+                                    </select>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
+                        <div className="relative">
+                          <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                          <input
+                            type="text"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            placeholder="Filter tables by name..."
+                            className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
+                          />
+                        </div>
+
+                        <div className="flex justify-between items-center px-2">
+                          <button
+                            onClick={handleSelectAll}
+                            className="flex items-center gap-3 group"
+                          >
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))
+                              ? 'bg-indigo-600 border-indigo-600'
+                              : 'border-slate-200 dark:border-white/10 group-hover:border-slate-300 dark:group-hover:border-white/30'
+                              }`}>
+                              {(filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name))) && <i className="fas fa-check text-[10px] text-white"></i>}
+                            </div>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
+                              {filteredTables.length > 0 && filteredTables.every(t => selectedTables.includes(t.name)) ? 'Deselect All Filtered' : 'Select All Filtered'}
+                            </span>
+                          </button>
+
+                          <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20">
+                            {selectedTables.length} Objects Selected
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
+                        {filteredTables.length === 0 ? (
+                          <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
+                            <i className="fas fa-search text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
+                            <p className="text-slate-400 dark:text-slate-500 text-sm">No tables match your filter</p>
+                          </div>
+                        ) : (
+                          filteredTables.map(table => (
+                            <div
+                              key={table.name}
+                              onClick={() => toggleTable(table.name)}
+                              className={`flex items-center justify-between p-5 rounded-[2rem] border-2 cursor-pointer transition-all group ${selectedTables.includes(table.name)
+                                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5'
+                                : 'border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-200 dark:hover:border-white/10'
+                                }`}
+                            >
+                              <div className="flex items-center gap-4">
+                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 group-hover:text-slate-900 dark:group-hover:text-slate-300'
+                                  }`}>
+                                  <i className="fas fa-table text-lg"></i>
+                                </div>
+                                <div>
+                                  <div className={`font-bold text-sm transition-colors ${selectedTables.includes(table.name) ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
+                                    {table.name}
+                                  </div>
+                                  {table.dataset && (
+                                    <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{table.dataset}</div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${selectedTables.includes(table.name) ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-white/10'
+                                }`}>
+                                {selectedTables.includes(table.name) && <i className="fas fa-check text-[10px] text-white"></i>}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="px-10 py-8 border-t border-slate-100 dark:border-white/5 flex justify-between items-center bg-slate-50 dark:bg-white/[0.01]">
-              <button onClick={() => setStep(prev => prev - 1)} className={`font-black text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors ${step === 1 ? 'invisible' : ''}`}>Back</button>
+              <button
+                onClick={() => {
+                  if (tempConn.type === 'Excel' && step === 4) {
+                    setStep(2);
+                    return;
+                  }
+                  setStep(prev => prev - 1);
+                }}
+                className={`font-black text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors ${step === 1 ? 'invisible' : ''}`}
+              >
+                Back
+              </button>
               <button
                 onClick={async () => {
-                  if (step === 3 && selectedDatasetId) {
+                  if (step === 3 && tempConn.type === 'Excel') {
+                    setStep(4);
+                  } else if (step === 3 && tempConn.type === 'GoogleSheets') {
+                    if (!selectedGoogleFile) {
+                      alert('Please select a Google Sheets file first.');
+                      return;
+                    }
+                    setStep(4);
+                  } else if (step === 3 && selectedDatasetId) {
                     setIsAuthenticating(true);
                     try {
                       let tokenToUse = googleToken;
@@ -946,7 +1693,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                       setIsAuthenticating(false);
                     }
                   } else if (step === 4) {
-                    handleSave();
+                    await handleSave();
                   } else {
                     setStep(prev => prev + 1);
                   }
@@ -954,7 +1701,10 @@ const Connections: React.FC<ConnectionsProps> = ({
                 disabled={
                   !tempConn.name ||
                   (step === 2 && !authSuccess) ||
-                  (step === 3 && !selectedDatasetId) ||
+                  (step === 3 && tempConn.type === 'BigQuery' && !selectedDatasetId) ||
+                  (step === 3 && tempConn.type === 'GoogleSheets' && !selectedGoogleFile) ||
+                  (step === 4 && tempConn.type === 'Excel' && (!excelFile || selectedExcelSheets.length === 0)) ||
+                  (step === 4 && tempConn.type === 'GoogleSheets' && selectedGoogleSheets.length === 0) ||
                   isAuthenticating
                 }
                 className={`px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 transition-all ${step === 2 ? 'opacity-0 pointer-events-none scale-95' : 'opacity-100'

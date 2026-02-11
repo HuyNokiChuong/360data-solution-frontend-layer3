@@ -146,6 +146,38 @@ export const getGoogleToken = (clientId: string): Promise<string> => {
 };
 
 /**
+ * Trigger Google OAuth authorization-code flow (for backend token exchange).
+ */
+export const getGoogleAuthCode = async (clientId: string): Promise<string> => {
+    if (!clientId) throw new Error('Missing Google client ID');
+    if (!(window as any).google) {
+        await initGoogleAuth(clientId);
+    }
+
+    return new Promise((resolve, reject) => {
+        const codeClient = (window as any).google.accounts.oauth2.initCodeClient({
+            client_id: clientId,
+            scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets.readonly',
+            ux_mode: 'popup',
+            redirect_uri: 'postmessage',
+            callback: (response: any) => {
+                if (response?.code) {
+                    resolve(response.code);
+                } else {
+                    reject(new Error('Failed to get OAuth code'));
+                }
+            },
+            error_callback: (err: any) => {
+                reject(new Error(err?.message || 'Google OAuth code flow failed'));
+            },
+        });
+
+        // Force consent to maximize chance of getting refresh token on backend exchange.
+        codeClient.requestCode({ prompt: 'consent' } as any);
+    });
+};
+
+/**
  * Higher-level helper to get a token for a given connection
  */
 export const getTokenForConnection = async (conn: any, clientId: string): Promise<string | null> => {

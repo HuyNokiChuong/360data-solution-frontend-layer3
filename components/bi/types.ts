@@ -6,7 +6,7 @@
 // Data Source Types
 // --------------------------------------------
 
-export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'manual';
+export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'excel' | 'manual';
 
 export interface DataSource {
     id: string;
@@ -18,6 +18,7 @@ export interface DataSource {
     connectionId?: string; // For BigQuery tables
     tableName?: string;
     datasetName?: string;
+    syncedTableId?: string; // For Excel tables stored in backend
     isLoaded?: boolean;
     totalRows?: number;
     isLoadingPartial?: boolean;

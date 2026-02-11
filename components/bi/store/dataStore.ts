@@ -32,6 +32,7 @@ interface DataState {
 
     // Load data from BigQuery table
     loadBigQueryTable: (connectionId: string, tableName: string, datasetName: string, data: any[] | null, schema: Field[], totalRows?: number) => string;
+    loadExcelTable: (syncedTableId: string, connectionId: string, tableName: string, datasetName: string, schema: Field[], totalRows?: number) => string;
 
     // Load data for existing source (full or partial)
     loadTableData: (id: string, rows: any[]) => void;
@@ -272,6 +273,48 @@ export const useDataStore = create<DataState>((set, get) => ({
 
             return dataSource.id;
         }
+    },
+
+    // Load Excel table metadata
+    loadExcelTable: (syncedTableId, connectionId, tableName, datasetName, schema, totalRows) => {
+        const { dataSources } = get();
+        const sourceId = `excel:${syncedTableId}`;
+
+        const existing = dataSources.find(ds => ds.id === sourceId);
+        if (existing) {
+            get().updateDataSource(sourceId, {
+                schema,
+                totalRows: totalRows !== undefined ? totalRows : existing.totalRows,
+                tableName,
+                datasetName,
+                connectionId,
+                syncedTableId
+            });
+            return sourceId;
+        }
+
+        const dataSource: DataSource = {
+            id: sourceId,
+            name: `${datasetName}.${tableName}`,
+            type: 'excel',
+            data: [],
+            schema,
+            connectionId,
+            tableName,
+            datasetName,
+            syncedTableId,
+            totalRows,
+            isLoaded: false,
+            syncStatus: 'ready',
+            createdAt: new Date().toISOString()
+        };
+
+        set((state) => ({
+            dataSources: [...state.dataSources, dataSource]
+        }));
+        saveToStorage(get(), 'metadata-only');
+
+        return sourceId;
     },
 
     setSyncStatus: (id, status, error = null) => {

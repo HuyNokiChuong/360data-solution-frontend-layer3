@@ -28,6 +28,7 @@ export interface Connection {
   tableCount: number;
   projectId?: string;
   serviceAccountKey?: string;
+  config?: Record<string, any>;
 }
 
 export interface SyncedTable {
@@ -36,9 +37,18 @@ export interface SyncedTable {
   tableName: string;
   datasetName: string;
   rowCount: number;
+  columnCount?: number;
   status: 'Active' | 'Disabled';
   lastSync: string;
   schema: { name: string, type: string }[];
+  fileName?: string;
+  uploadTime?: string;
+  sheetName?: string;
+  sourceFileId?: string;
+  sourceFileName?: string;
+  sourceSheetId?: string;
+  importTime?: string;
+  lastSyncTime?: string;
 }
 
 export interface ReportSession {

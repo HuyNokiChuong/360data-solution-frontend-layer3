@@ -4,6 +4,8 @@ import { Connection, SyncedTable, ReportSession, User } from './types';
 import { INITIAL_TABLES } from './constants';
 import { initGoogleAuth } from './services/googleAuth';
 import { PersistentStorage } from './services/storage';
+import { importExcelSheets } from './services/excel';
+import { connectGoogleSheetsOAuth, importGoogleSheetsData, updateGoogleSheetsSyncSettings, GoogleSheetSelectionInput } from './services/googleSheets';
 import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
 import { ConfirmationModal } from './components/ConfirmationModal';
@@ -123,6 +125,57 @@ const App: React.FC = () => {
   const [isMainSidebarCollapsed, setIsMainSidebarCollapsed] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(256);
+  const API_BASE = 'http://localhost:3001/api';
+
+  const syncConnectionsAndTables = async (tokenOverride?: string) => {
+    const token = tokenOverride || localStorage.getItem('auth_token');
+    if (!token) return;
+
+    const connRes = await fetch(`${API_BASE}/connections`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const connData = await connRes.json();
+    if (!connData.success) {
+      throw new Error(connData.message || 'Failed to sync connections');
+    }
+
+    const syncedConnections: Connection[] = connData.data || [];
+    setConnections(syncedConnections);
+
+    if (syncedConnections.length === 0) {
+      setTables([]);
+      return;
+    }
+
+    const tablePromises = syncedConnections.map((conn: Connection) =>
+      fetch(`${API_BASE}/connections/${conn.id}/tables`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).then(r => r.json()).then(d => d.success ? d.data : [])
+    );
+
+    const allTablesArrays = await Promise.all(tablePromises);
+    const allTables = allTablesArrays.flat();
+    setTables(allTables);
+  };
+
+  const createConnectionOnly = async (conn: Connection, tokenOverride?: string): Promise<Connection> => {
+    const token = tokenOverride || localStorage.getItem('auth_token');
+    if (!token) throw new Error('Missing auth token');
+
+    const connRes = await fetch(`${API_BASE}/connections`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(conn)
+    });
+    const connData = await connRes.json();
+    if (!connRes.ok || !connData.success) {
+      throw new Error(connData.message || 'Failed to create connection');
+    }
+    return connData.data as Connection;
+  };
 
   // PERSISTENCE: Save auth user
   useEffect(() => {
@@ -162,37 +215,9 @@ const App: React.FC = () => {
       // NEW: Sync from Backend
       const token = localStorage.getItem('auth_token');
       if (token) {
-        // Sync connections
-        // Sync connections and their tables
-        fetch('http://localhost:3001/api/connections', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-          .then(res => res.json())
-          .then(async resData => {
-            if (resData.success) {
-              setConnections(resData.data);
-
-              // If connections exist, fetch their tables to keep state in sync
-              if (resData.data.length > 0) {
-                try {
-                  const tablePromises = resData.data.map((conn: Connection) =>
-                    fetch(`http://localhost:3001/api/connections/${conn.id}/tables`, {
-                      headers: { 'Authorization': `Bearer ${token}` }
-                    }).then(r => r.json()).then(d => d.success ? d.data : [])
-                  );
-
-                  const allTablesArrays = await Promise.all(tablePromises);
-                  const allTables = allTablesArrays.flat();
-                  setTables(allTables);
-                } catch (err) {
-                  console.error('Failed to sync tables:', err);
-                }
-              } else {
-                setTables([]); // Clear tables if no connections
-              }
-            }
-          })
-          .catch(console.error);
+        syncConnectionsAndTables(token).catch((err) => {
+          console.error('Failed to sync connections/tables:', err);
+        });
 
         // Sync users from backend
         fetch('http://localhost:3001/api/users', {
@@ -546,24 +571,13 @@ const App: React.FC = () => {
 
     try {
       // 1. Create Connection
-      const connRes = await fetch('http://localhost:3001/api/connections', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(conn)
-      });
-      const connData = await connRes.json();
-      if (!connRes.ok) throw new Error(connData.message);
-
-      const savedConn = connData.data;
+      const savedConn = await createConnectionOnly(conn, token);
 
       let savedTables = selectedTables;
 
       // 2. Save Tables linked to this connection
       if (selectedTables.length > 0) {
-        const tablesRes = await fetch(`http://localhost:3001/api/connections/${savedConn.id}/tables`, {
+        const tablesRes = await fetch(`${API_BASE}/connections/${savedConn.id}/tables`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -585,6 +599,80 @@ const App: React.FC = () => {
       setConnections([...connections, conn]);
       setTables([...tables, ...selectedTables]);
     }
+  };
+
+  const createExcelConnection = async (
+    conn: Connection,
+    file: File,
+    datasetName: string,
+    sheetNames: string[]
+  ) => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      throw new Error('Bạn cần đăng nhập để import Excel');
+    }
+
+    const existingConn = connections.find(existing => existing.id === conn.id);
+    let targetConnection = existingConn;
+
+    if (!targetConnection) {
+      targetConnection = await createConnectionOnly(conn, token);
+    } else {
+      await fetch(`${API_BASE}/connections/${targetConnection.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(conn)
+      });
+    }
+
+    await importExcelSheets(targetConnection.id, file, datasetName, sheetNames);
+    await syncConnectionsAndTables(token);
+  };
+
+  const createGoogleSheetsConnection = async (payload: {
+    connectionId?: string;
+    connectionName: string;
+    authCode: string;
+    fileId: string;
+    fileName?: string;
+    sheets: GoogleSheetSelectionInput[];
+    allowEmptySheets?: boolean;
+    confirmOverwrite?: boolean;
+    syncMode?: 'manual' | 'interval';
+    syncIntervalMinutes?: number;
+  }) => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      throw new Error('Bạn cần đăng nhập để import Google Sheets');
+    }
+
+    const connected = (payload.connectionId && !payload.authCode)
+      ? { id: payload.connectionId }
+      : await connectGoogleSheetsOAuth({
+        authCode: payload.authCode,
+        connectionId: payload.connectionId,
+        connectionName: payload.connectionName,
+      });
+
+    await importGoogleSheetsData(connected.id, {
+      fileId: payload.fileId,
+      fileName: payload.fileName,
+      sheets: payload.sheets,
+      allowEmptySheets: payload.allowEmptySheets === true,
+      confirmOverwrite: payload.confirmOverwrite === true,
+      syncMode: payload.syncMode || 'manual',
+      syncIntervalMinutes: payload.syncIntervalMinutes || 15,
+    });
+
+    await updateGoogleSheetsSyncSettings(connected.id, {
+      mode: payload.syncMode || 'manual',
+      intervalMinutes: payload.syncIntervalMinutes || 15,
+    });
+
+    await syncConnectionsAndTables(token);
   };
 
   const updateConnection = (conn: Connection, newTables?: SyncedTable[]) => {
@@ -937,6 +1025,8 @@ const App: React.FC = () => {
                   connections={connections}
                   tables={tables}
                   onAddConnection={addConnection}
+                  onCreateExcelConnection={createExcelConnection}
+                  onCreateGoogleSheetsConnection={createGoogleSheetsConnection}
                   onUpdateConnection={updateConnection}
                   onDeleteConnection={deleteConnection}
                   googleToken={googleToken}

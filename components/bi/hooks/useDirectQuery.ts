@@ -4,6 +4,7 @@ import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
 import { fetchAggregatedData } from '../../../services/bigquery';
+import { fetchExcelTableData } from '../../../services/excel';
 import { DrillDownService } from '../engine/DrillDownService';
 import { getFieldValue } from '../engine/utils';
 
@@ -12,7 +13,7 @@ import { getFieldValue } from '../engine/utils';
  * This hook replaces useAggregatedData and provides support for Charts, Tables, Pivot Tables, etc.
  */
 export const useDirectQuery = (widget: BIWidget) => {
-    const { getDataSource, googleToken, connections, dataSources } = useDataStore();
+    const { getDataSource, googleToken, connections, dataSources, updateDataSource, loadTableData } = useDataStore();
     const { crossFilters, drillDowns, getFiltersForWidget } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const globalFilters = activeDashboard?.globalFilters || [];
@@ -198,8 +199,54 @@ export const useDirectQuery = (widget: BIWidget) => {
             }
 
             if (dataSource.type !== 'bigquery') {
-                if (dataSource.data) {
-                    setData(dataSource.data);
+                if (dataSource.type === 'excel' && (!dataSource.isLoaded || !dataSource.data || dataSource.data.length === 0)) {
+                    try {
+                        updateDataSource(dataSource.id, {
+                            syncStatus: 'syncing',
+                            isLoadingPartial: true,
+                            syncError: null
+                        });
+
+                        const tableId = dataSource.syncedTableId || dataSource.id.replace('excel:', '');
+                        const allRows: any[] = [];
+                        const pageSize = 500;
+                        let offset = 0;
+                        let hasMore = true;
+                        let totalRows = dataSource.totalRows || 0;
+
+                        while (hasMore) {
+                            const page = await fetchExcelTableData(tableId, offset, pageSize);
+                            const pageRows = page.rows || [];
+
+                            allRows.push(...pageRows);
+                            totalRows = page.totalRows ?? totalRows;
+                            offset += pageRows.length;
+                            hasMore = !!page.hasMore && pageRows.length > 0;
+                        }
+
+                        if (!isMounted) return;
+
+                        loadTableData(dataSource.id, allRows);
+                        updateDataSource(dataSource.id, {
+                            isLoaded: true,
+                            isLoadingPartial: false,
+                            syncStatus: 'ready',
+                            totalRows: totalRows || allRows.length,
+                            lastSyncAt: new Date().toISOString(),
+                        });
+                        setData(allRows);
+                    } catch (err: any) {
+                        if (!isMounted) return;
+                        updateDataSource(dataSource.id, {
+                            isLoadingPartial: false,
+                            syncStatus: 'error',
+                            syncError: err?.message || 'Failed to load Excel data'
+                        });
+                        setError(err?.message || 'Failed to load Excel data');
+                        setData([]);
+                    }
+                } else {
+                    setData(dataSource.data || []);
                 }
                 return;
             }

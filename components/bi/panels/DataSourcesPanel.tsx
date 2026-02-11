@@ -60,6 +60,8 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
         switch (type) {
             case 'bigquery':
                 return 'fa-database';
+            case 'excel':
+                return 'fa-file-excel';
             case 'csv':
                 return 'fa-file-csv';
             case 'json':
@@ -75,6 +77,8 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
         switch (type) {
             case 'bigquery':
                 return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+            case 'excel':
+                return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
             case 'csv':
                 return 'bg-green-500/20 text-green-400 border-green-500/30';
             case 'json':
