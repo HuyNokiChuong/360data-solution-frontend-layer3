@@ -201,6 +201,80 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         }
     };
 
+    const renderBarDataLabel = (props: any, getText: (payload: any, value: any) => string) => {
+        const { x, y, width, height, value, payload } = props;
+        const text = getText(payload, value);
+        if (!text) return null;
+
+        if (isHorizontal) {
+            const px = (x || 0) + (width || 0) + 6;
+            const py = (y || 0) + (height || 0) / 2 + 3;
+            return (
+                <text
+                    x={px}
+                    y={py}
+                    textAnchor="start"
+                    fill="#e2e8f0"
+                    fontSize={10}
+                    fontWeight={700}
+                    stroke="#020617"
+                    strokeWidth={3}
+                    paintOrder="stroke"
+                    style={{ pointerEvents: 'none' }}
+                >
+                    {text}
+                </text>
+            );
+        }
+
+        const barHeight = Math.abs(height || 0);
+        const isTinyBar = barHeight < 24;
+        const px = (x || 0) + (width || 0) / 2;
+        const py = isTinyBar ? (y || 0) - 6 : (y || 0) + 14;
+        const fill = isTinyBar ? '#e2e8f0' : '#f8fafc';
+
+        return (
+            <text
+                x={px}
+                y={py}
+                textAnchor="middle"
+                fill={fill}
+                fontSize={10}
+                fontWeight={700}
+                stroke="#020617"
+                strokeWidth={3}
+                paintOrder="stroke"
+                style={{ pointerEvents: 'none' }}
+            >
+                {text}
+            </text>
+        );
+    };
+
+    const renderLineDataLabel = (props: any, getText: (payload: any, value: any) => string) => {
+        const { x, y, width, value, payload } = props;
+        const text = getText(payload, value);
+        if (!text) return null;
+        const px = (x || 0) + (width || 0) / 2;
+        const py = (y || 0) - 12;
+        return (
+            <text
+                x={px}
+                y={py}
+                textAnchor="middle"
+                fill="#fef08a"
+                fontSize={10}
+                fontWeight={700}
+                stroke="#020617"
+                strokeWidth={3}
+                paintOrder="stroke"
+                style={{ pointerEvents: 'none' }}
+            >
+                {text}
+            </text>
+        );
+    };
+
     if (effectiveChartData.length === 0 && !isLoading) {
         let errorMsg = 'No data available';
         if (!yField) errorMsg = 'Select Y-Axis field';
@@ -419,13 +493,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 dataKey={sField}
                                                 position={isHorizontal ? "right" : (lineSeries.length > 0 ? "insideTop" : "top")}
                                                 dy={!isHorizontal && lineSeries.length > 0 ? 8 : 0}
-                                                fill="#94a3b8"
-                                                fontSize={10}
-                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                content={(labelProps: any) => renderBarDataLabel(labelProps, (payload: any, val: any) => {
                                                     const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
-                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    const category = resolveCategoryLabel(payload);
                                                     return renderLabelText(widget.labelMode, formatted, category);
-                                                }}
+                                                })}
                                             />
                                         )}
                                     </Bar>
@@ -458,14 +530,12 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         dataKey={yField}
                                         position={isHorizontal ? "right" : (lineSeries.length > 0 ? "insideTop" : "top")}
                                         dy={!isHorizontal && lineSeries.length > 0 ? 8 : 0}
-                                        fill="#94a3b8"
-                                        fontSize={10}
-                                        formatter={(val: any, _name: any, labelProps: any) => {
+                                        content={(labelProps: any) => renderBarDataLabel(labelProps, (payload: any, val: any) => {
                                             const selectedFormat = getAdaptiveNumericFormat(widget.valueFormat);
                                             const formatted = formatSmartDataLabel(val, widget.labelFormat || selectedFormat || 'compact', { maxLength: 10 });
-                                            const category = resolveCategoryLabel(labelProps?.payload);
+                                            const category = resolveCategoryLabel(payload);
                                             return renderLabelText(widget.labelMode, formatted, category);
-                                        }}
+                                        })}
                                     />
                                 )}
                             </Bar>
@@ -511,13 +581,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 dataKey={ls}
                                                 position="top"
                                                 dy={-12}
-                                                fill="#94a3b8"
-                                                fontSize={10}
-                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                content={(labelProps: any) => renderLineDataLabel(labelProps, (payload: any, val: any) => {
                                                     const formatted = formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(config?.format || widget.valueFormat) || 'compact', { maxLength: 10 });
-                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    const category = resolveCategoryLabel(payload);
                                                     return renderLabelText(widget.labelMode, formatted, category);
-                                                }}
+                                                })}
                                             />
                                         )}
                                     </Line>
