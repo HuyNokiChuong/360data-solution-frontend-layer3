@@ -189,7 +189,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                 {/* Search Bar */}
                 {uniqueValues.length > 5 && (
                     <div className="mb-2 px-1">
-                        <div className="relative" ref={dropdownRef}>
+                        <div className="relative">
                             <i className="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500"></i>
                             <input
                                 type="text"
@@ -299,7 +299,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
             ) : (
                 <>
                     {widget.slicerMode === 'dropdown' ? (
-                        <div className="relative">
+                        <div className="relative" ref={dropdownRef}>
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
