@@ -22,13 +22,14 @@ const auditLog = async (req, res, next) => {
                 const entityType = extractEntityType(req.path);
                 const entityId = extractEntityId(req.path, body);
 
+                const action = `${req.method} ${req.path}`.slice(0, 50);
                 await query(
                     `INSERT INTO audit_logs (workspace_id, user_id, action, entity_type, entity_id, details, ip_address, user_agent)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
                     [
                         req.user?.workspace_id || null,
                         req.user?.id || null,
-                        `${req.method} ${req.path}`,
+                        action,
                         entityType,
                         entityId,
                         JSON.stringify({

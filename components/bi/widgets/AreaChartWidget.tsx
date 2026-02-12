@@ -108,8 +108,18 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
     const xFieldDisplay = useMemo(() => {
         if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
         if (chartData.length > 0 && chartData[0]._formattedAxis) return '_formattedAxis';
+        if (!xField) return '_autoCategory';
         return xField;
     }, [drillDownState?.mode, xFields.length, chartData, xField]);
+    const selectionField = xField || xFieldDisplay;
+
+    const effectiveChartData = useMemo(() => {
+        if (xField) return chartData;
+        return chartData.map((row) => ({
+            ...row,
+            _autoCategory: row._autoCategory || 'Total'
+        }));
+    }, [chartData, xField]);
 
     // Colors
     const { chartColors } = useChartColors();
@@ -128,15 +138,30 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         return cf.filters.find(f => f.field === xField)?.value;
     }, [allDashboardFilters, widget.id, xField]);
 
-    if (!xField || series.length === 0) {
+    const hierarchyDepth = useMemo(() => {
+        if (drillDownState?.mode !== 'expand') return 1;
+        return effectiveChartData.reduce((maxDepth, row) => {
+            const raw = row?._combinedAxis || row?._formattedAxis || row?.[xFieldDisplay] || '';
+            const depth = String(raw).split('\n').filter(Boolean).length || 1;
+            return Math.max(maxDepth, depth);
+        }, 1);
+    }, [drillDownState?.mode, effectiveChartData, xFieldDisplay]);
+
+    const hasBottomLegend = widget.showLegend !== false && (!widget.legendPosition || widget.legendPosition === 'bottom');
+    const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(96, 30 + hierarchyDepth * 16);
+    const bottomMargin = hasBottomLegend
+        ? Math.max(44, xAxisHeight + 26)
+        : Math.max(14, xAxisHeight - 8);
+
+    if (series.length === 0) {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick}>
-                <EmptyChartState type="area" message="Select X-Axis and Y-Axis fields" onClickDataTab={onClickDataTab} onClick={onClick} />
+                <EmptyChartState type="area" message="Select Y-Axis field" onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
         );
     }
 
-    if (chartData.length === 0) {
+    if (effectiveChartData.length === 0) {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick}>
                 <EmptyChartState type="area" message="No data available" onClickDataTab={onClickDataTab} onClick={onClick} />
@@ -159,8 +184,8 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">
                     <AreaChart
-                        data={chartData}
-                        margin={{ top: 20, right: 30, left: 0, bottom: drillDownState?.mode === 'expand' ? 60 : 10 }}
+                        data={effectiveChartData}
+                        margin={{ top: 20, right: 30, left: 0, bottom: bottomMargin }}
                         onClick={(e: any) => e && e.activePayload && handleAreaClick(e.activePayload[0].payload)}
                     >
                         <defs>
@@ -181,8 +206,8 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             fontSize={10}
                             tickLine={false}
                             axisLine={false}
-                            tick={<HierarchicalAxisTick data={chartData} />}
-                            height={drillDownState?.mode === 'expand' ? 80 : 30}
+                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                            height={xAxisHeight}
                             fontFamily="Outfit"
                         />
                         <YAxis
@@ -214,6 +239,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
                                     fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : '10px'}
                                 />}
+                                wrapperStyle={hasBottomLegend ? { paddingTop: 8 } : undefined}
                             />
                         )}
 
@@ -235,6 +261,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                     key={sField}
                                     type="monotone"
                                     dataKey={sField}
+                                    isAnimationActive={false}
                                     stroke={color}
                                     strokeWidth={3}
                                     fillOpacity={1}
@@ -245,14 +272,14 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                     dot={(dotProps: any) => {
                                         const { cx, cy, payload } = dotProps;
                                         if (!cx || !cy) return null;
-                                        const isItemSelected = !currentSelection || payload[xField] === currentSelection;
+                                        const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
 
                                         // Only show dots if selected or if hovering (but hover is handled by activeDot)
                                         // Here we show dots ONLY for the selected item to avoid clutter, 
                                         // or show all but dim specific ones?
                                         // Area charts usually don't have dots. Let's only show the dot for the SELECTED item.
 
-                                        if (currentSelection && payload[xField] === currentSelection) {
+                                        if (currentSelection && payload[selectionField] === currentSelection) {
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -272,9 +299,9 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
 
                         {/* Render Highlights */}
                         {widget.insight?.highlight?.map((hl, i) => {
-                            const dataPoint = chartData[hl.index];
+                            const dataPoint = effectiveChartData[hl.index];
                             if (!dataPoint) return null;
-                            const xValue = dataPoint[xField];
+                            const xValue = dataPoint[selectionField];
                             const yValue = hl.value || dataPoint[series[0]];
                             let hlColor = '#facc15';
                             if (hl.type === 'peak') hlColor = '#10b981';

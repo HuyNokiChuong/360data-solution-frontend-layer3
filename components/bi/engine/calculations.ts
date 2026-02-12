@@ -1,6 +1,7 @@
 
 import { DataSource, Field, CalculatedField, AggregationType } from '../types';
 import { getFieldValue } from './utils';
+import { normalizeAggregation } from '../../../utils/aggregation';
 
 /**
  * Calculate a new field based on an expression
@@ -466,46 +467,50 @@ export function groupAndAggregateMulti(
  * Single field aggregation
  */
 export function aggregate(data: any[], field: string, type: AggregationType = 'sum'): number {
-    const values = data.map(row => {
-        const val = getFieldValue(row, field);
-        if (val === null || val === undefined || val === '') return NaN;
-        return Number(val);
-    }).filter(v => !isNaN(v));
+    const normalizedType = normalizeAggregation(type);
+    const nonEmptyValues = data
+        .map(row => getFieldValue(row, field))
+        .filter(val => val !== null && val !== undefined && val !== '');
 
-    if (values.length === 0) return 0;
+    const numericValues = nonEmptyValues
+        .map(val => Number(val))
+        .filter(v => !isNaN(v));
 
-    switch (type) {
+    if (normalizedType === 'count') return nonEmptyValues.length;
+    if (normalizedType === 'countDistinct') return new Set(nonEmptyValues).size;
+    if (normalizedType === 'none') {
+        const first = nonEmptyValues[0];
+        if (first === undefined) return 0;
+        const firstNumber = Number(first);
+        return isNaN(firstNumber) ? 0 : firstNumber;
+    }
+    if (numericValues.length === 0) return 0;
+
+    switch (normalizedType) {
         case 'sum': {
-            const sum = values.reduce((a, b) => a + b, 0);
+            const sum = numericValues.reduce((a, b) => a + b, 0);
             return parseFloat(sum.toFixed(10));
         }
         case 'avg': {
-            const avg = values.reduce((a, b) => a + b, 0) / values.length;
+            const avg = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
             return parseFloat(avg.toFixed(10));
         }
         case 'min': {
-            let min = values[0];
-            for (let i = 1; i < values.length; i++) {
-                if (values[i] < min) min = values[i];
+            let min = numericValues[0];
+            for (let i = 1; i < numericValues.length; i++) {
+                if (numericValues[i] < min) min = numericValues[i];
             }
             return min;
         }
         case 'max': {
-            let max = values[0];
-            for (let i = 1; i < values.length; i++) {
-                if (values[i] > max) max = values[i];
+            let max = numericValues[0];
+            for (let i = 1; i < numericValues.length; i++) {
+                if (numericValues[i] > max) max = numericValues[i];
             }
             return max;
         }
-        case 'count':
-            return data.length;
-        case 'countDistinct':
-            // BQ behavior: COUNT(DISTINCT) excludes nulls
-            return new Set(data.map(row => getFieldValue(row, field)).filter(v => v !== null && v !== undefined)).size;
-        case 'none':
-            return values[0] || 0;
         default: {
-            const sum = values.reduce((a, b) => a + b, 0);
+            const sum = numericValues.reduce((a, b) => a + b, 0);
             return parseFloat(sum.toFixed(10));
         }
     }
@@ -538,9 +543,9 @@ export function pivotData(
     const colKeysSet = new Set<string>();
 
     data.forEach(item => {
-        const rowKey = rows.map(r => String(getFieldValue(item, r) ?? 'All')).join(' > ');
+        const rowKey = rows.map(r => String(getFieldValue(item, r) ?? '(Blank)')).join(' > ');
         const colKey = cols.length > 0
-            ? cols.map(c => String(getFieldValue(item, c) ?? 'All')).join(' > ')
+            ? cols.map(c => String(getFieldValue(item, c) ?? '(Blank)')).join(' > ')
             : 'Value';
 
         rowKeysSet.add(rowKey);

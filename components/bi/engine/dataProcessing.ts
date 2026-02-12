@@ -5,6 +5,7 @@
 import { DataSource, Field, Filter, FilterOperator, DataStats, BIWidget, AggregationType } from '../types';
 import { getFieldValue } from './utils';
 import { DrillDownService } from './DrillDownService';
+import { normalizeAggregation } from '../../../utils/aggregation';
 
 /**
  * Parse CSV data into structured format
@@ -338,6 +339,7 @@ export function sampleData(data: any[], count: number = 100): any[] {
  */
 export function aggregate(data: any[], field: string, aggregation: AggregationType): number {
     if (data.length === 0) return 0;
+    const normalizedAggregation = normalizeAggregation(aggregation);
 
     const values = data
         .map(row => getFieldValue(row, field))
@@ -345,7 +347,7 @@ export function aggregate(data: any[], field: string, aggregation: AggregationTy
 
     if (values.length === 0) return 0;
 
-    switch (aggregation) {
+    switch (normalizedAggregation) {
         case 'sum':
             return values.reduce((acc, val) => acc + Number(val), 0);
 

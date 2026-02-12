@@ -7,7 +7,7 @@ import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useDirectQuery } from '../hooks/useDirectQuery';
 import { formatValue } from '../engine/calculations';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import BaseWidget from './BaseWidget';
 import CustomTooltip from './CustomTooltip';
 import { DrillDownService } from '../engine/DrillDownService';
@@ -49,7 +49,9 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
 
     const drillDownState = drillDowns[widget.id];
     const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
-    const xField = (drillDownState?.mode === 'expand' && xFields.length > 1) ? '_combinedAxis' : (xFields[0] || '');
+    const xField = (drillDownState?.mode === 'expand' && xFields.length > 1)
+        ? '_combinedAxis'
+        : (xFields[0] || '_autoCategory');
     const { chartColors } = useChartColors();
 
     // NEW: Centralized Aggregation Hook
@@ -145,7 +147,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
 
     // Detect if X-axis is numeric or categorical
     const xFieldType = useMemo(() => {
-        if (!realDataSource || !xField) return 'number';
+        if (!realDataSource || xField === '_autoCategory') return 'category';
         const field = realDataSource.schema?.find(f => f.name === xField);
         return field?.type === 'number' ? 'number' : 'category';
     }, [realDataSource, xField]);
@@ -172,7 +174,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 {chartData.length === 0 && !error ? (
-                    <EmptyChartState type="scatter" message="Select X and Y axes" onClickDataTab={onClickDataTab} onClick={onClick} />
+                    <EmptyChartState type="scatter" message={widget.yAxis?.[0] ? "No data available" : "Select Y-Axis field"} onClickDataTab={onClickDataTab} onClick={onClick} />
                 ) : (
                     <ResponsiveContainer width="100%" height="100%">
                         <ScatterChart
@@ -189,7 +191,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                 name={xField}
                                 stroke="#94a3b8"
                                 tickFormatter={(val) => {
-                                    if (xFieldType === 'number') return formatBIValue(val, widget.valueFormat || 'standard');
+                                    if (xFieldType === 'number') return formatBIValue(val, getAdaptiveNumericFormat(widget.valueFormat));
                                     return val;
                                 }}
                                 tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
@@ -202,7 +204,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                 dataKey={widget.yAxis?.[0]}
                                 name={widget.yAxis?.[0]}
                                 stroke="#94a3b8"
-                                tickFormatter={(val) => formatBIValue(val, widget.valueFormat || 'standard')}
+                                tickFormatter={(val) => formatBIValue(val, getAdaptiveNumericFormat(widget.valueFormat))}
                                 tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
                                 tickLine={false}
                                 axisLine={false}
@@ -244,6 +246,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                             <Scatter
                                 name={widget.yAxis?.[0] || 'Value'}
                                 data={chartData}
+                                isAnimationActive={false}
                                 fill={widget.colors?.[0] || chartColors[0]}
                                 opacity={0.8}
                                 onClick={(e: any) => {
@@ -266,7 +269,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                         position="top"
                                         fill="#94a3b8"
                                         fontSize={10}
-                                        formatter={(val: any) => formatBIValue(val, widget.labelFormat || widget.valueFormat || 'standard')}
+                                        formatter={(val: any) => formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 })}
                                         style={{ fontFamily: 'Outfit' }}
                                     />
                                 )}

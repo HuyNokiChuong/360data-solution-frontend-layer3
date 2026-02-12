@@ -2,6 +2,67 @@
 export type WarehouseType = 'BigQuery' | 'Snowflake' | 'Redshift' | 'PostgreSQL' | 'Excel' | 'GoogleSheets';
 export type UserRole = 'Admin' | 'Editor' | 'Viewer';
 
+export interface PostgresConnectionConfig {
+  host: string;
+  port: number;
+  databaseName: string;
+  username: string;
+  ssl: boolean;
+  hasPassword?: boolean;
+}
+
+export interface PostgresSchemaObject {
+  schemaName: string;
+  tableName: string;
+  objectType: 'table' | 'view';
+}
+
+export interface PostgresColumnInfo {
+  name: string;
+  type: string;
+  ordinalPosition: number;
+  isNullable: boolean;
+}
+
+export interface PostgresObjectColumns extends PostgresSchemaObject {
+  columns: PostgresColumnInfo[];
+  primaryKeyColumns: string[];
+}
+
+export type PostgresImportMode = 'full' | 'incremental';
+
+export interface PostgresTableImportSelection extends PostgresSchemaObject {
+  incrementalColumn?: string;
+  incrementalKind?: 'timestamp' | 'id';
+  upsert?: boolean;
+  keyColumns?: string[];
+}
+
+export interface PostgresImportJob {
+  id: string;
+  connectionId: string;
+  workspaceId?: string;
+  status: 'queued' | 'running' | 'success' | 'failed';
+  stage: 'connecting' | 'fetching_schema' | 'reading_table' | 'importing' | 'completed';
+  stageOrder: number;
+  importMode: PostgresImportMode;
+  payload: Record<string, any>;
+  progress: {
+    totalTables: number;
+    completedTables: number;
+    currentTable: string | null;
+    importedRows: number;
+    currentStage: string | null;
+    percentage: number;
+  };
+  attemptCount: number;
+  errorMessage?: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -28,7 +89,10 @@ export interface Connection {
   tableCount: number;
   projectId?: string;
   serviceAccountKey?: string;
-  config?: Record<string, any>;
+  config?: {
+    postgres?: PostgresConnectionConfig;
+    [key: string]: any;
+  };
 }
 
 export interface SyncedTable {

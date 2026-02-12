@@ -1,4 +1,6 @@
 
+import { normalizeAggregation } from '../utils/aggregation';
+
 interface Project {
     id: string;
     name: string;
@@ -17,9 +19,98 @@ interface Table {
     schema: { name: string, type: string }[];
 }
 
+let tokenRefreshPromise: Promise<string | null> | null = null;
+
+const setBearerToken = (headers: HeadersInit | undefined, token: string): Headers => {
+    const next = new Headers(headers || {});
+    next.set('Authorization', `Bearer ${token}`);
+    return next;
+};
+
+const getBearerToken = (headers: HeadersInit | undefined): string | null => {
+    const auth = new Headers(headers || {}).get('Authorization');
+    if (!auth) return null;
+    const [scheme, value] = auth.split(' ');
+    if (!scheme || !value) return null;
+    if (scheme.toLowerCase() !== 'bearer') return null;
+    return value;
+};
+
+const getClientId = (): string => {
+    const envClientId = process.env.GOOGLE_CLIENT_ID || '';
+    return String(envClientId).trim();
+};
+
+const getLatestStoredToken = async (): Promise<string | null> => {
+    if (typeof window === 'undefined') return null;
+    try {
+        const { getStoredToken } = await import('./googleAuth');
+        return getStoredToken();
+    } catch {
+        return null;
+    }
+};
+
+const refreshGoogleTokenOnce = async (): Promise<string | null> => {
+    if (typeof window === 'undefined') return null;
+    const clientId = getClientId();
+    if (!clientId) return null;
+
+    if (!tokenRefreshPromise) {
+        tokenRefreshPromise = (async () => {
+            try {
+                const { getValidToken } = await import('./googleAuth');
+                return await getValidToken(clientId);
+            } catch {
+                return null;
+            } finally {
+                tokenRefreshPromise = null;
+            }
+        })();
+    }
+
+    return tokenRefreshPromise;
+};
+
+const fetchWithTokenRefresh = async (
+    url: string,
+    init: RequestInit,
+    fallbackToken: string
+): Promise<{ response: Response; token: string }> => {
+    let activeToken = fallbackToken;
+
+    let response = await fetch(url, {
+        ...init,
+        headers: setBearerToken(init.headers, activeToken),
+    });
+
+    if (response.status !== 401) {
+        return { response, token: activeToken };
+    }
+
+    const storedToken = await getLatestStoredToken();
+    const canUseGoogleRefresh = !storedToken || storedToken === activeToken;
+    if (!canUseGoogleRefresh) {
+        return { response, token: activeToken };
+    }
+
+    const refreshed = await refreshGoogleTokenOnce();
+    if (!refreshed || refreshed === activeToken) {
+        return { response, token: activeToken };
+    }
+
+    response = await fetch(url, {
+        ...init,
+        headers: setBearerToken(init.headers, refreshed),
+    });
+
+    return { response, token: refreshed };
+};
+
 export const fetchProjects = async (token: string): Promise<Project[]> => {
     let projects: Project[] = [];
     let pageToken: string | undefined;
+    let activeToken = token;
 
     try {
         do {
@@ -27,11 +118,10 @@ export const fetchProjects = async (token: string): Promise<Project[]> => {
             url.searchParams.append('maxResults', '1000');
             if (pageToken) url.searchParams.append('pageToken', pageToken);
 
-            const response = await fetch(url.toString(), {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            });
+            const { response, token: nextToken } = await fetchWithTokenRefresh(url.toString(), {
+                headers: {},
+            }, activeToken);
+            activeToken = nextToken;
             if (!response.ok) throw new Error('Failed to fetch projects');
             const data = await response.json();
 
@@ -54,6 +144,7 @@ export const fetchProjects = async (token: string): Promise<Project[]> => {
 export const fetchDatasets = async (token: string, projectId: string): Promise<Dataset[]> => {
     let datasets: Dataset[] = [];
     let pageToken: string | undefined;
+    let activeToken = token;
 
     try {
         do {
@@ -61,11 +152,10 @@ export const fetchDatasets = async (token: string, projectId: string): Promise<D
             url.searchParams.append('maxResults', '1000');
             if (pageToken) url.searchParams.append('pageToken', pageToken);
 
-            const response = await fetch(url.toString(), {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            });
+            const { response, token: nextToken } = await fetchWithTokenRefresh(url.toString(), {
+                headers: {},
+            }, activeToken);
+            activeToken = nextToken;
             if (!response.ok) throw new Error('Failed to fetch datasets');
             const data = await response.json();
 
@@ -88,6 +178,7 @@ export const fetchDatasets = async (token: string, projectId: string): Promise<D
 export const fetchTables = async (token: string, projectId: string, datasetId: string): Promise<Table[]> => {
     let tables: Table[] = [];
     let pageToken: string | undefined;
+    let activeToken = token;
 
     try {
         // 1. Fetch tables list (to get IDs and pagination)
@@ -96,11 +187,10 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
             url.searchParams.append('maxResults', '1000');
             if (pageToken) url.searchParams.append('pageToken', pageToken);
 
-            const response = await fetch(url.toString(), {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            });
+            const { response, token: nextToken } = await fetchWithTokenRefresh(url.toString(), {
+                headers: {},
+            }, activeToken);
+            activeToken = nextToken;
             if (!response.ok) throw new Error('Failed to fetch tables');
             const data = await response.json();
 
@@ -119,14 +209,14 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
         // 2. Fetch row counts using __TABLES__ meta-table
         try {
             const query = `SELECT table_id, row_count FROM \`${projectId}.${datasetId}.__TABLES__\``;
-            const queryResponse = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
+            const { response: queryResponse, token: nextToken } = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({ query, useLegacySql: false }),
-            });
+            }, activeToken);
+            activeToken = nextToken;
 
             if (queryResponse.ok) {
                 const queryData = await queryResponse.json();
@@ -149,14 +239,14 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
         // 3. Fetch schemas using INFORMATION_SCHEMA.COLUMNS
         try {
             const schemaQuery = `SELECT table_name, column_name, data_type FROM \`${projectId}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\` ORDER BY table_name, ordinal_position`;
-            const schemaResponse = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
+            const { response: schemaResponse, token: nextToken } = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({ query: schemaQuery, useLegacySql: false }),
-            });
+            }, activeToken);
+            activeToken = nextToken;
 
             if (schemaResponse.ok) {
                 const schemaData = await schemaResponse.json();
@@ -186,10 +276,11 @@ export const fetchTables = async (token: string, projectId: string, datasetId: s
 }
 
 const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 1000): Promise<Response> => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
         // Enforce a 30s timeout if not present in options
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        timeoutId = setTimeout(() => controller.abort(), 30000);
 
         // If options.signal exists, we strictly should respect it, but we also want a timeout.
         // Merging signals is complex, so we'll just use the timeout if no signal, 
@@ -202,7 +293,15 @@ const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 
             finalOptions.signal = controller.signal;
         }
 
-        const response = await fetch(url, finalOptions).finally(() => clearTimeout(timeoutId));
+        let response: Response;
+        const bearerToken = getBearerToken(finalOptions.headers);
+        if (bearerToken) {
+            const authResult = await fetchWithTokenRefresh(url, finalOptions, bearerToken);
+            response = authResult.response;
+            finalOptions.headers = setBearerToken(finalOptions.headers, authResult.token);
+        } else {
+            response = await fetch(url, finalOptions);
+        }
 
         if (response.ok) return response;
 
@@ -222,6 +321,8 @@ const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 
             return fetchWithRetry(url, options, retries - 1, backoff * 2);
         }
         throw error;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
     }
 };
 
@@ -238,16 +339,16 @@ export const fetchTableData = async (
 ): Promise<{ rows: any[], schema: { name: string, type: string }[] }> => {
     try {
         const { limit, onPartialResults, signal } = options || {};
+        let activeToken = token;
         // console.log('🔍 fetchTableData: Starting fetch for', { projectId, datasetId, tableId, limit });
 
         const query = `SELECT * FROM \`${projectId}.${datasetId}.${tableId}\`${limit ? ` LIMIT ${limit}` : ''}`;
 
         // 1. Start the Query - Request a smaller initial batch for instant UI feedback
         const INITIAL_BATCH_SIZE = 50000;
-        let response = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
+        const firstQuery = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
             method: 'POST',
             headers: {
-                Authorization: `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
@@ -257,7 +358,9 @@ export const fetchTableData = async (
                 maxResults: limit ? Math.min(limit, INITIAL_BATCH_SIZE) : INITIAL_BATCH_SIZE
             }),
             signal
-        });
+        }, activeToken);
+        let response = firstQuery.response;
+        activeToken = firstQuery.token;
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
@@ -282,10 +385,12 @@ export const fetchTableData = async (
             pollUrl.searchParams.append('maxResults', (limit ? Math.min(limit, INITIAL_BATCH_SIZE) : INITIAL_BATCH_SIZE).toString());
             if (location) pollUrl.searchParams.append('location', location);
 
-            const pollResp = await fetch(pollUrl.toString(), {
-                headers: { Authorization: `Bearer ${token}` },
+            const pollResult = await fetchWithTokenRefresh(pollUrl.toString(), {
+                headers: {},
                 signal
-            });
+            }, activeToken);
+            const pollResp = pollResult.response;
+            activeToken = pollResult.token;
 
             if (!pollResp.ok) {
                 const err = await pollResp.json().catch(() => ({}));
@@ -369,10 +474,12 @@ export const fetchTableData = async (
             nextUrl.searchParams.append('maxResults', (limit ? Math.min(limit, INITIAL_BATCH_SIZE) : INITIAL_BATCH_SIZE).toString());
             if (location) nextUrl.searchParams.append('location', location);
 
-            const nextResp = await fetch(nextUrl.toString(), {
-                headers: { Authorization: `Bearer ${token}` },
+            const nextResult = await fetchWithTokenRefresh(nextUrl.toString(), {
+                headers: {},
                 signal
-            });
+            }, activeToken);
+            const nextResp = nextResult.response;
+            activeToken = nextResult.token;
 
             if (nextResp.ok) {
                 const nextData = await nextResp.json();
@@ -427,7 +534,7 @@ export const fetchTableData = async (
 
                     try {
                         const resp = await fetchWithRetry(chunkUrl.toString(), {
-                            headers: { Authorization: `Bearer ${token}` },
+                            headers: { Authorization: `Bearer ${activeToken}` },
                             signal
                         });
 
@@ -516,14 +623,14 @@ export const fetchTableData = async (
 export const fetchTableSchema = async (token: string, projectId: string, datasetId: string, tableId: string): Promise<{ name: string, type: string }[]> => {
     try {
         const query = `SELECT column_name, data_type FROM \`${projectId}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\` WHERE table_name = '${tableId}' ORDER BY ordinal_position`;
-        const response = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
+        const result = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
             method: 'POST',
             headers: {
-                Authorization: `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query, useLegacySql: false }),
-        });
+        }, token);
+        const response = result.response;
 
         if (!response.ok) throw new Error('Failed to fetch schema');
         const data = await response.json();
@@ -597,7 +704,8 @@ export const fetchAggregatedData = async (
             return `${expression} as \`${fieldName}\``;
         }),
         ...measures.map(m => {
-            const agg = m.aggregation.toUpperCase();
+            const normalizedAgg = normalizeAggregation(m.aggregation);
+            const agg = normalizedAgg.toUpperCase();
             // Use m.expression if provided
             const colRef = m.expression ? m.expression : formatColumnReference(m.field);
             let sqlAgg = '';
@@ -612,7 +720,7 @@ export const fetchAggregatedData = async (
                 case 'NONE': case 'RAW': sqlAgg = colRef; break;
                 default: sqlAgg = colRef; // Fallback
             }
-            return `${sqlAgg} as \`${m.field}_${m.aggregation}\``;
+            return `${sqlAgg} as \`${m.field}_${normalizedAgg}\``;
         })
     ];
 
@@ -667,7 +775,7 @@ export const fetchAggregatedData = async (
     // 3. Build GROUP BY clause
     // If no measures, we use SELECT DISTINCT to get unique dimension combinations
     // If has measures, we must GROUP BY dimensions
-    const hasMeasures = measures.some(m => m.aggregation !== 'none');
+    const hasMeasures = measures.some(m => normalizeAggregation(m.aggregation) !== 'none');
     let groupByClause = '';
     let distinctClause = '';
 
@@ -706,15 +814,17 @@ export const fetchAggregatedData = async (
 
 export const runQuery = async (token: string, projectId: string, query: string, signal?: AbortSignal): Promise<any[]> => {
     try {
-        const response = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
+        let activeToken = token;
+        const firstQuery = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
             method: 'POST',
             headers: {
-                Authorization: `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query, useLegacySql: false, timeoutMs: 30000, maxResults: 1000000 }),
             signal
-        });
+        }, activeToken);
+        const response = firstQuery.response;
+        activeToken = firstQuery.token;
 
         if (!response.ok) {
             const err = await response.json();
@@ -728,11 +838,12 @@ export const runQuery = async (token: string, projectId: string, query: string, 
             let waitTime = 1000;
             while (!data.jobComplete) {
                 await new Promise(resolve => setTimeout(resolve, waitTime));
-                const pollResp = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}${location ? `?location=${location}` : ''}`, {
-                    headers: { Authorization: `Bearer ${token}` },
+                const pollResult = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries/${jobId}${location ? `?location=${location}` : ''}`, {
+                    headers: {},
                     signal
-                });
-                data = await pollResp.json();
+                }, activeToken);
+                activeToken = pollResult.token;
+                data = await pollResult.response.json();
                 waitTime = Math.min(waitTime * 1.5, 5000);
             }
         }
@@ -1080,4 +1191,3 @@ export const fetchTableDataViaExport = async (
 
     return { rows: [], schema: [] };
 };
-

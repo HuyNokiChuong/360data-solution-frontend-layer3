@@ -9,6 +9,7 @@ import { connectGoogleSheetsOAuth, importGoogleSheetsData, updateGoogleSheetsSyn
 import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
 import { ConfirmationModal } from './components/ConfirmationModal';
+import { normalizeSchema } from './utils/schema';
 
 const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
@@ -71,7 +72,16 @@ const App: React.FC = () => {
     const d = (currentUser?.email || pendingUser?.email)?.split('@')[1];
     if (d) {
       const saved = localStorage.getItem(`${d}_tables`);
-      return saved ? JSON.parse(saved) : [];
+      if (!saved) return [];
+      try {
+        const parsed = JSON.parse(saved) as SyncedTable[];
+        return parsed.map((table) => ({
+          ...table,
+          schema: normalizeSchema(table?.schema || []),
+        }));
+      } catch (err) {
+        return [];
+      }
     }
     return [];
   });
@@ -127,6 +137,11 @@ const App: React.FC = () => {
   const [sidebarWidth, setSidebarWidth] = useState(256);
   const API_BASE = 'http://localhost:3001/api';
 
+  const normalizeSyncedTable = (table: SyncedTable): SyncedTable => ({
+    ...table,
+    schema: normalizeSchema(table?.schema || []),
+  });
+
   const syncConnectionsAndTables = async (tokenOverride?: string) => {
     const token = tokenOverride || localStorage.getItem('auth_token');
     if (!token) return;
@@ -134,6 +149,10 @@ const App: React.FC = () => {
     const connRes = await fetch(`${API_BASE}/connections`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
+    if (connRes.status === 401) {
+      handleLogout();
+      throw new Error('Invalid token');
+    }
     const connData = await connRes.json();
     if (!connData.success) {
       throw new Error(connData.message || 'Failed to sync connections');
@@ -154,7 +173,7 @@ const App: React.FC = () => {
     );
 
     const allTablesArrays = await Promise.all(tablePromises);
-    const allTables = allTablesArrays.flat();
+    const allTables = allTablesArrays.flat().map((table: SyncedTable) => normalizeSyncedTable(table));
     setTables(allTables);
   };
 
@@ -210,7 +229,7 @@ const App: React.FC = () => {
       };
 
       setConnections(load('connections', []));
-      setTables(load('tables', []));
+      setTables((load('tables', []) as SyncedTable[]).map((table) => normalizeSyncedTable(table)));
 
       // NEW: Sync from Backend
       const token = localStorage.getItem('auth_token');
@@ -223,7 +242,13 @@ const App: React.FC = () => {
         fetch('http://localhost:3001/api/users', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
-          .then(res => res.json())
+          .then(async res => {
+            if (res.status === 401) {
+              handleLogout();
+              throw new Error('Invalid token');
+            }
+            return res.json();
+          })
           .then(resData => { if (resData.success && resData.data.length > 0) setUsers(resData.data); })
           .catch(console.error);
 
@@ -232,7 +257,13 @@ const App: React.FC = () => {
         fetch('http://localhost:3001/api/sessions', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
-          .then(res => res.json())
+          .then(async res => {
+            if (res.status === 401) {
+              handleLogout();
+              throw new Error('Invalid token');
+            }
+            return res.json();
+          })
           .then(resData => {
             if (resData.success && resData.data.length > 0) {
               setReportSessions(resData.data);
@@ -310,7 +341,7 @@ const App: React.FC = () => {
   // PERSISTENCE: Sync sessions to backend when they change
   const prevSessionsRef = React.useRef<ReportSession[]>([]);
   useEffect(() => {
-    if (!isReady) return;
+    if (!isReady || !isAuthenticated || !currentUser) return;
     const token = localStorage.getItem('auth_token');
     if (!token) return;
 
@@ -325,7 +356,13 @@ const App: React.FC = () => {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ id: session.id, title: session.title })
         })
-          .then(r => r.json())
+          .then(async r => {
+            if (r.status === 401) {
+              handleLogout();
+              throw new Error('Invalid token');
+            }
+            return r.json();
+          })
           .then(resData => {
             if (resData.success && resData.data?.id !== session.id) {
               // Update local ID with backend UUID
@@ -341,6 +378,10 @@ const App: React.FC = () => {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify({ title: session.title })
+          }).then((r) => {
+            if (r.status === 401) {
+              handleLogout();
+            }
           }).catch(console.error);
         }
       }
@@ -353,12 +394,16 @@ const App: React.FC = () => {
         fetch(`http://localhost:3001/api/sessions/${prev.id}`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${token}` }
+        }).then((r) => {
+          if (r.status === 401) {
+            handleLogout();
+          }
         }).catch(console.error);
       }
     }
 
     prevSessionsRef.current = reportSessions;
-  }, [reportSessions, isReady]);
+  }, [reportSessions, isReady, isAuthenticated, currentUser]);
 
   useEffect(() => {
     if (!hasConnections && activeTab !== 'connections' && activeTab !== 'ai-config' && activeTab !== 'users' && activeTab !== 'onboarding') {
@@ -380,18 +425,7 @@ const App: React.FC = () => {
     // Helper: register or login on backend, returns { user, token }
     const backendAuth = async (authEmail: string, authPassword: string, authName: string): Promise<{ user: any; token: string } | null> => {
       try {
-        // Try register first
-        const regRes = await fetch('http://localhost:3001/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail, password: authPassword, name: authName })
-        });
-        const regData = await regRes.json();
-        if (regData.success && regData.data?.token) {
-          return { user: regData.data.user, token: regData.data.token };
-        }
-
-        // Already exists → login
+        // Try login first to avoid noisy 409 conflict when account already exists.
         const loginRes = await fetch('http://localhost:3001/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -401,7 +435,18 @@ const App: React.FC = () => {
         if (loginData.success && loginData.data?.token) {
           return { user: loginData.data.user, token: loginData.data.token };
         }
-        throw new Error(loginData.message || 'Auth failed');
+
+        // Not found yet (or first use) -> register then use returned token.
+        const regRes = await fetch('http://localhost:3001/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, password: authPassword, name: authName })
+        });
+        const regData = await regRes.json();
+        if (regData.success && regData.data?.token) {
+          return { user: regData.data.user, token: regData.data.token };
+        }
+        throw new Error(regData.message || loginData.message || 'Auth failed');
       } catch (err) {
         console.error('Backend auth error:', err);
         return null;
@@ -555,6 +600,8 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
     setIsAuthenticated(false);
     setCurrentUser(null);
     navigate('/');
@@ -1027,6 +1074,7 @@ const App: React.FC = () => {
                   onAddConnection={addConnection}
                   onCreateExcelConnection={createExcelConnection}
                   onCreateGoogleSheetsConnection={createGoogleSheetsConnection}
+                  onRefreshData={syncConnectionsAndTables}
                   onUpdateConnection={updateConnection}
                   onDeleteConnection={deleteConnection}
                   googleToken={googleToken}

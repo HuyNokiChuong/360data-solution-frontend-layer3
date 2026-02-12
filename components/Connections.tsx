@@ -1,6 +1,13 @@
 
 import React, { useState, useRef } from 'react';
-import { Connection, WarehouseType, SyncedTable } from '../types';
+import {
+  Connection,
+  WarehouseType,
+  SyncedTable,
+  PostgresConnectionConfig,
+  PostgresSchemaObject,
+  PostgresObjectColumns
+} from '../types';
 import { WAREHOUSE_OPTIONS, DISCOVERABLE_TABLES } from '../constants';
 import { getGoogleToken, initGoogleAuth, getServiceAccountToken, getGoogleAuthCode } from '../services/googleAuth';
 import { fetchProjects, fetchDatasets, fetchTables } from '../services/bigquery';
@@ -13,12 +20,34 @@ import {
   preflightGoogleSheetsImport,
   GoogleSheetSelectionInput
 } from '../services/googleSheets';
+import {
+  testPostgresConnection,
+  createPostgresConnection,
+  updatePostgresConnection,
+  listPostgresSchemas,
+  listPostgresObjects,
+  fetchPostgresColumnsBatch,
+  startPostgresImportJob,
+  getPostgresImportJob
+} from '../services/postgres';
 import { useLanguageStore } from '../store/languageStore';
 
 type SelectedGoogleSheet = {
   sheetId: number;
   sheetName: string;
   headerMode: 'first_row' | 'auto_columns';
+};
+
+type PostgresImportStage = 'idle' | 'connecting' | 'fetching_schema' | 'reading_table' | 'importing' | 'completed';
+
+type PostgresImportTableState = {
+  schemaName: string;
+  tableName: string;
+  objectType: 'table' | 'view';
+  incrementalColumn?: string;
+  incrementalKind?: 'timestamp' | 'id';
+  upsert?: boolean;
+  keyColumns?: string[];
 };
 
 interface ConnectionsProps {
@@ -38,6 +67,7 @@ interface ConnectionsProps {
     syncMode?: 'manual' | 'interval';
     syncIntervalMinutes?: number;
   }) => Promise<void>;
+  onRefreshData: () => Promise<void>;
   onUpdateConnection: (conn: Connection, selectedTables?: any[]) => void;
   onDeleteConnection: (id: string) => void;
   googleToken: string | null;
@@ -50,6 +80,7 @@ const Connections: React.FC<ConnectionsProps> = ({
   onAddConnection,
   onCreateExcelConnection,
   onCreateGoogleSheetsConnection,
+  onRefreshData,
   onUpdateConnection,
   onDeleteConnection,
   googleToken,
@@ -90,6 +121,31 @@ const Connections: React.FC<ConnectionsProps> = ({
   const [projectSearchTerm, setProjectSearchTerm] = useState('');
   const [connSearchTerm, setConnSearchTerm] = useState('');
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
+  const [postgresConnectionId, setPostgresConnectionId] = useState<string>('');
+  const [postgresConfig, setPostgresConfig] = useState<PostgresConnectionConfig & { password?: string }>({
+    host: '',
+    port: 5432,
+    databaseName: '',
+    username: '',
+    password: '',
+    ssl: false,
+    hasPassword: false,
+  });
+  const [postgresSchemas, setPostgresSchemas] = useState<string[]>([]);
+  const [selectedPostgresSchemas, setSelectedPostgresSchemas] = useState<string[]>([]);
+  const [postgresObjects, setPostgresObjects] = useState<PostgresSchemaObject[]>([]);
+  const [selectedPostgresObjectKeys, setSelectedPostgresObjectKeys] = useState<string[]>([]);
+  const [includePostgresViews, setIncludePostgresViews] = useState(false);
+  const [postgresSchemaSearch, setPostgresSchemaSearch] = useState('');
+  const [postgresObjectSearch, setPostgresObjectSearch] = useState('');
+  const [postgresObjectColumns, setPostgresObjectColumns] = useState<Record<string, PostgresObjectColumns>>({});
+  const [postgresImportMode, setPostgresImportMode] = useState<'full' | 'incremental'>('full');
+  const [postgresUpsertEnabled, setPostgresUpsertEnabled] = useState(true);
+  const [postgresIncrementalColumnMap, setPostgresIncrementalColumnMap] = useState<Record<string, string>>({});
+  const [postgresKeyColumnsMap, setPostgresKeyColumnsMap] = useState<Record<string, string[]>>({});
+  const [postgresImportStage, setPostgresImportStage] = useState<PostgresImportStage>('idle');
+  const [postgresImportJobId, setPostgresImportJobId] = useState<string>('');
+  const [postgresImportError, setPostgresImportError] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const excelFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -129,6 +185,60 @@ const Connections: React.FC<ConnectionsProps> = ({
     (table.dataset && table.dataset.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
+  const postgresObjectKey = (schemaName: string, tableName: string) => `${schemaName}.${tableName}`;
+
+  const selectedPostgresObjects = postgresObjects.filter((obj) =>
+    selectedPostgresObjectKeys.includes(postgresObjectKey(obj.schemaName, obj.tableName))
+  );
+
+  const filteredPostgresSchemas = postgresSchemas.filter((schemaName) =>
+    schemaName.toLowerCase().includes(postgresSchemaSearch.toLowerCase())
+  );
+
+  const filteredPostgresObjects = postgresObjects.filter((obj) => {
+    const key = postgresObjectKey(obj.schemaName, obj.tableName);
+    const keyword = `${obj.schemaName}.${obj.tableName}`.toLowerCase();
+    return keyword.includes(postgresObjectSearch.toLowerCase())
+      && (selectedPostgresSchemas.length === 0 || selectedPostgresSchemas.includes(obj.schemaName))
+      && (includePostgresViews || obj.objectType !== 'view')
+      && (key.length > 0);
+  });
+
+  const allFilteredPostgresObjectsSelected = filteredPostgresObjects.length > 0
+    && filteredPostgresObjects.every((obj) =>
+      selectedPostgresObjectKeys.includes(postgresObjectKey(obj.schemaName, obj.tableName))
+    );
+
+  const postgresStages: { key: PostgresImportStage; label: string }[] = [
+    { key: 'connecting', label: 'Connecting' },
+    { key: 'fetching_schema', label: 'Fetching schema' },
+    { key: 'reading_table', label: 'Reading table' },
+    { key: 'importing', label: 'Importing' },
+    { key: 'completed', label: 'Completed' },
+  ];
+
+  const getIncrementalKindFromType = (typeName: string): 'timestamp' | 'id' | null => {
+    const lowered = String(typeName || '').toLowerCase();
+    if (lowered.includes('timestamp') || lowered.includes('date') || lowered.includes('time')) return 'timestamp';
+    if (lowered.includes('int') || lowered.includes('numeric') || lowered.includes('decimal') || lowered.includes('serial')) return 'id';
+    return null;
+  };
+
+  const getIncrementalCandidates = (columns: { name: string; type: string }[] = []) =>
+    columns.filter((column) => getIncrementalKindFromType(column.type) !== null);
+
+  const isPostgresIncrementalSelectionValid = selectedPostgresObjects.every((object) => {
+    const key = postgresObjectKey(object.schemaName, object.tableName);
+    const selectedIncrementalColumn = postgresIncrementalColumnMap[key];
+    if (!selectedIncrementalColumn) return false;
+
+    if (!postgresUpsertEnabled) return true;
+    const metadata = postgresObjectColumns[key];
+    const primaryKeyColumns = metadata?.primaryKeyColumns || [];
+    const fallbackKeyColumns = postgresKeyColumnsMap[key] || [];
+    return primaryKeyColumns.length > 0 || fallbackKeyColumns.length > 0;
+  });
+
   const toggleTable = (tableName: string) => {
     setSelectedTables(prev =>
       prev.includes(tableName)
@@ -153,13 +263,25 @@ const Connections: React.FC<ConnectionsProps> = ({
     }
   };
 
+  const handleSelectAllPostgresObjects = () => {
+    const filteredKeys = filteredPostgresObjects.map((obj) => postgresObjectKey(obj.schemaName, obj.tableName));
+    const areAllSelected = filteredKeys.length > 0 && filteredKeys.every((key) => selectedPostgresObjectKeys.includes(key));
+
+    if (areAllSelected) {
+      setSelectedPostgresObjectKeys((prev) => prev.filter((key) => !filteredKeys.includes(key)));
+      return;
+    }
+
+    setSelectedPostgresObjectKeys((prev) => Array.from(new Set([...prev, ...filteredKeys])));
+  };
+
   const handleOpenWizard = (conn?: Connection) => {
     if (conn) {
       setEditingConnId(conn.id);
       setTempConn(conn);
       setStep(1);
-      setAuthSuccess(true);
-      setSelectedContext(MOCK_CONTEXTS[conn.type][0]);
+      setAuthSuccess(conn.type !== 'PostgreSQL');
+      setSelectedContext(conn.type === 'BigQuery' ? (MOCK_CONTEXTS[conn.type][0] || '') : '');
       setExcelFile(null);
       setExcelSheets([]);
       setSelectedExcelSheets([]);
@@ -176,6 +298,32 @@ const Connections: React.FC<ConnectionsProps> = ({
       setGoogleSyncMode('manual');
       setGoogleSyncIntervalMinutes(15);
       setGoogleFlowStage('idle');
+      const pgConfig = conn.type === 'PostgreSQL' ? (conn.config?.postgres || null) : null;
+      setPostgresConnectionId(conn.type === 'PostgreSQL' ? conn.id : '');
+      setPostgresConfig({
+        host: pgConfig?.host || '',
+        port: pgConfig?.port || 5432,
+        databaseName: pgConfig?.databaseName || '',
+        username: pgConfig?.username || '',
+        password: '',
+        ssl: pgConfig?.ssl === true,
+        hasPassword: pgConfig?.hasPassword || false,
+      });
+      setPostgresSchemas([]);
+      setSelectedPostgresSchemas([]);
+      setPostgresObjects([]);
+      setSelectedPostgresObjectKeys([]);
+      setIncludePostgresViews(false);
+      setPostgresSchemaSearch('');
+      setPostgresObjectSearch('');
+      setPostgresObjectColumns({});
+      setPostgresImportMode('full');
+      setPostgresUpsertEnabled(true);
+      setPostgresIncrementalColumnMap({});
+      setPostgresKeyColumnsMap({});
+      setPostgresImportStage('idle');
+      setPostgresImportJobId('');
+      setPostgresImportError('');
     } else {
       setEditingConnId(null);
       setTempConn({ name: '', type: 'BigQuery', authType: 'ServiceAccount' });
@@ -208,6 +356,31 @@ const Connections: React.FC<ConnectionsProps> = ({
       setGoogleSyncMode('manual');
       setGoogleSyncIntervalMinutes(15);
       setGoogleFlowStage('idle');
+      setPostgresConnectionId('');
+      setPostgresConfig({
+        host: '',
+        port: 5432,
+        databaseName: '',
+        username: '',
+        password: '',
+        ssl: false,
+        hasPassword: false,
+      });
+      setPostgresSchemas([]);
+      setSelectedPostgresSchemas([]);
+      setPostgresObjects([]);
+      setSelectedPostgresObjectKeys([]);
+      setIncludePostgresViews(false);
+      setPostgresSchemaSearch('');
+      setPostgresObjectSearch('');
+      setPostgresObjectColumns({});
+      setPostgresImportMode('full');
+      setPostgresUpsertEnabled(true);
+      setPostgresIncrementalColumnMap({});
+      setPostgresKeyColumnsMap({});
+      setPostgresImportStage('idle');
+      setPostgresImportJobId('');
+      setPostgresImportError('');
     }
     setSearchTerm('');
     setIsWizardOpen(true);
@@ -425,6 +598,213 @@ const Connections: React.FC<ConnectionsProps> = ({
     }
   };
 
+  const updatePostgresConfigField = (field: keyof (PostgresConnectionConfig & { password?: string }), value: string | number | boolean) => {
+    setPostgresConfig((prev) => ({
+      ...prev,
+      [field]: value
+    }));
+    setAuthSuccess(false);
+    if (postgresImportStage === 'completed') {
+      setPostgresImportStage('idle');
+    }
+  };
+
+  const togglePostgresSchema = (schemaName: string) => {
+    setSelectedPostgresSchemas((prev) =>
+      prev.includes(schemaName)
+        ? prev.filter((item) => item !== schemaName)
+        : [...prev, schemaName]
+    );
+  };
+
+  const togglePostgresObject = (schemaName: string, tableName: string) => {
+    const key = postgresObjectKey(schemaName, tableName);
+    setSelectedPostgresObjectKeys((prev) =>
+      prev.includes(key)
+        ? prev.filter((item) => item !== key)
+        : [...prev, key]
+    );
+  };
+
+  const togglePostgresKeyColumn = (objectKey: string, columnName: string) => {
+    setPostgresKeyColumnsMap((prev) => {
+      const current = prev[objectKey] || [];
+      const next = current.includes(columnName)
+        ? current.filter((item) => item !== columnName)
+        : [...current, columnName];
+      return {
+        ...prev,
+        [objectKey]: next
+      };
+    });
+  };
+
+  const loadPostgresObjectsForSchemas = async (connectionId: string, schemaNames: string[], includeViews: boolean) => {
+    if (!connectionId || schemaNames.length === 0) {
+      setPostgresObjects([]);
+      setSelectedPostgresObjectKeys([]);
+      return;
+    }
+
+    const objects = await listPostgresObjects(connectionId, schemaNames, includeViews);
+    setPostgresObjects(objects);
+    setSelectedPostgresObjectKeys((prev) =>
+      prev.filter((key) => objects.some((obj) => postgresObjectKey(obj.schemaName, obj.tableName) === key))
+    );
+  };
+
+  const handleTestPostgres = async () => {
+    try {
+      setIsAuthenticating(true);
+      setPostgresImportStage('connecting');
+      setPostgresImportError('');
+
+      const connectionId = postgresConnectionId || editingConnId || undefined;
+      await testPostgresConnection({
+        connectionId,
+        config: {
+          host: postgresConfig.host,
+          port: Number(postgresConfig.port || 5432),
+          databaseName: postgresConfig.databaseName,
+          username: postgresConfig.username,
+          password: postgresConfig.password || '',
+          ssl: postgresConfig.ssl === true
+        }
+      });
+      setAuthSuccess(true);
+      setPostgresImportStage('completed');
+    } catch (error: any) {
+      setAuthSuccess(false);
+      setPostgresImportStage('idle');
+      setPostgresImportError(error.message || 'Failed to test PostgreSQL connection');
+      alert(error.message || 'Failed to test PostgreSQL connection');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handlePostgresSaveAndContinue = async () => {
+    try {
+      if (!authSuccess) {
+        alert('Please test the PostgreSQL connection first.');
+        return;
+      }
+
+      setIsAuthenticating(true);
+      setPostgresImportStage('fetching_schema');
+      setPostgresImportError('');
+
+      const payload = {
+        name: tempConn.name || 'PostgreSQL Connection',
+        config: {
+          host: postgresConfig.host,
+          port: Number(postgresConfig.port || 5432),
+          databaseName: postgresConfig.databaseName,
+          username: postgresConfig.username,
+          password: postgresConfig.password || '',
+          ssl: postgresConfig.ssl === true
+        }
+      };
+
+      const savedConnection = (editingConnId || postgresConnectionId)
+        ? await updatePostgresConnection(editingConnId || postgresConnectionId, payload)
+        : await createPostgresConnection(payload);
+
+      setPostgresConnectionId(savedConnection.id);
+      setTempConn((prev) => ({
+        ...prev,
+        id: savedConnection.id,
+        type: 'PostgreSQL',
+        authType: 'Password',
+        status: 'Connected',
+      }));
+
+      const schemas = await listPostgresSchemas(savedConnection.id);
+      setPostgresSchemas(schemas);
+      const defaultSchemas = schemas.length > 0 ? [schemas[0]] : [];
+      setSelectedPostgresSchemas(defaultSchemas);
+      await loadPostgresObjectsForSchemas(savedConnection.id, defaultSchemas, includePostgresViews);
+      setStep(3);
+      setPostgresImportStage('idle');
+    } catch (error: any) {
+      setPostgresImportError(error.message || 'Failed to save PostgreSQL connection');
+      alert(error.message || 'Failed to save PostgreSQL connection');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handlePreparePostgresImport = async () => {
+    if (!postgresConnectionId) {
+      throw new Error('PostgreSQL connection is not initialized');
+    }
+    if (selectedPostgresObjects.length === 0) {
+      throw new Error('Please select at least one schema.table');
+    }
+
+    const metadata = await fetchPostgresColumnsBatch(postgresConnectionId, selectedPostgresObjects);
+    const metadataMap: Record<string, PostgresObjectColumns> = {};
+    const defaultIncrementalMap: Record<string, string> = {};
+    const defaultKeyMap: Record<string, string[]> = {};
+
+    metadata.forEach((item) => {
+      const key = postgresObjectKey(item.schemaName, item.tableName);
+      metadataMap[key] = item;
+      const candidates = getIncrementalCandidates((item.columns || []).map((column) => ({ name: column.name, type: column.type })));
+      const preferred = candidates.find((column) => ['updated_at', 'modified_at', 'id'].includes(column.name.toLowerCase()))
+        || candidates[0];
+      if (preferred) {
+        defaultIncrementalMap[key] = preferred.name;
+      }
+      if ((item.primaryKeyColumns || []).length > 0) {
+        defaultKeyMap[key] = item.primaryKeyColumns;
+      }
+    });
+
+    setPostgresObjectColumns(metadataMap);
+    setPostgresIncrementalColumnMap((prev) => ({ ...defaultIncrementalMap, ...prev }));
+    setPostgresKeyColumnsMap((prev) => ({ ...defaultKeyMap, ...prev }));
+  };
+
+  React.useEffect(() => {
+    let disposed = false;
+    const shouldLoad = step === 3 && tempConn.type === 'PostgreSQL' && !!postgresConnectionId;
+    if (!shouldLoad) return () => { disposed = true; };
+
+    const schemaNames = selectedPostgresSchemas;
+    if (schemaNames.length === 0) {
+      setPostgresObjects([]);
+      setSelectedPostgresObjectKeys([]);
+      return () => { disposed = true; };
+    }
+
+    const run = async () => {
+      try {
+        setIsAuthenticating(true);
+        setPostgresImportStage('fetching_schema');
+        const objects = await listPostgresObjects(postgresConnectionId, schemaNames, includePostgresViews);
+        if (disposed) return;
+        setPostgresObjects(objects);
+        setSelectedPostgresObjectKeys((prev) =>
+          prev.filter((key) => objects.some((obj) => postgresObjectKey(obj.schemaName, obj.tableName) === key))
+        );
+      } catch (error: any) {
+        if (disposed) return;
+        setPostgresImportError(error.message || 'Failed to fetch PostgreSQL objects');
+      } finally {
+        if (!disposed) {
+          setIsAuthenticating(false);
+          setPostgresImportStage('idle');
+        }
+      }
+    };
+
+    run();
+    return () => {
+      disposed = true;
+    };
+  }, [step, tempConn.type, postgresConnectionId, selectedPostgresSchemas, includePostgresViews]);
+
   const handleSave = async () => {
     if (tempConn.type === 'Excel') {
       if (!excelFile) {
@@ -451,8 +831,40 @@ const Connections: React.FC<ConnectionsProps> = ({
       }
     }
 
+    if (tempConn.type === 'PostgreSQL') {
+      if (!postgresConnectionId) {
+        alert('Please save PostgreSQL connection details first.');
+        return;
+      }
+      if (selectedPostgresObjects.length === 0) {
+        alert('Please select at least one table/view to import.');
+        return;
+      }
+
+      if (postgresImportMode === 'incremental') {
+        for (const object of selectedPostgresObjects) {
+          const key = postgresObjectKey(object.schemaName, object.tableName);
+          const selectedIncrementalColumn = postgresIncrementalColumnMap[key];
+          if (!selectedIncrementalColumn) {
+            alert(`Incremental column is required for ${object.schemaName}.${object.tableName}`);
+            return;
+          }
+
+          if (postgresUpsertEnabled) {
+            const metadata = postgresObjectColumns[key];
+            const pkColumns = metadata?.primaryKeyColumns || [];
+            const userKeyColumns = postgresKeyColumnsMap[key] || [];
+            if (pkColumns.length === 0 && userKeyColumns.length === 0) {
+              alert(`Please choose key columns for upsert on ${object.schemaName}.${object.tableName}`);
+              return;
+            }
+          }
+        }
+      }
+    }
+
     const connId =
-      (tempConn.type === 'GoogleSheets' ? googleSheetsConnectionId : null) ||
+      (tempConn.type === 'GoogleSheets' ? googleSheetsConnectionId : tempConn.type === 'PostgreSQL' ? postgresConnectionId : null) ||
       editingConnId ||
       `conn-${Date.now()}`;
 
@@ -488,7 +900,63 @@ const Connections: React.FC<ConnectionsProps> = ({
     };
 
     try {
-      if (tempConn.type === 'Excel') {
+      if (tempConn.type === 'PostgreSQL') {
+        setIsAuthenticating(true);
+        setPostgresImportStage('connecting');
+        setPostgresImportError('');
+
+        const tablesPayload: PostgresImportTableState[] = selectedPostgresObjects.map((object) => {
+          const key = postgresObjectKey(object.schemaName, object.tableName);
+          const metadata = postgresObjectColumns[key];
+          const selectedColumnName = postgresIncrementalColumnMap[key];
+          const selectedColumn = (metadata?.columns || []).find((column) => column.name === selectedColumnName);
+          const inferredKind = selectedColumn ? getIncrementalKindFromType(selectedColumn.type) : null;
+          const pkColumns = metadata?.primaryKeyColumns || [];
+          const fallbackKeyColumns = postgresKeyColumnsMap[key] || [];
+
+          return {
+            schemaName: object.schemaName,
+            tableName: object.tableName,
+            objectType: object.objectType,
+            incrementalColumn: postgresImportMode === 'incremental' ? selectedColumnName : undefined,
+            incrementalKind: postgresImportMode === 'incremental' ? (inferredKind || 'id') : undefined,
+            upsert: postgresImportMode === 'incremental' ? postgresUpsertEnabled : false,
+            keyColumns: postgresImportMode === 'incremental'
+              ? (pkColumns.length > 0 ? pkColumns : fallbackKeyColumns)
+              : undefined
+          };
+        });
+
+        const job = await startPostgresImportJob(postgresConnectionId, {
+          importMode: postgresImportMode,
+          batchSize: 500,
+          tables: tablesPayload
+        });
+        setPostgresImportJobId(job.id);
+        setPostgresImportStage(job.stage as PostgresImportStage);
+
+        let latestJob = job;
+        const startedAt = Date.now();
+        const timeoutMs = 30 * 60 * 1000;
+
+        while (latestJob.status === 'queued' || latestJob.status === 'running') {
+          if (Date.now() - startedAt > timeoutMs) {
+            throw new Error('PostgreSQL import job timed out while waiting for completion');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          latestJob = await getPostgresImportJob(postgresConnectionId, job.id);
+          setPostgresImportStage(latestJob.stage as PostgresImportStage);
+          setPostgresImportError(latestJob.errorMessage || '');
+        }
+
+        if (latestJob.status !== 'success') {
+          throw new Error(latestJob.errorMessage || 'PostgreSQL import failed');
+        }
+
+        setPostgresImportStage('completed');
+        await onRefreshData();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      } else if (tempConn.type === 'Excel') {
         setIsAuthenticating(true);
         setImportStage('importing');
         await onCreateExcelConnection(
@@ -575,6 +1043,9 @@ const Connections: React.FC<ConnectionsProps> = ({
       setIsAuthenticating(false);
       setImportStage('idle');
       setGoogleFlowStage('idle');
+      if (tempConn.type !== 'PostgreSQL') {
+        setPostgresImportStage('idle');
+      }
     }
   };
 
@@ -599,6 +1070,31 @@ const Connections: React.FC<ConnectionsProps> = ({
     setGoogleSyncMode('manual');
     setGoogleSyncIntervalMinutes(15);
     setGoogleFlowStage('idle');
+    setPostgresConnectionId('');
+    setPostgresConfig({
+      host: '',
+      port: 5432,
+      databaseName: '',
+      username: '',
+      password: '',
+      ssl: false,
+      hasPassword: false,
+    });
+    setPostgresSchemas([]);
+    setSelectedPostgresSchemas([]);
+    setPostgresObjects([]);
+    setSelectedPostgresObjectKeys([]);
+    setIncludePostgresViews(false);
+    setPostgresSchemaSearch('');
+    setPostgresObjectSearch('');
+    setPostgresObjectColumns({});
+    setPostgresImportMode('full');
+    setPostgresUpsertEnabled(true);
+    setPostgresIncrementalColumnMap({});
+    setPostgresKeyColumnsMap({});
+    setPostgresImportStage('idle');
+    setPostgresImportJobId('');
+    setPostgresImportError('');
     if (excelFileInputRef.current) {
       excelFileInputRef.current.value = '';
     }
@@ -868,6 +1364,127 @@ const Connections: React.FC<ConnectionsProps> = ({
       </div>
     );
 
+    const renderPostgresForm = () => (
+      <div className="space-y-6 animate-in fade-in">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {postgresStages.map((stage) => {
+            const isActive = postgresImportStage === stage.key;
+            return (
+              <div
+                key={stage.key}
+                className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest text-center ${isActive
+                  ? 'border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-600/10'
+                  : 'border-slate-200 dark:border-white/10 text-slate-400'
+                  }`}
+              >
+                {stage.label}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-4 gap-4">
+          <div className="col-span-3">
+            <label className={labelClass}>Host</label>
+            <input
+              className={inputClass}
+              value={postgresConfig.host}
+              onChange={(e) => updatePostgresConfigField('host', e.target.value)}
+              placeholder="db.example.com"
+            />
+          </div>
+          <div className="col-span-1">
+            <label className={labelClass}>Port</label>
+            <input
+              className={inputClass}
+              value={postgresConfig.port}
+              onChange={(e) => updatePostgresConfigField('port', Number(e.target.value || 5432))}
+              placeholder="5432"
+              type="number"
+              min={1}
+              max={65535}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className={labelClass}>Database Name</label>
+            <input
+              className={inputClass}
+              value={postgresConfig.databaseName}
+              onChange={(e) => updatePostgresConfigField('databaseName', e.target.value)}
+              placeholder="analytics_db"
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Username</label>
+            <input
+              className={inputClass}
+              value={postgresConfig.username}
+              onChange={(e) => updatePostgresConfigField('username', e.target.value)}
+              placeholder="readonly_user"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className={labelClass}>
+              Password {postgresConfig.hasPassword ? '(leave blank to keep existing)' : ''}
+            </label>
+            <input
+              type="password"
+              className={inputClass}
+              value={postgresConfig.password || ''}
+              onChange={(e) => updatePostgresConfigField('password', e.target.value)}
+              placeholder={postgresConfig.hasPassword ? '•••••••• (saved)' : '••••••••'}
+            />
+          </div>
+          <div className="flex items-end">
+            <label className="w-full flex items-center justify-between px-4 py-4 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30">
+              <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Use SSL</span>
+              <input
+                type="checkbox"
+                checked={postgresConfig.ssl === true}
+                onChange={(e) => updatePostgresConfigField('ssl', e.target.checked)}
+                className="w-4 h-4"
+              />
+            </label>
+          </div>
+        </div>
+
+        {postgresImportError && (
+          <div className="p-4 bg-red-500/5 border border-red-500/20 rounded-2xl">
+            <p className="text-[11px] text-red-500">{postgresImportError}</p>
+          </div>
+        )}
+
+        {authSuccess && (
+          <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+            <p className="text-[11px] text-emerald-500 font-bold">Connection test passed. You can now Save & Continue.</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-4">
+          <button
+            onClick={handleTestPostgres}
+            disabled={isAuthenticating}
+            className="w-full py-4 bg-slate-900 dark:bg-white text-white dark:text-black rounded-2xl font-black text-xs uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-40"
+          >
+            {isAuthenticating ? <i className="fas fa-circle-notch animate-spin"></i> : 'Test Connection'}
+          </button>
+          <button
+            onClick={handlePostgresSaveAndContinue}
+            disabled={!authSuccess || isAuthenticating}
+            className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40"
+          >
+            Save & Continue
+          </button>
+        </div>
+      </div>
+    );
+
     const renderSQLForm = () => (
       <div className="space-y-6 animate-in fade-in">
         <div className="flex gap-4 p-1 bg-black/30 rounded-2xl border border-white/5">
@@ -1036,6 +1653,7 @@ const Connections: React.FC<ConnectionsProps> = ({
     switch (tempConn.type) {
       case 'BigQuery': return renderBigQueryForm();
       case 'Snowflake': return renderSnowflakeForm();
+      case 'PostgreSQL': return renderPostgresForm();
       case 'Excel': return renderExcelForm();
       case 'GoogleSheets': return renderSheetsForm();
       default: return renderSQLForm();
@@ -1203,7 +1821,9 @@ const Connections: React.FC<ConnectionsProps> = ({
                           onClick={() => setTempConn({
                             ...tempConn,
                             type: opt.id as WarehouseType,
-                            authType: opt.id === 'Excel' ? 'Password' : (tempConn.authType || 'GoogleMail')
+                            authType: opt.id === 'BigQuery'
+                              ? 'ServiceAccount'
+                              : (opt.id === 'Excel' || opt.id === 'PostgreSQL' ? 'Password' : 'GoogleMail')
                           })}
                           className={`flex flex-col items-center gap-4 p-6 rounded-[2rem] border-2 transition-all group ${tempConn.type === opt.id ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/5' : 'border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] hover:border-slate-200 dark:hover:border-white/10'
                             } ${editingConnId && tempConn.type !== opt.id ? 'opacity-20 cursor-not-allowed' : ''}`}
@@ -1328,6 +1948,200 @@ const Connections: React.FC<ConnectionsProps> = ({
                           Tabs loaded: <span className="font-bold">{googleTabs.length}</span>
                         </div>
                       )}
+                    </div>
+                  ) : tempConn.type === 'PostgreSQL' ? (
+                    <div className="space-y-6 animate-in slide-in-from-right-4">
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        {postgresStages.map((stage) => (
+                          <div
+                            key={stage.key}
+                            className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest text-center ${postgresImportStage === stage.key
+                              ? 'border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-600/10'
+                              : 'border-slate-200 dark:border-white/10 text-slate-400'
+                              }`}
+                          >
+                            {stage.label}
+                          </div>
+                        ))}
+                      </div>
+
+                      {postgresImportError && (
+                        <div className="p-4 bg-red-500/5 border border-red-500/20 rounded-2xl">
+                          <p className="text-[11px] text-red-500">{postgresImportError}</p>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="p-5 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Schemas</h4>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                              {selectedPostgresSchemas.length} selected
+                            </span>
+                          </div>
+
+                          <div className="relative">
+                            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                            <input
+                              type="text"
+                              value={postgresSchemaSearch}
+                              onChange={(e) => setPostgresSchemaSearch(e.target.value)}
+                              placeholder="Filter schemas..."
+                              className="w-full bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-3 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
+                            />
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setSelectedPostgresSchemas([...postgresSchemas])}
+                              disabled={postgresSchemas.length === 0}
+                              className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-40"
+                            >
+                              Select All
+                            </button>
+                            <button
+                              onClick={() => setSelectedPostgresSchemas([])}
+                              disabled={selectedPostgresSchemas.length === 0}
+                              className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-40"
+                            >
+                              Clear
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                            {filteredPostgresSchemas.length === 0 ? (
+                              <div className="text-center py-10 border border-dashed border-slate-200 dark:border-white/10 rounded-2xl text-slate-400 text-sm">
+                                No schemas found
+                              </div>
+                            ) : (
+                              filteredPostgresSchemas.map((schemaName) => {
+                                const selected = selectedPostgresSchemas.includes(schemaName);
+                                return (
+                                  <button
+                                    key={schemaName}
+                                    onClick={() => togglePostgresSchema(schemaName)}
+                                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${selected
+                                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                      : 'border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-400'
+                                      }`}
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <span className={`font-bold text-sm ${selected ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
+                                        {schemaName}
+                                      </span>
+                                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 dark:border-white/20'}`}>
+                                        {selected && <i className="fas fa-check text-[9px] text-white"></i>}
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-5 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30 space-y-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Tables & Views</h4>
+                            <button
+                              onClick={async () => {
+                                if (!postgresConnectionId || selectedPostgresSchemas.length === 0) return;
+                                try {
+                                  setIsAuthenticating(true);
+                                  setPostgresImportStage('fetching_schema');
+                                  setPostgresImportError('');
+                                  await loadPostgresObjectsForSchemas(postgresConnectionId, selectedPostgresSchemas, includePostgresViews);
+                                } catch (error: any) {
+                                  setPostgresImportError(error.message || 'Failed to refresh PostgreSQL objects');
+                                } finally {
+                                  setIsAuthenticating(false);
+                                  setPostgresImportStage('idle');
+                                }
+                              }}
+                              disabled={!postgresConnectionId || selectedPostgresSchemas.length === 0 || isAuthenticating}
+                              className="px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-40"
+                            >
+                              <i className={`fas ${isAuthenticating ? 'fa-circle-notch animate-spin' : 'fa-rotate'} mr-2`}></i>
+                              Refresh
+                            </button>
+                          </div>
+
+                          <label className="flex items-center justify-between px-4 py-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-black/30">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Include Views</span>
+                            <input
+                              type="checkbox"
+                              checked={includePostgresViews}
+                              onChange={(e) => setIncludePostgresViews(e.target.checked)}
+                              className="w-4 h-4"
+                            />
+                          </label>
+
+                          <div className="relative">
+                            <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                            <input
+                              type="text"
+                              value={postgresObjectSearch}
+                              onChange={(e) => setPostgresObjectSearch(e.target.value)}
+                              placeholder="Filter schema.table..."
+                              className="w-full bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-3 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <button
+                              onClick={handleSelectAllPostgresObjects}
+                              disabled={filteredPostgresObjects.length === 0}
+                              className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-40"
+                            >
+                              {allFilteredPostgresObjectsSelected ? 'Deselect Filtered' : 'Select Filtered'}
+                            </button>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-indigo-500">
+                              {selectedPostgresObjectKeys.length} selected
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                            {selectedPostgresSchemas.length === 0 ? (
+                              <div className="text-center py-10 border border-dashed border-slate-200 dark:border-white/10 rounded-2xl text-slate-400 text-sm">
+                                Select at least one schema
+                              </div>
+                            ) : filteredPostgresObjects.length === 0 ? (
+                              <div className="text-center py-10 border border-dashed border-slate-200 dark:border-white/10 rounded-2xl text-slate-400 text-sm">
+                                No objects found
+                              </div>
+                            ) : (
+                              filteredPostgresObjects.map((object) => {
+                                const key = postgresObjectKey(object.schemaName, object.tableName);
+                                const selected = selectedPostgresObjectKeys.includes(key);
+                                return (
+                                  <button
+                                    key={key}
+                                    onClick={() => togglePostgresObject(object.schemaName, object.tableName)}
+                                    className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${selected
+                                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                      : 'border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-400'
+                                      }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div>
+                                        <div className={`font-bold text-sm ${selected ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
+                                          {object.schemaName}.{object.tableName}
+                                        </div>
+                                        <div className="text-[10px] uppercase tracking-widest text-slate-400 mt-1">
+                                          {object.objectType}
+                                        </div>
+                                      </div>
+                                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 dark:border-white/20'}`}>
+                                        {selected && <i className="fas fa-check text-[9px] text-white"></i>}
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   ) : (
                     <>
@@ -1617,6 +2431,204 @@ const Connections: React.FC<ConnectionsProps> = ({
                         )}
                       </div>
                     </>
+                  ) : tempConn.type === 'PostgreSQL' ? (
+                    <>
+                      <div className="space-y-5 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                          {postgresStages.map((stage) => (
+                            <div
+                              key={stage.key}
+                              className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest text-center ${postgresImportStage === stage.key
+                                ? 'border-indigo-600 text-indigo-500 bg-indigo-50 dark:bg-indigo-600/10'
+                                : 'border-slate-200 dark:border-white/10 text-slate-400'
+                                }`}
+                            >
+                              {stage.label}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <button
+                            onClick={() => setPostgresImportMode('full')}
+                            className={`px-4 py-3 rounded-2xl border-2 text-left transition-all ${postgresImportMode === 'full'
+                              ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                              : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30'
+                              }`}
+                          >
+                            <div className="text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-1">Full Import</div>
+                            <p className="text-[11px] text-slate-500">Snapshot toàn bộ table tại thời điểm import.</p>
+                          </button>
+                          <button
+                            onClick={() => setPostgresImportMode('incremental')}
+                            className={`px-4 py-3 rounded-2xl border-2 text-left transition-all ${postgresImportMode === 'incremental'
+                              ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                              : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30'
+                              }`}
+                          >
+                            <div className="text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-1">Incremental Import</div>
+                            <p className="text-[11px] text-slate-500">Sync theo watermark cột timestamp hoặc ID.</p>
+                          </button>
+                        </div>
+
+                        {postgresImportMode === 'incremental' && (
+                          <label className="flex items-center justify-between px-4 py-3 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Enable Upsert</span>
+                            <input
+                              type="checkbox"
+                              checked={postgresUpsertEnabled}
+                              onChange={(e) => setPostgresUpsertEnabled(e.target.checked)}
+                              className="w-4 h-4"
+                            />
+                          </label>
+                        )}
+
+                        <div className="flex items-center justify-between">
+                          <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-1.5 rounded-full border border-indigo-100 dark:border-indigo-500/20">
+                            {selectedPostgresObjects.length} Tables Selected
+                          </div>
+                          {postgresImportJobId && (
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              Job: {postgresImportJobId}
+                            </div>
+                          )}
+                        </div>
+
+                        {postgresImportError && (
+                          <div className="p-4 bg-red-500/5 border border-red-500/20 rounded-2xl">
+                            <p className="text-[11px] text-red-500">{postgresImportError}</p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 overflow-y-auto pr-2 custom-scrollbar pb-10">
+                        {selectedPostgresObjects.length === 0 ? (
+                          <div className="text-center py-20 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-[2rem]">
+                            <i className="fas fa-table text-slate-200 dark:text-slate-700 text-3xl mb-4"></i>
+                            <p className="text-slate-400 dark:text-slate-500 text-sm">No PostgreSQL tables selected</p>
+                          </div>
+                        ) : (
+                          selectedPostgresObjects.map((object) => {
+                            const key = postgresObjectKey(object.schemaName, object.tableName);
+                            const metadata = postgresObjectColumns[key];
+                            const columns = metadata?.columns || [];
+                            const primaryKeyColumns = metadata?.primaryKeyColumns || [];
+                            const keyColumns = postgresKeyColumnsMap[key] || [];
+                            const incrementalCandidates = getIncrementalCandidates(
+                              columns.map((column) => ({ name: column.name, type: column.type }))
+                            );
+                            const selectedIncrementalColumn = postgresIncrementalColumnMap[key] || '';
+                            const selectedIncrementalMeta = columns.find((column) => column.name === selectedIncrementalColumn);
+                            const selectedIncrementalKind = selectedIncrementalMeta
+                              ? getIncrementalKindFromType(selectedIncrementalMeta.type)
+                              : null;
+                            const requiresManualKeys = postgresImportMode === 'incremental'
+                              && postgresUpsertEnabled
+                              && primaryKeyColumns.length === 0;
+
+                            return (
+                              <div
+                                key={key}
+                                className="p-5 rounded-[2rem] border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/30 space-y-4"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-black text-sm text-slate-900 dark:text-white">{object.schemaName}.{object.tableName}</div>
+                                    <div className="text-[10px] uppercase tracking-widest text-slate-400 mt-1">
+                                      {object.objectType} • {columns.length} columns
+                                    </div>
+                                  </div>
+                                  {primaryKeyColumns.length > 0 && (
+                                    <div className="text-[10px] font-black uppercase tracking-widest text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+                                      PK: {primaryKeyColumns.join(', ')}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {postgresImportMode === 'incremental' && (
+                                  <div className="space-y-4">
+                                    <div>
+                                      <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                                        Incremental Column
+                                      </label>
+                                      <select
+                                        value={selectedIncrementalColumn}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setPostgresIncrementalColumnMap((prev) => ({
+                                            ...prev,
+                                            [key]: value
+                                          }));
+                                        }}
+                                        className="w-full bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-xl py-3 px-3 text-[11px] text-slate-700 dark:text-slate-200"
+                                      >
+                                        <option value="">Select incremental column</option>
+                                        {incrementalCandidates.map((column) => (
+                                          <option key={column.name} value={column.name}>
+                                            {column.name} ({column.type})
+                                          </option>
+                                        ))}
+                                      </select>
+                                      {selectedIncrementalKind && (
+                                        <div className="text-[10px] text-slate-400 mt-2 uppercase tracking-widest">
+                                          Incremental kind: {selectedIncrementalKind}
+                                        </div>
+                                      )}
+                                      {incrementalCandidates.length === 0 && (
+                                        <div className="text-[10px] text-amber-500 mt-2 uppercase tracking-widest">
+                                          No timestamp/ID candidate found for this table
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {postgresUpsertEnabled && (
+                                      <div>
+                                        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                                          Upsert Keys
+                                        </label>
+                                        {primaryKeyColumns.length > 0 ? (
+                                          <div className="text-[11px] text-emerald-500">
+                                            Using source primary key: <strong>{primaryKeyColumns.join(', ')}</strong>
+                                          </div>
+                                        ) : (
+                                          <div className="space-y-2">
+                                            <p className="text-[11px] text-slate-500">
+                                              No source primary key. Select key columns for upsert fallback.
+                                            </p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                              {columns.map((column) => {
+                                                const selected = keyColumns.includes(column.name);
+                                                return (
+                                                  <button
+                                                    key={`${key}-${column.name}`}
+                                                    onClick={() => togglePostgresKeyColumn(key, column.name)}
+                                                    className={`text-left px-3 py-2 rounded-xl border text-[11px] transition-all ${selected
+                                                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10 text-slate-900 dark:text-white'
+                                                      : 'border-slate-200 dark:border-white/10 bg-white dark:bg-black/20 text-slate-500'
+                                                      }`}
+                                                  >
+                                                    {column.name}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                            {requiresManualKeys && keyColumns.length === 0 && (
+                                              <p className="text-[10px] uppercase tracking-widest text-rose-500">
+                                                Select at least one key column for upsert.
+                                              </p>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div className="flex flex-col gap-6 mb-8 sticky top-0 bg-white dark:bg-[#0f172a] z-10 pt-4">
@@ -1721,6 +2733,33 @@ const Connections: React.FC<ConnectionsProps> = ({
                       return;
                     }
                     setStep(4);
+                  } else if (step === 3 && tempConn.type === 'PostgreSQL') {
+                    if (!postgresConnectionId) {
+                      alert('Please save PostgreSQL connection first.');
+                      return;
+                    }
+                    if (selectedPostgresSchemas.length === 0) {
+                      alert('Please select at least one schema.');
+                      return;
+                    }
+                    if (selectedPostgresObjects.length === 0) {
+                      alert('Please select at least one table/view.');
+                      return;
+                    }
+                    setIsAuthenticating(true);
+                    setPostgresImportStage('fetching_schema');
+                    setPostgresImportError('');
+                    try {
+                      await handlePreparePostgresImport();
+                      setStep(4);
+                    } catch (error: any) {
+                      const message = error.message || 'Failed to prepare PostgreSQL metadata';
+                      setPostgresImportError(message);
+                      alert(message);
+                    } finally {
+                      setIsAuthenticating(false);
+                      setPostgresImportStage('idle');
+                    }
                   } else if (step === 3 && selectedDatasetId) {
                     setIsAuthenticating(true);
                     try {
@@ -1747,15 +2786,20 @@ const Connections: React.FC<ConnectionsProps> = ({
                   (step === 2 && !authSuccess) ||
                   (step === 3 && tempConn.type === 'BigQuery' && !selectedDatasetId) ||
                   (step === 3 && tempConn.type === 'GoogleSheets' && !selectedGoogleFile) ||
+                  (step === 3 && tempConn.type === 'PostgreSQL' && (!postgresConnectionId || selectedPostgresSchemas.length === 0 || selectedPostgresObjectKeys.length === 0)) ||
                   (step === 4 && tempConn.type === 'Excel' && (!excelFile || selectedExcelSheets.length === 0)) ||
                   (step === 4 && tempConn.type === 'GoogleSheets' && selectedGoogleSheets.length === 0) ||
+                  (step === 4 && tempConn.type === 'PostgreSQL' && selectedPostgresObjects.length === 0) ||
+                  (step === 4 && tempConn.type === 'PostgreSQL' && postgresImportMode === 'incremental' && !isPostgresIncrementalSelectionValid) ||
                   isAuthenticating
                 }
                 className={`px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 transition-all ${step === 2 ? 'opacity-0 pointer-events-none scale-95' : 'opacity-100'
                   }`}
               >
                 {isAuthenticating && <i className="fas fa-circle-notch animate-spin"></i>}
-                {step === 4 ? 'Finish' : (isAuthenticating ? 'Fetching Tables...' : 'Next')}
+                {step === 4
+                  ? (isAuthenticating && tempConn.type === 'PostgreSQL' ? 'Importing...' : 'Finish')
+                  : (isAuthenticating ? 'Fetching Tables...' : 'Next')}
               </button>
             </div>
           </div>

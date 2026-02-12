@@ -73,6 +73,39 @@ const getNumberFormatter = (locale: string, options: Intl.NumberFormatOptions) =
     }
 };
 
+export function getAdaptiveNumericFormat(valueFormat?: string | null, fallback: string = 'smart_axis'): string {
+    if (!valueFormat) return fallback;
+    const normalized = String(valueFormat).toLowerCase();
+    const overlyPreciseDefaults = new Set(['standard', 'float_1', 'float_2', 'float_3', 'float_4']);
+    if (overlyPreciseDefaults.has(normalized)) return fallback;
+    return valueFormat;
+}
+
+export function formatSmartDataLabel(
+    value: any,
+    preferredFormat?: string | null,
+    options: { maxLength?: number } = {}
+): string {
+    if (value === null || value === undefined || value === '') return '';
+    const maxLength = options.maxLength ?? 11;
+
+    const chosenFormat = preferredFormat || 'standard';
+    const primary = formatBIValue(value, chosenFormat);
+
+    const num = typeof value === 'number' ? value : parseFloat(String(value));
+    if (isNaN(num)) return primary;
+
+    const normalized = String(chosenFormat).toLowerCase();
+    const canAutoCompact = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'].includes(normalized);
+    if (!canAutoCompact) return primary;
+
+    if (primary.length > maxLength || Math.abs(num) >= 100000) {
+        return formatBIValue(num, 'smart_axis');
+    }
+
+    return primary;
+}
+
 export function formatBIValue(value: any, valueFormat: string = 'standard'): string {
     if (value === null || value === undefined || value === '') return '-';
 
@@ -207,25 +240,25 @@ export function formatBIValue(value: any, valueFormat: string = 'standard'): str
 
         case 'float_1':
             return getNumberFormatter('en-US', {
-                minimumFractionDigits: 1,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 1
             }).format(num);
 
         case 'float_2':
             return getNumberFormatter('en-US', {
-                minimumFractionDigits: 2,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 2
             }).format(num);
 
         case 'float_3':
             return getNumberFormatter('en-US', {
-                minimumFractionDigits: 3,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 3
             }).format(num);
 
         case 'float_4':
             return getNumberFormatter('en-US', {
-                minimumFractionDigits: 4,
+                minimumFractionDigits: 0,
                 maximumFractionDigits: 4
             }).format(num);
 

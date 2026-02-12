@@ -20,6 +20,7 @@ import { useKeyboardShortcuts } from './utils/useKeyboardShortcuts';
 import PageTabs from './PageTabs';
 import DashboardAIChat from './DashboardAIChat';
 import { getAutoTitle } from './utils/widgetUtils';
+import { normalizeFieldType } from '../../utils/schema';
 import {
     DndContext,
     useSensor,
@@ -535,18 +536,28 @@ const BIMain: React.FC<BIMainProps> = ({
                     }
                 } else if (targetSlot === 'yAxis') {
                     updates.yAxis = [field.name];
+                    if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-2') {
                     const current = activeWidget.yAxis || [];
                     updates.yAxis = [current[0] || '', field.name];
+                    if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-size') {
                     const current = activeWidget.yAxis || [];
                     updates.yAxis = [current[0] || '', field.name];
+                    if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-comparison') {
                     updates.comparisonValue = field.name;
                 } else if (targetSlot === 'yAxis-multi') {
                     const current = activeWidget.yAxisConfigs || [];
                     if (!current.find(v => v.field === field.name)) {
-                        updates.yAxisConfigs = [...current, { field: field.name, aggregation: 'sum' }];
+                        updates.yAxisConfigs = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                        if (activeWidget.type === 'chart') updates.showLabels = true;
+                    }
+                } else if (targetSlot === 'lineAxis-multi') {
+                    const current = activeWidget.lineAxisConfigs || [];
+                    if (!current.find(v => v.field === field.name)) {
+                        updates.lineAxisConfigs = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                        if (activeWidget.type === 'chart') updates.showLabels = true;
                     }
                 } else if (targetSlot === 'slicerField') {
                     updates.slicerField = field.name;
@@ -578,7 +589,7 @@ const BIMain: React.FC<BIMainProps> = ({
                 } else if (targetSlot === 'pivot-values') {
                     const current = activeWidget.pivotValues || [];
                     if (!current.find(v => v.field === field.name)) {
-                        updates.pivotValues = [...current, { field: field.name, aggregation: 'sum' }];
+                        updates.pivotValues = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
                     }
                 }
 
@@ -667,7 +678,7 @@ const BIMain: React.FC<BIMainProps> = ({
                 const conn = connectionMap.get(table.connectionId);
                 if (!conn) return null;
                 if (conn.type === 'BigQuery') return `bq:${table.connectionId}:${table.datasetName}:${table.tableName}`;
-                if (conn.type === 'Excel' || conn.type === 'GoogleSheets') return `excel:${table.id}`;
+                if (conn.type === 'Excel' || conn.type === 'GoogleSheets' || conn.type === 'PostgreSQL') return `excel:${table.id}`;
                 return null;
             };
 
@@ -710,42 +721,34 @@ const BIMain: React.FC<BIMainProps> = ({
                 if (id) loadingTablesRef.current.add(id);
             });
 
-            const normalizeType = (bqType: string): 'string' | 'number' | 'date' | 'boolean' => {
-                const t = bqType.toUpperCase();
-                if (['INTEGER', 'INT64', 'FLOAT', 'FLOAT64', 'NUMERIC', 'BIGNUMERIC'].includes(t)) return 'number';
-                if (['TIMESTAMP', 'DATE', 'DATETIME', 'TIME'].includes(t)) return 'date';
-                if (['BOOLEAN', 'BOOL'].includes(t)) return 'boolean';
-                return 'string';
-            };
-
-            const normalizeExcelType = (excelType: string): 'string' | 'number' | 'date' | 'boolean' => {
-                const t = String(excelType || '').toUpperCase();
-                if (t === 'NUMBER' || t === 'NUMERIC' || t === 'INT' || t === 'INTEGER' || t === 'FLOAT') return 'number';
-                if (t === 'BOOLEAN' || t === 'BOOL') return 'boolean';
-                if (t === 'DATE') return 'date';
-                return 'string';
-            };
-
-            const excelTablesToProcess = tablesToProcess.filter((table) => {
+            const excelTablesToProcess = Array.from(activeTableMap.values()).filter((table) => {
                 const type = connectionMap.get(table.connectionId)?.type;
-                return type === 'Excel' || type === 'GoogleSheets';
+                return table.status === 'Active' && (type === 'Excel' || type === 'GoogleSheets' || type === 'PostgreSQL');
             });
             for (const table of excelTablesToProcess) {
                 const dsIdentifier = resolveSourceId(table);
                 try {
-                    loadExcelTable(
-                        table.id,
-                        table.connectionId,
-                        table.tableName,
-                        table.datasetName,
-                        (table.schema || []).map((field: any) => ({
-                            name: field.name,
-                            type: normalizeExcelType(field.type),
-                        })),
-                        table.rowCount
-                    );
+                    const normalizedSchema = (table.schema || []).map((field: any) => ({
+                        name: field.name,
+                        type: normalizeFieldType(field.type),
+                    }));
+
+                    const existingDs = useDataStore.getState().dataSources.find((ds) => ds.id === dsIdentifier);
+                    const schemaChanged = JSON.stringify(existingDs?.schema || []) !== JSON.stringify(normalizedSchema);
+                    const totalRowsChanged = (existingDs?.totalRows || 0) !== (table.rowCount || 0);
+
+                    if (!existingDs || metadataReloadTrigger > 0 || schemaChanged || totalRowsChanged) {
+                        loadExcelTable(
+                            table.id,
+                            table.connectionId,
+                            table.tableName,
+                            table.datasetName,
+                            normalizedSchema,
+                            table.rowCount
+                        );
+                    }
                 } catch (e) {
-                    console.error(`Failed metadata for Excel table ${table.tableName}:`, e);
+                    console.error(`Failed metadata for imported table ${table.tableName}:`, e);
                 } finally {
                     if (dsIdentifier) loadingTablesRef.current.delete(dsIdentifier);
                 }
@@ -807,7 +810,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                     table.tableName,
                                     table.datasetName,
                                     null,
-                                    metadata.schema.map(f => ({ name: f.name, type: normalizeType(f.type) })),
+                                    metadata.schema.map(f => ({ name: f.name, type: normalizeFieldType(f.type) })),
                                     metadata.rowCount // Pass the row count here!
                                 );
                             } catch (e) {
@@ -875,7 +878,7 @@ const BIMain: React.FC<BIMainProps> = ({
                 const conn = connections.find((c) => c.id === table.connectionId);
                 if (!conn) return null;
                 if (conn.type === 'BigQuery') return `bq:${table.connectionId}:${table.datasetName}:${table.tableName}`;
-                if (conn.type === 'Excel' || conn.type === 'GoogleSheets') return `excel:${table.id}`;
+                if (conn.type === 'Excel' || conn.type === 'GoogleSheets' || conn.type === 'PostgreSQL') return `excel:${table.id}`;
                 return null;
             };
             const isSourceActive = (sourceId: string) =>

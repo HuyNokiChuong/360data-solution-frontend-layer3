@@ -12,6 +12,15 @@ import { CHART_COLORS } from './utils/chartColors';
 import { getAutoTitle } from './utils/widgetUtils';
 import { useFilterStore } from './store/filterStore';
 import FormulaEditorModal from './FormulaEditorModal';
+import { fetchExcelTableData } from '../../services/excel';
+import { normalizeSchema } from '../../utils/schema';
+import {
+    AGGREGATION_OPTIONS,
+    coerceAggregationForFieldType,
+    getAggregationOptionsForFieldType,
+    getDefaultAggregationForFieldType,
+    normalizeAggregation
+} from '../../utils/aggregation';
 
 interface BIVisualBuilderProps {
     activeWidget?: BIWidget;
@@ -284,6 +293,9 @@ const FieldSelector: React.FC<{
         id: slotId,
         data: { slot: slotId }
     });
+    const selectedField = fields.find((f) => f.name === value);
+    const aggregationOptions = selectedField ? getAggregationOptionsForFieldType(selectedField.type) : AGGREGATION_OPTIONS;
+    const safeAggregation = coerceAggregationForFieldType(aggregation || 'sum', selectedField?.type);
 
     return (
         <div ref={setNodeRef} className={`p-2 rounded-lg transition-all border border-transparent hover:border-slate-200 dark:hover:border-white/5 hover:bg-slate-50 dark:hover:bg-white/5 ${isOver ? 'bg-indigo-50 dark:bg-indigo-600/20 ring-2 ring-indigo-500/50' : ''}`}>
@@ -293,16 +305,13 @@ const FieldSelector: React.FC<{
                 </label>
                 {onAggregationChange && value && (
                     <select
-                        value={aggregation || 'sum'}
-                        onChange={(e) => onAggregationChange(e.target.value as AggregationType)}
+                        value={safeAggregation}
+                        onChange={(e) => onAggregationChange(coerceAggregationForFieldType(e.target.value, selectedField?.type))}
                         className="bg-white dark:bg-slate-950 text-[10px] text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-white/10 rounded px-1.5 py-0.5 outline-none font-bold hover:border-indigo-500/50 transition-colors cursor-pointer"
                     >
-                        <option value="sum">SUM</option>
-                        <option value="avg">AVG</option>
-                        <option value="count">COUNT</option>
-                        <option value="countDistinct">DISTINCT</option>
-                        <option value="min">MIN</option>
-                        <option value="max">MAX</option>
+                        {aggregationOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                     </select>
                 )}
             </div>
@@ -334,9 +343,21 @@ const PivotValueSelector: React.FC<{
 
     const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
+    const getDefaultAggregation = (fieldName: string): AggregationType => {
+        const selectedField = fields.find((f) => f.name === fieldName);
+        return getDefaultAggregationForFieldType(selectedField?.type);
+    };
+
+    const getFieldType = (fieldName: string) => {
+        return fields.find((f) => f.name === fieldName)?.type;
+    };
+
     const handleAdd = (fieldName: string) => {
         if (!fieldName) return;
-        onChange([...values, { field: fieldName, aggregation: 'sum', yAxisId: defaultAxis, format: 'float_2' }]);
+        onChange([
+            ...values,
+            { field: fieldName, aggregation: getDefaultAggregation(fieldName), yAxisId: defaultAxis, format: 'standard' }
+        ]);
     };
 
     const handleRemove = (index: number) => {
@@ -454,16 +475,13 @@ const PivotValueSelector: React.FC<{
                                 </div>
                             )}
                             <select
-                                value={v.aggregation}
-                                onChange={(e) => handleUpdate(idx, { aggregation: e.target.value as any })}
+                                value={coerceAggregationForFieldType(v.aggregation, getFieldType(v.field))}
+                                onChange={(e) => handleUpdate(idx, { aggregation: coerceAggregationForFieldType(e.target.value, getFieldType(v.field)) })}
                                 className="flex-1 bg-white dark:bg-slate-950 text-[10px] text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-white/10 rounded px-1 outline-none py-0.5"
                             >
-                                <option value="sum">SUM</option>
-                                <option value="avg">AVG</option>
-                                <option value="count">COUNT</option>
-                                <option value="min">MIN</option>
-                                <option value="max">MAX</option>
-                                <option value="countDistinct">DISTINCT</option>
+                                {getAggregationOptionsForFieldType(getFieldType(v.field)).map((option) => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
                             </select>
                             <select
                                 value={v.format || ''}
@@ -563,7 +581,7 @@ const PivotValueSelector: React.FC<{
             <CustomFieldDropdown
                 value=""
                 onChange={handleAdd}
-                fields={fields.filter(f => f.type === 'number' || f.isCalculated || f.isQuickMeasure)}
+                fields={fields}
                 placeholder="+ Add value..."
                 className="mt-1"
             />
@@ -580,7 +598,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     activeTab,
     setActiveTab
 }) => {
-    const { dataSources, selectedDataSourceId, setSelectedDataSource, connections } = useDataStore();
+    const { dataSources, selectedDataSourceId, setSelectedDataSource, connections, updateDataSource } = useDataStore();
     const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource, syncPageDataSource } = useDashboardStore();
 
 
@@ -588,6 +606,39 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const activePage = activeDashboard?.pages?.find(p => p.id === (activeDashboard as any).activePageId);
     const effectiveDataSourceId = activePage?.dataSourceId || activeWidget?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
+
+    React.useEffect(() => {
+        const ds = effectiveDataSourceId
+            ? dataSources.find((item) => item.id === effectiveDataSourceId)
+            : null;
+        if (!ds || ds.type !== 'excel') return;
+
+        const currentSchema = Array.isArray(ds.schema) ? ds.schema : [];
+        const shouldRefreshSchema = currentSchema.length === 0 || currentSchema.every((field) => field.type === 'string');
+        if (!shouldRefreshSchema) return;
+
+        const tableId = ds.syncedTableId || ds.id.replace('excel:', '');
+        if (!tableId) return;
+
+        let cancelled = false;
+        (async () => {
+            try {
+                const page = await fetchExcelTableData(tableId, 0, 1);
+                const normalized = normalizeSchema(page?.schema || []);
+                if (cancelled || normalized.length === 0) return;
+
+                if (JSON.stringify(normalized) !== JSON.stringify(currentSchema)) {
+                    updateDataSource(ds.id, { schema: normalized });
+                }
+            } catch (err) {
+                // Ignore background schema refresh error to avoid breaking editor flow.
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [effectiveDataSourceId, dataSources, updateDataSource]);
 
 
     const [isAddingCalc, setIsAddingCalc] = useState(false);
@@ -850,6 +901,13 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         ...dashboardQuickMeasures,
         ...widgetQuickMeasures
     ];
+
+    const getDefaultAggregationForField = (fieldName?: string): AggregationType => {
+        if (!fieldName) return normalizeAggregation(activeWidget?.aggregation || 'sum');
+        const selectedField = fields.find((f) => f.name === fieldName);
+        if (!selectedField) return normalizeAggregation(activeWidget?.aggregation || 'sum');
+        return coerceAggregationForFieldType(activeWidget?.aggregation || 'sum', selectedField.type);
+    };
 
     React.useEffect(() => {
         if (!activeDashboard?.activePageId || activePage?.dataSourceId || !activeWidget?.dataSourceId) return;
@@ -1311,6 +1369,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                     if (['bar', 'line', 'area', 'horizontalBar', 'stackedBar'].includes(type as string)) {
                                         const totalSeries = (activeWidget.yAxisConfigs?.length || 0) + (activeWidget.lineAxisConfigs?.length || 0);
                                         const showLegendField = totalSeries <= 1;
+                                        const isColumnChart = type === 'bar' || type === 'stackedBar' || activeWidget.stacked === true;
 
                                         return (
                                             <div className="space-y-4">
@@ -1330,13 +1389,24 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                                     slotId="xAxis-hierarchy"
                                                 />
                                                 <PivotValueSelector
-                                                    label="Y-Axis / Values (Column/Line)"
-                                                    values={activeWidget.yAxisConfigs}
+                                                    label="Y-Axis / Values (Column)"
+                                                    values={
+                                                        (activeWidget.yAxisConfigs && activeWidget.yAxisConfigs.length > 0)
+                                                            ? activeWidget.yAxisConfigs
+                                                            : (activeWidget.yAxis || [])
+                                                                .filter((field): field is string => !!field)
+                                                                .map((field) => ({
+                                                                    field,
+                                                                    aggregation: getDefaultAggregationForField(field),
+                                                                    yAxisId: 'left' as const
+                                                                }))
+                                                    }
                                                     fields={fields}
                                                     onChange={(v) => {
                                                         const isStacked = type === 'stackedBar' || activeWidget.stacked === true;
                                                         handleUpdateWidget({
                                                             yAxisConfigs: v,
+                                                            yAxis: v.map(item => item.field),
                                                             stacked: isStacked,
                                                             chartType: isStacked ? 'bar' : type as ChartType
                                                         });
@@ -1345,20 +1415,14 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                                     defaultAxis="left"
                                                     hideAxisSelector={type === 'line'}
                                                 />
-
-                                                {(!activeWidget.yAxisConfigs || activeWidget.yAxisConfigs.length === 0) && (
-                                                    <FieldSelector
-                                                        label="Y-Axis / Value (Simple)"
-                                                        value={activeWidget.yAxis?.[0]}
+                                                {isColumnChart && (
+                                                    <PivotValueSelector
+                                                        label="Line Values (Optional)"
+                                                        values={activeWidget.lineAxisConfigs}
                                                         fields={fields}
-                                                        onChange={(val) => handleUpdateWidget({
-                                                            yAxis: [val],
-                                                            yAxisConfigs: [{ field: val, aggregation: activeWidget.aggregation || 'sum', yAxisId: 'left' }]
-                                                        })}
-                                                        aggregation={activeWidget.aggregation}
-                                                        onAggregationChange={(agg) => handleUpdateWidget({ aggregation: agg })}
-                                                        hint="💡 Use the multi-selector above for multiple series"
-                                                        slotId="yAxis"
+                                                        onChange={(v) => handleUpdateWidget({ lineAxisConfigs: v })}
+                                                        slotId="lineAxis-multi"
+                                                        defaultAxis="left"
                                                     />
                                                 )}
 
@@ -1679,11 +1743,12 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                         return (
                                             <div className="space-y-4">
                                                 <HierarchyFieldSelector
-                                                    label="Rows (Hierarchy)"
+                                                    label="Rows (Optional Hierarchy)"
                                                     hierarchy={activeWidget.pivotRows}
                                                     fields={fields}
                                                     onChange={(h) => handleUpdateWidget({ pivotRows: h, drillDownHierarchy: h })}
                                                     placeholder="Add row level..."
+                                                    hint="💡 Leave empty to auto-group as Total"
                                                     slotId="pivot-rows"
                                                 />
                                                 <HierarchyFieldSelector
@@ -1818,13 +1883,13 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                             <div className="relative group">
                                                 <i className="fas fa-hashtag absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-[10px] group-hover:text-indigo-400 transition-colors"></i>
                                                 <select
-                                                    value={activeWidget.valueFormat || 'float_2'}
+                                                    value={activeWidget.valueFormat || 'standard'}
                                                     onChange={(e) => handleUpdateWidget({ valueFormat: e.target.value })}
                                                     className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg pl-8 pr-3 py-2.5 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer hover:border-indigo-500/20 transition-all font-bold"
                                                 >
                                                     <optgroup label="General" className="bg-slate-900">
-                                                        <option value="float_2">Float (1,234.56)</option>
                                                         <option value="standard">Standard (1,234.56)</option>
+                                                        <option value="float_2">Float (1,234.56)</option>
                                                         <option value="integer">Integer (1,235)</option>
                                                         <option value="compact">Compact (1.2K)</option>
                                                     </optgroup>

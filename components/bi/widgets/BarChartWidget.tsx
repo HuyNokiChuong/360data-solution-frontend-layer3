@@ -15,7 +15,7 @@ import CustomTooltip from './CustomTooltip';
 import EmptyChartState from './EmptyChartState';
 import { DrillDownService } from '../engine/DrillDownService';
 import { useChartColors } from '../utils/chartColors';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import ChartLegend from './ChartLegend';
 
@@ -115,10 +115,35 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     // -------------------------
 
     const xFieldDisplay = useMemo(() => {
+        if (!xField) return '_autoCategory';
         if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
         if (chartData.length > 0 && chartData[0]._formattedAxis) return '_formattedAxis';
         return xField;
     }, [drillDownState?.mode, xFields.length, chartData, xField]);
+
+    const effectiveChartData = useMemo(() => {
+        if (xField) return chartData;
+        return chartData.map((row) => ({
+            ...row,
+            _autoCategory: row._autoCategory || 'Total'
+        }));
+    }, [chartData, xField]);
+
+    const hierarchyDepth = useMemo(() => {
+        if (drillDownState?.mode !== 'expand') return 1;
+        return effectiveChartData.reduce((maxDepth, row) => {
+            const raw = row?._combinedAxis || row?._formattedAxis || row?.[xFieldDisplay] || '';
+            const depth = String(raw).split('\n').filter(Boolean).length || 1;
+            return Math.max(maxDepth, depth);
+        }, 1);
+    }, [drillDownState?.mode, effectiveChartData, xFieldDisplay]);
+
+    const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(96, 30 + hierarchyDepth * 16);
+    const hasBottomLegend = widget.showLegend !== false && (!widget.legendPosition || widget.legendPosition === 'bottom');
+    const bottomMarginBase = hierarchyDepth <= 1 ? 10 : 18;
+    const bottomMargin = hasBottomLegend
+        ? Math.max(bottomMarginBase + 24, xAxisHeight + 26)
+        : bottomMarginBase;
 
     const yField = series[0] || '';
 
@@ -136,6 +161,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const isFiltered = isWidgetFiltered(widget.id) || (drillDownState && drillDownState.currentLevel > 0);
     const isHorizontal = widget.chartType === 'horizontalBar';
     const hasHierarchy = widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0;
+    const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
 
     // Get current cross-filter selection for THIS widget
     const currentSelection = useMemo(() => {
@@ -149,10 +175,35 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
     }, [widget.dataSourceId, getDataSource]);
 
-    if (chartData.length === 0 && !isLoading) {
+    const resolveCategoryLabel = (payload: any) => {
+        if (!payload) return '';
+        const raw = payload[xFieldDisplay] ?? payload[xField] ?? payload._autoCategory ?? '';
+        const asString = String(raw ?? '');
+        if (!asString) return '';
+        if (asString.includes('\n')) {
+            const parts = asString.split('\n').filter(Boolean);
+            return parts[parts.length - 1] || asString;
+        }
+        return asString;
+    };
+
+    const renderLabelText = (labelMode: BIWidget['labelMode'], valueText: string, categoryText: string) => {
+        switch (labelMode) {
+            case 'value':
+                return valueText;
+            case 'category':
+                return categoryText;
+            case 'categoricalPercent':
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+            case 'categoricalValue':
+            default:
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+        }
+    };
+
+    if (effectiveChartData.length === 0 && !isLoading) {
         let errorMsg = 'No data available';
-        if (!xField) errorMsg = 'Select X-Axis field';
-        else if (!yField) errorMsg = 'Select Y-Axis field';
+        if (!yField) errorMsg = 'Select Y-Axis field';
 
         return (
             <BaseWidget
@@ -186,11 +237,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
-                        data={chartData}
+                        data={effectiveChartData}
                         layout={isHorizontal ? 'vertical' : 'horizontal'}
                         margin={isHorizontal
                             ? { top: 20, right: 40, left: 20, bottom: 5 }
-                            : { top: 20, right: 30, left: 0, bottom: drillDownState?.mode === 'expand' ? 60 : 10 }
+                            : { top: 20, right: 30, left: 0, bottom: bottomMargin }
                         }
                         barCategoryGap="20%"
                         barGap={4}
@@ -286,8 +337,8 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             tickLine={false}
                                             axisLine={false}
                                             interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
-                                            tick={<HierarchicalAxisTick data={chartData} />}
-                                            height={drillDownState?.mode === 'expand' ? 80 : 30}
+                                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                                            height={xAxisHeight}
                                             fontFamily="Outfit"
                                         />
                                         <YAxis
@@ -325,6 +376,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
                                     fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '10px')}
                                 />}
+                                wrapperStyle={hasBottomLegend ? { paddingTop: 8 } : undefined}
                             />
                         )}
 
@@ -332,7 +384,8 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                             series.map((sField, idx) => {
                                 const config = widget.yAxisConfigs?.find(c => c.field === sField);
                                 const yAxisId = config?.yAxisId || 'left';
-                                const format = widget.labelFormat || (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const seriesFormat = (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const format = widget.labelFormat || getAdaptiveNumericFormat(seriesFormat);
                                 const axisProps = isHorizontal ? { xAxisId: yAxisId } : { yAxisId: yAxisId };
                                 const color = colors[idx % colors.length];
 
@@ -342,14 +395,15 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         dataKey={sField}
                                         name={sField}
                                         {...axisProps}
+                                        isAnimationActive={false}
                                         fill={color}
                                         stackId={isStackedType ? "a" : undefined}
                                         onClick={(e: any) => handleBarClick(e.payload)}
                                         cursor="pointer"
                                         radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                                     >
-                                        {chartData.map((entry, index) => {
-                                            const isActive = !currentSelection || entry[xField] === currentSelection;
+                                        {effectiveChartData.map((entry, index) => {
+                                            const isActive = !currentSelection || !xField || entry[xField] === currentSelection;
                                             return (
                                                 <Cell
                                                     key={`cell-${index}`}
@@ -360,17 +414,17 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 />
                                             );
                                         })}
-                                        {widget.showLabels !== false && (
+                                        {shouldRenderDataLabels && (
                                             <LabelList
                                                 dataKey={sField}
-                                                position={isHorizontal ? "right" : "top"}
+                                                position={isHorizontal ? "right" : (lineSeries.length > 0 ? "insideTop" : "top")}
+                                                dy={!isHorizontal && lineSeries.length > 0 ? 8 : 0}
                                                 fill="#94a3b8"
                                                 fontSize={10}
-                                                formatter={(val: any) => {
-                                                    const formatted = formatBIValue(val, format);
-                                                    if (widget.labelMode === 'value') return formatted;
-                                                    if (widget.labelMode === 'category') return sField;
-                                                    return formatted;
+                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                    const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
+                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    return renderLabelText(widget.labelMode, formatted, category);
                                                 }}
                                             />
                                         )}
@@ -381,13 +435,14 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                             <Bar
                                 dataKey={yField}
                                 {...(isHorizontal ? { xAxisId: 'left' } : { yAxisId: 'left' })}
+                                isAnimationActive={false}
                                 fill={colors[0]}
                                 onClick={(e: any) => handleBarClick(e.payload)}
                                 cursor="pointer"
                                 radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                             >
-                                {chartData.map((entry, index) => {
-                                    const isActive = !currentSelection || entry[xField] === currentSelection;
+                                {effectiveChartData.map((entry, index) => {
+                                    const isActive = !currentSelection || !xField || entry[xField] === currentSelection;
                                     return (
                                         <Cell
                                             key={`cell-${index}`}
@@ -398,16 +453,18 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         />
                                     );
                                 })}
-                                {widget.showLabels !== false && (
+                                {shouldRenderDataLabels && (
                                     <LabelList
                                         dataKey={yField}
-                                        position={isHorizontal ? "right" : "top"}
+                                        position={isHorizontal ? "right" : (lineSeries.length > 0 ? "insideTop" : "top")}
+                                        dy={!isHorizontal && lineSeries.length > 0 ? 8 : 0}
                                         fill="#94a3b8"
                                         fontSize={10}
-                                        formatter={(val: any) => {
-                                            const overrideFormats = ['standard', 'float_1', 'float_2', 'float_3', 'float_4', 'integer'];
-                                            const selectedFormat = (!widget.valueFormat || overrideFormats.includes(widget.valueFormat)) ? 'smart_axis' : widget.valueFormat;
-                                            return formatBIValue(val, widget.labelFormat || selectedFormat || 'compact');
+                                        formatter={(val: any, _name: any, labelProps: any) => {
+                                            const selectedFormat = getAdaptiveNumericFormat(widget.valueFormat);
+                                            const formatted = formatSmartDataLabel(val, widget.labelFormat || selectedFormat || 'compact', { maxLength: 10 });
+                                            const category = resolveCategoryLabel(labelProps?.payload);
+                                            return renderLabelText(widget.labelMode, formatted, category);
                                         }}
                                     />
                                 )}
@@ -427,12 +484,13 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         dataKey={ls}
                                         name={ls}
                                         {...axisProps}
+                                        isAnimationActive={false}
                                         stroke={color}
                                         strokeWidth={2}
                                         // Dim line dots if not active
                                         dot={(props: any) => {
                                             const { cx, cy, payload } = props;
-                                            const isActive = !currentSelection || payload[xField] === currentSelection;
+                                            const isActive = !currentSelection || !xField || payload[xField] === currentSelection;
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -448,13 +506,18 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         onClick={(e: any) => handleBarClick(e.payload)}
                                         cursor="pointer"
                                     >
-                                        {widget.showLabels !== false && (
+                                        {shouldRenderDataLabels && (
                                             <LabelList
                                                 dataKey={ls}
                                                 position="top"
+                                                dy={-12}
                                                 fill="#94a3b8"
                                                 fontSize={10}
-                                                formatter={(val: any) => formatBIValue(val, config?.format || widget.valueFormat || 'compact')}
+                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                    const formatted = formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(config?.format || widget.valueFormat) || 'compact', { maxLength: 10 });
+                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    return renderLabelText(widget.labelMode, formatted, category);
+                                                }}
                                             />
                                         )}
                                     </Line>

@@ -4,6 +4,7 @@
 const express = require('express');
 const { query, getClient } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { encryptString } = require('../services/crypto.service');
 const {
     MAX_EXCEL_FILE_SIZE_BYTES,
     parseWorkbookForPreview,
@@ -25,6 +26,23 @@ const {
     findExistingGoogleSheetTables,
     createGoogleSheetsError,
 } = require('../services/google-sheets.service');
+const {
+    parsePostgresConfig,
+    sanitizePostgresConfig,
+    validatePostgresConfigInput,
+    testPostgresConnection,
+    listSchemas: listPostgresSchemas,
+    listTablesAndViews: listPostgresTablesAndViews,
+    listColumns: listPostgresColumns,
+    fetchPrimaryKey: fetchPostgresPrimaryKey,
+} = require('../services/postgres-connection.service');
+const {
+    classifyIncrementalKindFromType,
+    ingestPostgresTable,
+    markSyncStateFailed,
+    quoteIdent,
+    SNAPSHOT_SCHEMA,
+} = require('../services/postgres-ingestion.service');
 
 const router = express.Router();
 
@@ -243,6 +261,478 @@ const requireGoogleSheetsConnection = async (client, connectionId, workspaceId) 
     return connection;
 };
 
+const POSTGRES_JOB_STATUS = {
+    QUEUED: 'queued',
+    RUNNING: 'running',
+    SUCCESS: 'success',
+    FAILED: 'failed',
+};
+
+const POSTGRES_JOB_STAGE = {
+    CONNECTING: 'connecting',
+    FETCHING_SCHEMA: 'fetching_schema',
+    READING_TABLE: 'reading_table',
+    IMPORTING: 'importing',
+    COMPLETED: 'completed',
+};
+
+const POSTGRES_IMPORT_MODES = new Set(['full', 'incremental']);
+const POSTGRES_IMPORT_STAGE_ORDER = [
+    POSTGRES_JOB_STAGE.CONNECTING,
+    POSTGRES_JOB_STAGE.FETCHING_SCHEMA,
+    POSTGRES_JOB_STAGE.READING_TABLE,
+    POSTGRES_JOB_STAGE.IMPORTING,
+    POSTGRES_JOB_STAGE.COMPLETED,
+];
+
+const parsePostgresSchemasQuery = (rawSchemas) => {
+    if (Array.isArray(rawSchemas)) {
+        return rawSchemas.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    if (typeof rawSchemas === 'string' && rawSchemas.trim()) {
+        return rawSchemas
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean);
+    }
+    return [];
+};
+
+const normalizePostgresImportMode = (value) => {
+    const mode = String(value || '').trim().toLowerCase();
+    return POSTGRES_IMPORT_MODES.has(mode) ? mode : 'full';
+};
+
+const normalizePostgresImportTable = (item, defaultMode) => {
+    const schemaName = String(item?.schemaName || '').trim();
+    const tableName = String(item?.tableName || '').trim();
+    const objectType = item?.objectType === 'view' ? 'view' : 'table';
+    const incrementalColumn = item?.incrementalColumn ? String(item.incrementalColumn).trim() : null;
+    const incrementalKindRaw = item?.incrementalKind ? String(item.incrementalKind).trim().toLowerCase() : '';
+    const incrementalKind = incrementalKindRaw === 'timestamp' || incrementalKindRaw === 'id'
+        ? incrementalKindRaw
+        : null;
+    const upsert = item?.upsert === true;
+    const keyColumns = Array.isArray(item?.keyColumns)
+        ? item.keyColumns.map((col) => String(col || '').trim()).filter(Boolean)
+        : [];
+
+    if (!schemaName || !tableName) {
+        throw new Error('Each table selection must include schemaName and tableName');
+    }
+
+    if (defaultMode === 'incremental' && !incrementalColumn) {
+        throw new Error(`incrementalColumn is required for incremental mode (${schemaName}.${tableName})`);
+    }
+
+    return {
+        schemaName,
+        tableName,
+        objectType,
+        incrementalColumn,
+        incrementalKind,
+        upsert,
+        keyColumns,
+    };
+};
+
+const getPostgresConfig = (configValue) => parsePostgresConfig(configValue);
+
+const mergePostgresConnectionConfig = (configValue, nextPostgresConfig) => {
+    const base = toObject(configValue);
+    return {
+        ...base,
+        postgres: nextPostgresConfig,
+    };
+};
+
+const requirePostgresConnection = async (client, connectionId, workspaceId) => {
+    const connection = await loadWorkspaceConnection(client, connectionId, workspaceId);
+    if (!connection) {
+        const err = new Error('Connection not found');
+        err.status = 404;
+        throw err;
+    }
+    if (connection.type !== 'PostgreSQL') {
+        const err = new Error('Connection type must be PostgreSQL');
+        err.status = 400;
+        throw err;
+    }
+    return connection;
+};
+
+const parsePostgresImportPayload = (payloadRaw) => {
+    const payload = toObject(payloadRaw);
+    const importMode = normalizePostgresImportMode(payload.importMode);
+    const tablesRaw = Array.isArray(payload.tables) ? payload.tables : [];
+    if (tablesRaw.length === 0) {
+        throw new Error('At least one table must be selected for import');
+    }
+
+    const tables = tablesRaw.map((item) => normalizePostgresImportTable(item, importMode));
+    return {
+        importMode,
+        batchSize: Number(payload.batchSize) > 0 ? Number(payload.batchSize) : 500,
+        tables,
+    };
+};
+
+const parseJobProgress = (rawProgress) => {
+    const progress = toObject(rawProgress);
+    return {
+        totalTables: Number(progress.totalTables || 0),
+        completedTables: Number(progress.completedTables || 0),
+        currentTable: progress.currentTable || null,
+        importedRows: Number(progress.importedRows || 0),
+        currentStage: progress.currentStage || null,
+        percentage: Number(progress.percentage || 0),
+    };
+};
+
+const getStageOrderIndex = (stage) => {
+    const idx = POSTGRES_IMPORT_STAGE_ORDER.indexOf(stage);
+    return idx === -1 ? 0 : idx;
+};
+
+const formatPostgresImportJob = (row) => ({
+    id: row.id,
+    connectionId: row.connection_id,
+    workspaceId: row.workspace_id,
+    status: row.status,
+    stage: row.stage,
+    stageOrder: getStageOrderIndex(row.stage),
+    importMode: row.import_mode,
+    payload: toObject(row.payload),
+    progress: parseJobProgress(row.progress),
+    attemptCount: Number(row.attempt_count || 0),
+    errorMessage: row.error_message || undefined,
+    startedAt: row.started_at || null,
+    finishedAt: row.finished_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+});
+
+const formatPostgresImportRun = (row) => ({
+    id: row.id,
+    jobId: row.job_id,
+    connectionId: row.connection_id,
+    host: row.host,
+    databaseName: row.database_name,
+    schemaName: row.schema_name,
+    tableName: row.table_name,
+    rowCount: Number(row.row_count || 0),
+    columnCount: Number(row.column_count || 0),
+    importMode: row.import_mode,
+    lastSyncTime: row.last_sync_time || null,
+    status: row.status,
+    errorMessage: row.error_message || undefined,
+    startedAt: row.started_at || null,
+    finishedAt: row.finished_at || null,
+    createdAt: row.created_at,
+});
+
+const isTransientImportError = (error) => {
+    if (!error) return false;
+    const transientCodes = new Set([
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'EPIPE',
+        '57P01',
+        '53300',
+        '40001',
+        '40P01',
+    ]);
+
+    if (error.code && transientCodes.has(String(error.code))) return true;
+    const msg = String(error.message || '').toLowerCase();
+    return msg.includes('timeout') ||
+        msg.includes('temporar') ||
+        msg.includes('connection reset') ||
+        msg.includes('network');
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const updatePostgresImportJob = async (jobId, patch) => {
+    const sets = [];
+    const values = [];
+    let idx = 1;
+    Object.entries(patch).forEach(([key, value]) => {
+        sets.push(`${key} = $${idx}`);
+        values.push(value);
+        idx += 1;
+    });
+    sets.push('updated_at = NOW()');
+
+    values.push(jobId);
+    const result = await query(
+        `UPDATE postgres_import_jobs
+         SET ${sets.join(', ')}
+         WHERE id = $${idx}
+         RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const insertPostgresImportRun = async ({
+    jobId,
+    connectionId,
+    host,
+    databaseName,
+    schemaName,
+    tableName,
+    rowCount,
+    columnCount,
+    importMode,
+    lastSyncTime,
+    status,
+    errorMessage,
+    startedAt,
+    finishedAt,
+}) => {
+    await query(
+        `INSERT INTO postgres_import_runs (
+            job_id, connection_id, host, database_name, schema_name, table_name,
+            row_count, column_count, import_mode, last_sync_time, status, error_message,
+            started_at, finished_at
+         )
+         VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11, $12,
+            $13, $14
+         )`,
+        [
+            jobId,
+            connectionId,
+            host,
+            databaseName,
+            schemaName,
+            tableName,
+            rowCount || 0,
+            columnCount || 0,
+            importMode,
+            lastSyncTime || null,
+            status,
+            errorMessage || null,
+            startedAt || new Date().toISOString(),
+            finishedAt || new Date().toISOString(),
+        ]
+    );
+};
+
+const runPostgresImportJob = async (jobId) => {
+    try {
+        const startRes = await query(
+            `UPDATE postgres_import_jobs
+             SET status = $2,
+                 stage = $3,
+                 started_at = COALESCE(started_at, NOW()),
+                 attempt_count = 0,
+                 error_message = NULL,
+                 updated_at = NOW()
+             WHERE id = $1
+               AND status = $4
+             RETURNING *`,
+            [jobId, POSTGRES_JOB_STATUS.RUNNING, POSTGRES_JOB_STAGE.CONNECTING, POSTGRES_JOB_STATUS.QUEUED]
+        );
+
+        if (startRes.rows.length === 0) return;
+        const jobRow = startRes.rows[0];
+
+        const connectionRes = await query(
+            `SELECT *
+             FROM connections
+             WHERE id = $1
+               AND workspace_id = $2
+               AND is_deleted = FALSE`,
+            [jobRow.connection_id, jobRow.workspace_id]
+        );
+        const connectionRow = connectionRes.rows[0];
+        if (!connectionRow || connectionRow.type !== 'PostgreSQL') {
+            throw new Error('PostgreSQL connection not found for import job');
+        }
+
+        const payload = parsePostgresImportPayload(jobRow.payload);
+        const totalTables = payload.tables.length;
+        let completedTables = 0;
+        let totalAttempts = 0;
+
+        await updatePostgresImportJob(jobId, {
+            progress: JSON.stringify({
+                totalTables,
+                completedTables,
+                currentTable: null,
+                importedRows: 0,
+                percentage: 0,
+                currentStage: POSTGRES_JOB_STAGE.CONNECTING,
+            }),
+        });
+
+        await updatePostgresImportJob(jobId, { stage: POSTGRES_JOB_STAGE.FETCHING_SCHEMA });
+        await listPostgresSchemas(connectionRow);
+
+        const postgresConfig = getPostgresConfig(connectionRow.config);
+        const host = postgresConfig.host || '';
+        const databaseName = postgresConfig.databaseName || '';
+
+        for (const table of payload.tables) {
+            const tableLabel = `${table.schemaName}.${table.tableName}`;
+            const startedAt = new Date().toISOString();
+
+            await updatePostgresImportJob(jobId, {
+                stage: POSTGRES_JOB_STAGE.READING_TABLE,
+                progress: JSON.stringify({
+                    totalTables,
+                    completedTables,
+                    currentTable: tableLabel,
+                    importedRows: 0,
+                    percentage: totalTables > 0 ? Math.floor((completedTables / totalTables) * 100) : 0,
+                    currentStage: POSTGRES_JOB_STAGE.READING_TABLE,
+                }),
+            });
+
+            const maxAttempts = 3;
+            const backoffMs = [1000, 2000, 4000];
+            let result = null;
+            let lastError = null;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                totalAttempts += 1;
+                await updatePostgresImportJob(jobId, { attempt_count: totalAttempts });
+                try {
+                    result = await ingestPostgresTable({
+                        connectionRow,
+                        connectionId: connectionRow.id,
+                        schemaName: table.schemaName,
+                        tableName: table.tableName,
+                        importMode: payload.importMode,
+                        incrementalColumn: table.incrementalColumn,
+                        incrementalKind: table.incrementalKind,
+                        upsert: table.upsert,
+                        keyColumns: table.keyColumns,
+                        jobId,
+                        batchSize: payload.batchSize,
+                        onBatch: async (importedRows) => {
+                            await updatePostgresImportJob(jobId, {
+                                stage: POSTGRES_JOB_STAGE.IMPORTING,
+                                progress: JSON.stringify({
+                                    totalTables,
+                                    completedTables,
+                                    currentTable: tableLabel,
+                                    importedRows,
+                                    percentage: totalTables > 0
+                                        ? Math.min(99, Math.floor(((completedTables + 0.5) / totalTables) * 100))
+                                        : 0,
+                                    currentStage: POSTGRES_JOB_STAGE.IMPORTING,
+                                }),
+                            });
+                        },
+                    });
+                    break;
+                } catch (error) {
+                    lastError = error;
+                    if (!isTransientImportError(error) || attempt === maxAttempts) {
+                        break;
+                    }
+                    await sleep(backoffMs[attempt - 1] || 4000);
+                }
+            }
+
+            if (!result) {
+                await markSyncStateFailed({
+                    connectionId: connectionRow.id,
+                    schemaName: table.schemaName,
+                    tableName: table.tableName,
+                    jobId,
+                });
+
+                await insertPostgresImportRun({
+                    jobId,
+                    connectionId: connectionRow.id,
+                    host,
+                    databaseName,
+                    schemaName: table.schemaName,
+                    tableName: table.tableName,
+                    rowCount: 0,
+                    columnCount: 0,
+                    importMode: payload.importMode,
+                    lastSyncTime: null,
+                    status: 'failed',
+                    errorMessage: String(lastError?.message || 'Import failed'),
+                    startedAt,
+                    finishedAt: new Date().toISOString(),
+                });
+
+                throw lastError || new Error(`Import failed for ${tableLabel}`);
+            }
+
+            completedTables += 1;
+
+            await insertPostgresImportRun({
+                jobId,
+                connectionId: connectionRow.id,
+                host,
+                databaseName,
+                schemaName: table.schemaName,
+                tableName: table.tableName,
+                rowCount: result.rowCount,
+                columnCount: result.columnCount,
+                importMode: payload.importMode,
+                lastSyncTime: new Date().toISOString(),
+                status: 'success',
+                errorMessage: null,
+                startedAt,
+                finishedAt: new Date().toISOString(),
+            });
+
+            await updatePostgresImportJob(jobId, {
+                stage: POSTGRES_JOB_STAGE.IMPORTING,
+                progress: JSON.stringify({
+                    totalTables,
+                    completedTables,
+                    currentTable: tableLabel,
+                    importedRows: result.importedRows || 0,
+                    percentage: totalTables > 0 ? Math.floor((completedTables / totalTables) * 100) : 100,
+                    currentStage: POSTGRES_JOB_STAGE.IMPORTING,
+                }),
+            });
+        }
+
+        await updatePostgresImportJob(jobId, {
+            status: POSTGRES_JOB_STATUS.SUCCESS,
+            stage: POSTGRES_JOB_STAGE.COMPLETED,
+            finished_at: new Date().toISOString(),
+            progress: JSON.stringify({
+                totalTables,
+                completedTables,
+                currentTable: null,
+                importedRows: 0,
+                percentage: 100,
+                currentStage: POSTGRES_JOB_STAGE.COMPLETED,
+            }),
+        });
+    } catch (err) {
+        const message = String(err?.message || 'PostgreSQL import job failed');
+        console.error('[postgres-import-job] failed', { jobId, error: message });
+        await updatePostgresImportJob(jobId, {
+            status: POSTGRES_JOB_STATUS.FAILED,
+            stage: POSTGRES_JOB_STAGE.IMPORTING,
+            error_message: message,
+            finished_at: new Date().toISOString(),
+        }).catch(() => undefined);
+    }
+};
+
+const enqueuePostgresImportJob = (jobId) => {
+    setImmediate(() => {
+        runPostgresImportJob(jobId).catch((error) => {
+            console.error('[postgres-import-job] unhandled failure', { jobId, error: error?.message });
+        });
+    });
+};
+
 /**
  * GET /api/connections - List workspace connections
  */
@@ -262,6 +752,395 @@ router.get('/', async (req, res) => {
     } catch (err) {
         console.error('List connections error:', err);
         res.status(500).json({ success: false, message: 'Failed to list connections' });
+    }
+});
+
+/**
+ * POST /api/connections/postgres/test
+ * Test PostgreSQL connectivity without persisting connection.
+ */
+router.post('/postgres/test', async (req, res) => {
+    try {
+        const rawConfig = toObject(req.body?.config || req.body);
+        const connectionId = req.body?.connectionId ? String(req.body.connectionId) : '';
+
+        let existingPasswordEncrypted = null;
+        if (connectionId) {
+            const existing = await query(
+                `SELECT id, type, config
+                 FROM connections
+                 WHERE id = $1
+                   AND workspace_id = $2
+                   AND is_deleted = FALSE`,
+                [connectionId, req.user.workspace_id]
+            );
+            if (existing.rows.length === 0) {
+                return res.status(404).json({ success: false, message: 'Connection not found' });
+            }
+            if (existing.rows[0].type !== 'PostgreSQL') {
+                return res.status(400).json({ success: false, message: 'Connection type must be PostgreSQL' });
+            }
+            const postgresConfig = getPostgresConfig(existing.rows[0].config);
+            existingPasswordEncrypted = postgresConfig.passwordEncrypted || null;
+        }
+
+        const validated = validatePostgresConfigInput(rawConfig, {
+            allowMissingPassword: Boolean(existingPasswordEncrypted),
+        });
+        const testResult = await testPostgresConnection(validated, { existingPasswordEncrypted });
+
+        res.json({
+            success: true,
+            data: {
+                databaseName: testResult.database_name || validated.databaseName,
+                userName: testResult.user_name || validated.username,
+                serverVersion: testResult.server_version || '',
+                host: validated.host,
+                port: validated.port,
+                ssl: validated.ssl,
+            },
+        });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to test PostgreSQL connection',
+        });
+    }
+});
+
+/**
+ * POST /api/connections/postgres
+ * Create a PostgreSQL connection with encrypted password.
+ */
+router.post('/postgres', async (req, res) => {
+    const client = await getClient();
+    try {
+        const name = String(req.body?.name || '').trim() || 'PostgreSQL Connection';
+        const validated = validatePostgresConfigInput(req.body?.config || {}, {
+            allowMissingPassword: false,
+        });
+
+        const postgresConfig = {
+            host: validated.host,
+            port: validated.port,
+            databaseName: validated.databaseName,
+            username: validated.username,
+            ssl: validated.ssl,
+            passwordEncrypted: encryptString(validated.password),
+            updatedAt: new Date().toISOString(),
+        };
+
+        await client.query('BEGIN');
+        const result = await client.query(
+            `INSERT INTO connections (
+                workspace_id, created_by, name,
+                type, auth_type, status, table_count, config
+             )
+             VALUES ($1, $2, $3, 'PostgreSQL', 'Password', 'Connected', 0, $4::jsonb)
+             RETURNING *`,
+            [
+                req.user.workspace_id,
+                req.user.id,
+                name,
+                JSON.stringify(mergePostgresConnectionConfig({}, postgresConfig)),
+            ]
+        );
+        await client.query('COMMIT');
+
+        res.status(201).json({
+            success: true,
+            data: formatConnection(result.rows[0]),
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Create PostgreSQL connection error:', err);
+        res.status(400).json({
+            success: false,
+            message: err.message || 'Failed to create PostgreSQL connection',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * PUT /api/connections/:id/postgres
+ * Update PostgreSQL connection config. Reuses existing password if omitted.
+ */
+router.put('/:id/postgres', async (req, res) => {
+    const client = await getClient();
+    try {
+        const connection = await requirePostgresConnection(client, req.params.id, req.user.workspace_id);
+        const existingConfig = getPostgresConfig(connection.config);
+
+        const validated = validatePostgresConfigInput(req.body?.config || {}, {
+            allowMissingPassword: Boolean(existingConfig.passwordEncrypted),
+        });
+
+        const passwordEncrypted = validated.password
+            ? encryptString(validated.password)
+            : existingConfig.passwordEncrypted;
+
+        if (!passwordEncrypted) {
+            return res.status(400).json({
+                success: false,
+                message: 'Password is required for PostgreSQL connection',
+            });
+        }
+
+        const postgresConfig = {
+            host: validated.host,
+            port: validated.port,
+            databaseName: validated.databaseName,
+            username: validated.username,
+            ssl: validated.ssl,
+            passwordEncrypted,
+            updatedAt: new Date().toISOString(),
+        };
+
+        const nextName = String(req.body?.name || '').trim() || connection.name;
+
+        await client.query(
+            `UPDATE connections
+             SET name = $1,
+                 auth_type = 'Password',
+                 status = 'Connected',
+                 config = $2::jsonb
+             WHERE id = $3
+             RETURNING *`,
+            [
+                nextName,
+                JSON.stringify(mergePostgresConnectionConfig(connection.config, postgresConfig)),
+                req.params.id,
+            ]
+        );
+
+        const refreshed = await client.query('SELECT * FROM connections WHERE id = $1', [req.params.id]);
+        res.json({
+            success: true,
+            data: formatConnection(refreshed.rows[0]),
+        });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to update PostgreSQL connection',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * GET /api/connections/:id/postgres/schemas
+ */
+router.get('/:id/postgres/schemas', async (req, res) => {
+    const client = await getClient();
+    try {
+        const connection = await requirePostgresConnection(client, req.params.id, req.user.workspace_id);
+        const schemas = await listPostgresSchemas(connection);
+        res.json({ success: true, data: schemas });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to list PostgreSQL schemas',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * GET /api/connections/:id/postgres/objects?schemas=a,b&includeViews=true
+ */
+router.get('/:id/postgres/objects', async (req, res) => {
+    const client = await getClient();
+    try {
+        const connection = await requirePostgresConnection(client, req.params.id, req.user.workspace_id);
+        const schemas = parsePostgresSchemasQuery(req.query.schemas);
+        const includeViews = req.query.includeViews === 'true';
+        const objects = await listPostgresTablesAndViews(connection, { schemas, includeViews });
+        res.json({ success: true, data: objects });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to list PostgreSQL objects',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * POST /api/connections/:id/postgres/columns/batch
+ */
+router.post('/:id/postgres/columns/batch', async (req, res) => {
+    const client = await getClient();
+    try {
+        const connection = await requirePostgresConnection(client, req.params.id, req.user.workspace_id);
+        const objects = Array.isArray(req.body?.objects) ? req.body.objects : [];
+        if (objects.length === 0) {
+            return res.status(400).json({ success: false, message: 'objects array is required' });
+        }
+
+        const data = [];
+        for (const object of objects) {
+            const schemaName = String(object?.schemaName || '').trim();
+            const tableName = String(object?.tableName || '').trim();
+            const objectType = object?.objectType === 'view' ? 'view' : 'table';
+            if (!schemaName || !tableName) {
+                return res.status(400).json({ success: false, message: 'schemaName and tableName are required' });
+            }
+
+            const columns = await listPostgresColumns(connection, schemaName, tableName);
+            const primaryKeyColumns = await fetchPostgresPrimaryKey(connection, schemaName, tableName);
+            data.push({
+                schemaName,
+                tableName,
+                objectType,
+                columns: columns.map((col) => ({
+                    name: col.name,
+                    type: col.typeExpression,
+                    ordinalPosition: col.ordinalPosition,
+                    isNullable: col.isNullable,
+                })),
+                primaryKeyColumns,
+            });
+        }
+
+        res.json({ success: true, data });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to fetch PostgreSQL columns',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * POST /api/connections/:id/postgres/import-jobs
+ */
+router.post('/:id/postgres/import-jobs', async (req, res) => {
+    const client = await getClient();
+    try {
+        const connection = await requirePostgresConnection(client, req.params.id, req.user.workspace_id);
+        const payload = parsePostgresImportPayload(req.body || {});
+
+        const activeJobs = await client.query(
+            `SELECT id
+             FROM postgres_import_jobs
+             WHERE connection_id = $1
+               AND status IN ('queued', 'running')
+             LIMIT 1`,
+            [connection.id]
+        );
+        if (activeJobs.rows.length > 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'Another PostgreSQL import job is already running for this connection',
+            });
+        }
+
+        const inserted = await client.query(
+            `INSERT INTO postgres_import_jobs (
+                workspace_id, connection_id, created_by, status, stage, import_mode, payload, progress
+             )
+             VALUES ($1, $2, $3, 'queued', $4, $5, $6::jsonb, $7::jsonb)
+             RETURNING *`,
+            [
+                req.user.workspace_id,
+                connection.id,
+                req.user.id,
+                POSTGRES_JOB_STAGE.CONNECTING,
+                payload.importMode,
+                JSON.stringify(payload),
+                JSON.stringify({
+                    totalTables: payload.tables.length,
+                    completedTables: 0,
+                    currentTable: null,
+                    importedRows: 0,
+                    percentage: 0,
+                    currentStage: POSTGRES_JOB_STAGE.CONNECTING,
+                }),
+            ]
+        );
+
+        const job = inserted.rows[0];
+        enqueuePostgresImportJob(job.id);
+
+        res.status(202).json({
+            success: true,
+            data: formatPostgresImportJob(job),
+        });
+    } catch (err) {
+        const status = Number(err?.status || 400);
+        res.status(Number.isFinite(status) ? status : 400).json({
+            success: false,
+            message: err.message || 'Failed to create PostgreSQL import job',
+        });
+    } finally {
+        client.release();
+    }
+});
+
+/**
+ * GET /api/connections/:id/postgres/import-jobs/:jobId
+ */
+router.get('/:id/postgres/import-jobs/:jobId', async (req, res) => {
+    try {
+        const result = await query(
+            `SELECT j.*
+             FROM postgres_import_jobs j
+             JOIN connections c ON c.id = j.connection_id
+             WHERE j.id = $1
+               AND j.connection_id = $2
+               AND c.workspace_id = $3
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [req.params.jobId, req.params.id, req.user.workspace_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Import job not found' });
+        }
+
+        res.json({ success: true, data: formatPostgresImportJob(result.rows[0]) });
+    } catch (err) {
+        console.error('Get PostgreSQL import job error:', err);
+        res.status(500).json({ success: false, message: 'Failed to get PostgreSQL import job' });
+    }
+});
+
+/**
+ * GET /api/connections/:id/postgres/import-history
+ */
+router.get('/:id/postgres/import-history', async (req, res) => {
+    try {
+        const result = await query(
+            `SELECT r.*
+             FROM postgres_import_runs r
+             JOIN connections c ON c.id = r.connection_id
+             WHERE r.connection_id = $1
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             ORDER BY r.created_at DESC
+             LIMIT 200`,
+            [req.params.id, req.user.workspace_id]
+        );
+
+        res.json({
+            success: true,
+            data: result.rows.map(formatPostgresImportRun),
+        });
+    } catch (err) {
+        console.error('List PostgreSQL import history error:', err);
+        res.status(500).json({ success: false, message: 'Failed to list PostgreSQL import history' });
     }
 });
 
@@ -1232,21 +2111,44 @@ router.get('/tables/:id/data', async (req, res) => {
         }
 
         const table = tableResult.rows[0];
-        if (table.connection_type !== 'Excel' && table.connection_type !== 'GoogleSheets') {
-            return res.status(400).json({ success: false, message: 'Table data endpoint only supports spreadsheet tables' });
-        }
-
-        const rowsResult = await query(
-            `SELECT row_index, row_data
-             FROM excel_sheet_rows
-             WHERE synced_table_id = $1
-             ORDER BY row_index ASC
-             OFFSET $2 LIMIT $3`,
-            [req.params.id, offset, limit]
-        );
-
         const totalRows = table.row_count || 0;
-        const rows = rowsResult.rows.map((row) => row.row_data || {});
+        let rows = [];
+
+        if (table.connection_type === 'Excel' || table.connection_type === 'GoogleSheets') {
+            const rowsResult = await query(
+                `SELECT row_index, row_data
+                 FROM excel_sheet_rows
+                 WHERE synced_table_id = $1
+                 ORDER BY row_index ASC
+                 OFFSET $2 LIMIT $3`,
+                [req.params.id, offset, limit]
+            );
+            rows = rowsResult.rows.map((row) => row.row_data || {});
+        } else if (table.connection_type === 'PostgreSQL') {
+            const syncState = await query(
+                `SELECT snapshot_table_name
+                 FROM postgres_table_sync_state
+                 WHERE connection_id = $1
+                   AND schema_name = $2
+                   AND table_name = $3
+                 LIMIT 1`,
+                [table.connection_id, table.dataset_name, table.table_name]
+            );
+
+            if (syncState.rows.length === 0 || !syncState.rows[0].snapshot_table_name) {
+                return res.status(404).json({ success: false, message: 'PostgreSQL snapshot table not found' });
+            }
+
+            const snapshotTableName = syncState.rows[0].snapshot_table_name;
+            const snapshotSql = `SELECT * FROM ${quoteIdent(SNAPSHOT_SCHEMA)}.${quoteIdent(snapshotTableName)} OFFSET $1 LIMIT $2`;
+            const rowsResult = await query(snapshotSql, [offset, limit]);
+            rows = rowsResult.rows || [];
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: `Table preview is not supported for source type: ${table.connection_type}`,
+            });
+        }
 
         res.json({
             success: true,
@@ -1261,7 +2163,7 @@ router.get('/tables/:id/data', async (req, res) => {
             },
         });
     } catch (err) {
-        console.error('Get spreadsheet table data error:', err);
+        console.error('Get imported table data error:', err);
         res.status(500).json({ success: false, message: 'Failed to get table data' });
     }
 });
@@ -1284,7 +2186,7 @@ router.get('/:id/tables', async (req, res) => {
 });
 
 function formatConnection(row) {
-    return {
+    const formatted = {
         id: row.id,
         name: row.name,
         type: row.type,
@@ -1296,6 +2198,15 @@ function formatConnection(row) {
         tableCount: row.table_count,
         createdAt: row.created_at,
     };
+
+    if (row.type === 'PostgreSQL') {
+        const postgresConfig = getPostgresConfig(row.config);
+        formatted.config = {
+            postgres: sanitizePostgresConfig(postgresConfig),
+        };
+    }
+
+    return formatted;
 }
 
 function formatTable(row) {

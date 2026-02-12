@@ -5,9 +5,10 @@ import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
 import { fetchAggregatedData } from '../../../services/bigquery';
 import { DrillDownService } from '../engine/DrillDownService';
+import { normalizeAggregation } from '../../../utils/aggregation';
 
 export const useAggregatedData = (widget: BIWidget) => {
-    const { getDataSource, googleToken, connections } = useDataStore();
+    const { getDataSource, connections } = useDataStore();
     const { crossFilters, drillDowns } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const globalFilters = activeDashboard?.globalFilters || [];
@@ -81,11 +82,9 @@ export const useAggregatedData = (widget: BIWidget) => {
                 }
 
                 // Resolve Token (Service Account or OAuth)
-                let token = googleToken;
-                if (connection?.authType === 'ServiceAccount' && connection.serviceAccountKey) {
-                    const { getServiceAccountToken } = await import('../../../services/googleAuth');
-                    token = await getServiceAccountToken(connection.serviceAccountKey);
-                }
+                const { getTokenForConnection } = await import('../../../services/googleAuth');
+                const clientId = process.env.GOOGLE_CLIENT_ID || '';
+                const token = connection ? await getTokenForConnection(connection, clientId) : null;
 
                 if (!token) {
                     setError("No Google Token or Service Account Key");
@@ -95,8 +94,8 @@ export const useAggregatedData = (widget: BIWidget) => {
 
                 const dimensions = [currentXField].filter(Boolean);
                 const measures = [
-                    ...series.map(s => ({ field: s, aggregation: widget.aggregation || 'sum' })),
-                    ...lineSeries.map(s => ({ field: s, aggregation: widget.aggregation || 'sum' }))
+                    ...series.map(s => ({ field: s, aggregation: normalizeAggregation(widget.aggregation || 'sum') })),
+                    ...lineSeries.map(s => ({ field: s, aggregation: normalizeAggregation(widget.aggregation || 'sum') }))
                 ];
 
                 // Filters

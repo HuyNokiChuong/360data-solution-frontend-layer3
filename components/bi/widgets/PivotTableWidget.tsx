@@ -1,12 +1,9 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { BIWidget, ConditionalFormat, PivotValue } from '../types';
-import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
-import { applyFilters } from '../engine/dataProcessing';
-import { pivotData, formatValue } from '../engine/calculations';
+import { pivotData } from '../engine/calculations';
 import { useDirectQuery } from '../hooks/useDirectQuery';
-import { DrillDownService } from '../engine/DrillDownService';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
@@ -49,7 +46,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
     onClick
 }) => {
     const { isDark } = useChartColors();
-    const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, drillDowns } = useFilterStore();
+    const { isWidgetFiltered } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     // Switch to useDirectQuery
@@ -116,32 +113,28 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: 'No data' };
         }
 
-        const pivotDrillState = drillDowns[widget.id];
+        const hasValues = Array.isArray(widget.pivotValues) && widget.pivotValues.length > 0;
 
-        // Use drillDownHierarchy if available, otherwise check pivotRows mainly for state validation
-        const hasDrillHierarchy = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) || (widget.type === 'pivot' && !!widget.pivotRows?.length);
-
-        const activeRows = (hasDrillHierarchy && pivotDrillState)
-            ? DrillDownService.getCurrentFields(widget, pivotDrillState)
-            : (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
-                ? DrillDownService.getCurrentFields(widget, null) // Default to Level 0 if explicit hierarchy
-                : widget.pivotRows || []; // Default to Full Nested if no explicit hierarchy and no active state
-
-        if (!activeRows || activeRows.length === 0 || !widget.pivotValues || widget.pivotValues.length === 0) {
+        if (!hasValues) {
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: 'Fields not configured' };
         }
 
+        const configuredRows = widget.pivotRows || [];
+        const useAutoRow = !configuredRows || configuredRows.length === 0;
+        const activeRows = useAutoRow ? ['_autoCategory'] : configuredRows;
+
         try {
             let filteredData = widgetData;
-            // REMOVED local applyFilters here because useDirectQuery already handles both CrossFilters and GlobalFilters at the BigQuery level.
-            // Applying them here on aggregated data causes issues if the filter field is not part of the pivot dimensions.
-
 
             // FORMATTING STEP: Transform data for Display while keeping sort order
             // We use a composite key "SortValue|||DisplayValue"
             const formattedData = filteredData.map(row => {
                 const newRow = { ...row };
                 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+                if (useAutoRow) {
+                    newRow._autoCategory = newRow._autoCategory || 'Total';
+                }
 
                 activeRows.forEach(field => {
                     const val = newRow[field];
@@ -178,7 +171,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         } catch (err: any) {
             return { rowKeys: [], colKeys: [], dataMap: {}, rowTotals: {}, colTotals: {}, grandTotal: {}, error: err.message };
         }
-    }, [widget, widgetData, allDashboardFilters, activeDashboard?.globalFilters, JSON.stringify(drillDowns[widget.id])]);
+    }, [widget, widgetData]);
 
     const valueFields = widget.pivotValues || [];
     const showValueHeader = valueFields.length > 1;
@@ -283,10 +276,8 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
     // Auto-expand all on load/change
     useEffect(() => {
-        if (flattenedRows.length > 0) {
-            // Default expand all
-            setExpandedKeys(new Set(flattenedRows.map((r: any) => r.key)));
-        }
+        // Default collapsed tree. User expands specific nodes manually (+/-).
+        setExpandedKeys(new Set());
     }, [flattenedRows.length]); // Depend on structure change
 
     const toggleExpand = (key: string) => {
@@ -307,10 +298,18 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         );
     }
 
+    if (error === 'No data') {
+        return (
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
+                <EmptyChartState type="table" message="No data available" onClickDataTab={onClickDataTab} />
+            </BaseWidget>
+        );
+    }
+
     if (error === 'Fields not configured') {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
-                <EmptyChartState type="table" message="Configure Rows & Values" onClickDataTab={onClickDataTab} />
+                <EmptyChartState type="table" message="Configure Values" onClickDataTab={onClickDataTab} />
             </BaseWidget>
         );
     }
@@ -465,7 +464,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                                     onClick={(e) => { e.stopPropagation(); toggleExpand(node.key); }}
                                                     className="w-4 h-4 flex items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors"
                                                 >
-                                                    <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} text-[9px]`}></i>
+                                                    <span className="text-[11px] font-black leading-none">{isExpanded ? '-' : '+'}</span>
                                                 </button>
                                             )}
                                             {isLeafNode && <span className="w-4"></span>}

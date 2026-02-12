@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { aggregate, formatValue } from '../engine/calculations';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, getAdaptiveNumericFormat } from '../engine/utils';
 import { applyFilters } from '../engine/dataProcessing';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { BIWidget } from '../types';
@@ -165,7 +165,7 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                                 color: mainColor,
                                 fontFamily: 'Outfit',
                                 fontSize: (() => {
-                                    const formatted = formatBIValue(value, widget.valueFormat || 'standard');
+                                    const formatted = formatBIValue(value, getAdaptiveNumericFormat(widget.valueFormat));
                                     const len = formatted.length;
                                     if (len <= 10) return '1.875rem'; // text-3xl
                                     if (len <= 15) return '1.5rem';   // text-2xl
@@ -174,14 +174,14 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                                 })()
                             }}
                         >
-                            {formatBIValue(value, widget.valueFormat || 'standard')}
+                            {formatBIValue(value, getAdaptiveNumericFormat(widget.valueFormat))}
                         </div>
                         <div className="text-sm text-slate-400 mt-1">
                             {percentage.toFixed(1)}%
                         </div>
                         {widget.comparisonValue && (
                             <div className="text-xs text-slate-500 mt-1" style={{ fontFamily: 'Outfit' }}>
-                                Target: {formatBIValue(maxValue, widget.valueFormat || 'standard')}
+                                Target: {formatBIValue(maxValue, getAdaptiveNumericFormat(widget.valueFormat))}
                             </div>
                         )}
                     </div>

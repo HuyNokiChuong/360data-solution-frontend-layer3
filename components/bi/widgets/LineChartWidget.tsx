@@ -16,7 +16,7 @@ import EmptyChartState from './EmptyChartState';
 import { DrillDownService } from '../engine/DrillDownService';
 import { DrillDownState } from '../types';
 import { useChartColors } from '../utils/chartColors';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import ChartLegend from './ChartLegend';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 
@@ -119,10 +119,20 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
     const xFieldDisplay = useMemo(() => {
         if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
         if (chartData.length > 0 && chartData[0]._formattedAxis) return '_formattedAxis';
+        if (!xField) return '_autoCategory';
         return xField;
     }, [drillDownState?.mode, xFields.length, chartData, xField]);
+    const selectionField = xField || xFieldDisplay;
 
     const yField = series[0] || '';
+
+    const effectiveChartData = useMemo(() => {
+        if (xField) return chartData;
+        return chartData.map((row) => ({
+            ...row,
+            _autoCategory: row._autoCategory || 'Total'
+        }));
+    }, [chartData, xField]);
 
     // Colors
     const { chartColors } = useChartColors();
@@ -140,6 +150,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
 
 
     const hasHierarchy = widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0;
+    const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
 
     // Get current cross-filter selection for THIS widget
     const currentSelection = useMemo(() => {
@@ -152,6 +163,47 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
     const realDataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
     }, [widget.dataSourceId, getDataSource]);
+
+    const resolveCategoryLabel = (payload: any) => {
+        if (!payload) return '';
+        const raw = payload[xFieldDisplay] ?? payload[xField] ?? payload._autoCategory ?? '';
+        const asString = String(raw ?? '');
+        if (!asString) return '';
+        if (asString.includes('\n')) {
+            const parts = asString.split('\n').filter(Boolean);
+            return parts[parts.length - 1] || asString;
+        }
+        return asString;
+    };
+
+    const renderLabelText = (labelMode: BIWidget['labelMode'], valueText: string, categoryText: string) => {
+        switch (labelMode) {
+            case 'value':
+                return valueText;
+            case 'category':
+                return categoryText;
+            case 'categoricalPercent':
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+            case 'categoricalValue':
+            default:
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+        }
+    };
+
+    const hierarchyDepth = useMemo(() => {
+        if (drillDownState?.mode !== 'expand') return 1;
+        return effectiveChartData.reduce((maxDepth, row) => {
+            const raw = row?._combinedAxis || row?._formattedAxis || row?.[xFieldDisplay] || '';
+            const depth = String(raw).split('\n').filter(Boolean).length || 1;
+            return Math.max(maxDepth, depth);
+        }, 1);
+    }, [drillDownState?.mode, effectiveChartData, xFieldDisplay]);
+
+    const hasBottomLegend = widget.showLegend !== false && (!widget.legendPosition || widget.legendPosition === 'bottom');
+    const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(96, 30 + hierarchyDepth * 16);
+    const bottomMargin = hasBottomLegend
+        ? Math.max(44, xAxisHeight + 26)
+        : Math.max(14, xAxisHeight - 8);
 
     const loadingProgress = useMemo(() => {
         if (!realDataSource || !realDataSource.totalRows || realDataSource.totalRows === 0) return 0;
@@ -175,23 +227,6 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
         );
     }
 
-    if (!xField) {
-        return (
-            <BaseWidget
-                widget={widget}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onDuplicate={onDuplicate}
-                isSelected={isSelected}
-                loading={isLoading}
-                error={error || undefined}
-                onClick={onClick}
-            >
-                <EmptyChartState type={widget.chartType || 'line'} message="Select X-Axis field" onClickDataTab={onClickDataTab} onClick={onClick} />
-            </BaseWidget>
-        );
-    }
-
     if (!yField) {
         return (
             <BaseWidget
@@ -209,7 +244,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
         );
     }
 
-    if (chartData.length === 0) {
+    if (effectiveChartData.length === 0) {
         return (
             <BaseWidget
                 widget={widget}
@@ -241,8 +276,8 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
-                        data={chartData}
-                        margin={{ top: 20, right: 30, left: 0, bottom: drillDownState?.mode === 'expand' ? 60 : 10 }}
+                        data={effectiveChartData}
+                        margin={{ top: 20, right: 30, left: 0, bottom: bottomMargin }}
                         onClick={(e: any) => e && e.activePayload && handleDotClick(e.activePayload[0].payload)}
                     >
                         {widget.showGrid !== false && <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={true} horizontal={true} />}
@@ -253,8 +288,8 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                             tickLine={false}
                             axisLine={false}
                             interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
-                            tick={<HierarchicalAxisTick data={chartData} />}
-                            height={drillDownState?.mode === 'expand' ? 80 : 30}
+                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                            height={xAxisHeight}
                             fontFamily="Outfit"
                         />
                         {(() => {
@@ -326,6 +361,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
                                     fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '10px')}
                                 />}
+                                wrapperStyle={hasBottomLegend ? { paddingTop: 8 } : undefined}
                             />
                         )}
 
@@ -334,7 +370,8 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                 const config = widget.yAxisConfigs?.[idx];
                                 const yAxisId = config?.yAxisId || 'left';
                                 const color = colors[idx % colors.length];
-                                const format = widget.labelFormat || (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const seriesFormat = (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const format = widget.labelFormat || getAdaptiveNumericFormat(seriesFormat);
 
                                 return (
                                     <Line
@@ -343,13 +380,14 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         dataKey={sField}
                                         name={sField}
                                         yAxisId={yAxisId}
+                                        isAnimationActive={false}
                                         stroke={color}
                                         strokeWidth={3}
                                         connectNulls={true}
                                         dot={(dotProps: any) => {
                                             const { cx, cy, payload } = dotProps;
                                             if (!cx || !cy) return null;
-                                            const isItemSelected = !currentSelection || payload[xField] === currentSelection;
+                                            const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -364,18 +402,17 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         activeDot={{ r: 6, strokeWidth: 0 }}
                                         onClick={(e: any) => handleDotClick(e.payload)}
                                     >
-                                        {widget.showLabels !== false && (
+                                        {shouldRenderDataLabels && (
                                             <LabelList
                                                 dataKey={sField}
                                                 position={idx % 2 === 0 ? "top" : "bottom"}
                                                 dy={idx % 2 === 0 ? -6 : 6}
                                                 fill="#94a3b8"
                                                 fontSize={10}
-                                                formatter={(val: any) => {
-                                                    const formatted = formatBIValue(val, format);
-                                                    if (widget.labelMode === 'value') return formatted;
-                                                    if (widget.labelMode === 'category') return sField;
-                                                    return formatted;
+                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                    const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
+                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    return renderLabelText(widget.labelMode, formatted, category);
                                                 }}
                                             />
                                         )}
@@ -389,7 +426,8 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                 const config = widget.lineAxisConfigs?.[idx];
                                 const yAxisId = config?.yAxisId || 'right';
                                 const color = colors[(series.length + idx) % colors.length];
-                                const format = widget.labelFormat || (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const seriesFormat = (config?.format && config.format !== 'standard' ? config.format : null) || widget.valueFormat || 'standard';
+                                const format = widget.labelFormat || getAdaptiveNumericFormat(seriesFormat);
 
                                 return (
                                     <Line
@@ -398,13 +436,14 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         dataKey={ls}
                                         name={ls}
                                         yAxisId={yAxisId}
+                                        isAnimationActive={false}
                                         stroke={color}
                                         strokeWidth={3}
                                         connectNulls={true}
                                         dot={(dotProps: any) => {
                                             const { cx, cy, payload } = dotProps;
                                             if (!cx || !cy) return null;
-                                            const isItemSelected = !currentSelection || payload[xField] === currentSelection;
+                                            const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -419,18 +458,17 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         activeDot={{ r: 6, strokeWidth: 0 }}
                                         onClick={(e: any) => handleDotClick(e.payload)}
                                     >
-                                        {widget.showLabels !== false && (
+                                        {shouldRenderDataLabels && (
                                             <LabelList
                                                 dataKey={ls}
                                                 position={(series.length + idx) % 2 === 0 ? "top" : "bottom"}
                                                 dy={(series.length + idx) % 2 === 0 ? -6 : 6}
                                                 fill="#94a3b8"
                                                 fontSize={10}
-                                                formatter={(val: any) => {
-                                                    const formatted = formatBIValue(val, format);
-                                                    if (widget.labelMode === 'value') return formatted;
-                                                    if (widget.labelMode === 'category') return ls;
-                                                    return formatted;
+                                                formatter={(val: any, _name: any, labelProps: any) => {
+                                                    const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
+                                                    const category = resolveCategoryLabel(labelProps?.payload);
+                                                    return renderLabelText(widget.labelMode, formatted, category);
                                                 }}
                                             />
                                         )}
@@ -444,13 +482,14 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                 type="monotone"
                                 dataKey={yField}
                                 yAxisId="left"
+                                isAnimationActive={false}
                                 stroke={colors[0]}
                                 strokeWidth={3}
                                 connectNulls={true}
                                 dot={(dotProps: any) => {
                                     const { cx, cy, payload } = dotProps;
                                     if (!cx || !cy) return null;
-                                    const isItemSelected = !currentSelection || payload[xField] === currentSelection;
+                                    const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
                                     return (
                                         <circle
                                             cx={cx}
@@ -465,13 +504,17 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                 activeDot={{ r: 6, strokeWidth: 0 }}
                                 onClick={(e: any) => handleDotClick(e?.payload)}
                             >
-                                {widget.showLabels && (
+                                {shouldRenderDataLabels && (
                                     <LabelList
                                         dataKey={yField}
                                         position="top"
                                         fill="#94a3b8"
                                         fontSize={10}
-                                        formatter={(val: any) => formatValue(val, widget.valueFormat || 'standard')}
+                                        formatter={(val: any, _name: any, labelProps: any) => {
+                                            const formatted = formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 });
+                                            const category = resolveCategoryLabel(labelProps?.payload);
+                                            return renderLabelText(widget.labelMode, formatted, category);
+                                        }}
                                     />
                                 )}
                             </Line>
@@ -479,10 +522,10 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
 
                         {/* Render Highlights from Insight */}
                         {widget.insight?.highlight?.map((hl, i) => {
-                            const dataPoint = chartData[hl.index];
+                            const dataPoint = effectiveChartData[hl.index];
                             if (!dataPoint) return null;
 
-                            const xValue = dataPoint[xField];
+                            const xValue = dataPoint[selectionField];
                             const yValue = hl.value || dataPoint[series[0] || yField];
 
                             // Pick a color based on type

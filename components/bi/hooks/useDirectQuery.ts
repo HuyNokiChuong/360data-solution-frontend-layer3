@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { BIWidget, Filter, FilterOperator } from '../types';
+import { BIWidget, Filter, FilterOperator, AggregationType } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
@@ -7,13 +7,17 @@ import { fetchAggregatedData } from '../../../services/bigquery';
 import { fetchExcelTableData } from '../../../services/excel';
 import { DrillDownService } from '../engine/DrillDownService';
 import { getFieldValue } from '../engine/utils';
+import { applyFilters } from '../engine/dataProcessing';
+import { aggregate as aggregateValues } from '../engine/calculations';
+import { coerceAggregationForFieldType, normalizeAggregation } from '../../../utils/aggregation';
+import { normalizeFieldType } from '../../../utils/schema';
 
 /**
  * Unified hook for Direct Query data fetching from BigQuery.
  * This hook replaces useAggregatedData and provides support for Charts, Tables, Pivot Tables, etc.
  */
 export const useDirectQuery = (widget: BIWidget) => {
-    const { getDataSource, googleToken, connections, dataSources, updateDataSource, loadTableData, addLog } = useDataStore();
+    const { getDataSource, connections, dataSources, updateDataSource, loadTableData, addLog } = useDataStore();
     const { crossFilters, drillDowns, getFiltersForWidget } = useFilterStore();
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const updateWidget = useDashboardStore(state => state.updateWidget);
@@ -150,7 +154,7 @@ export const useDirectQuery = (widget: BIWidget) => {
     // Identify Dimensions and Measures based on widget type
     const { dimensions, measures } = useMemo(() => {
         let dims: string[] = [];
-        let meass: { field: string; aggregation: string; expression?: string; isQuickMeasure?: boolean; qmType?: string; qmField?: string }[] = [];
+        let meass: { field: string; aggregation: AggregationType; expression?: string; isQuickMeasure?: boolean; qmType?: string; qmField?: string }[] = [];
 
         switch (widget.type) {
             case 'chart':
@@ -165,12 +169,12 @@ export const useDirectQuery = (widget: BIWidget) => {
                 // Support for yAxisConfigs (modern multi-measure configuration)
                 if (widget.yAxisConfigs && widget.yAxisConfigs.length > 0) {
                     widget.yAxisConfigs.forEach(c => {
-                        meass.push({ field: c.field, aggregation: c.aggregation || 'sum' });
+                        meass.push({ field: c.field, aggregation: normalizeAggregation(c.aggregation || 'sum') });
                     });
                 } else if (widget.yAxis && widget.yAxis.length > 0) {
                     // Fallback to yAxis array
                     widget.yAxis.forEach(field => {
-                        meass.push({ field, aggregation: widget.aggregation || 'sum' });
+                        meass.push({ field, aggregation: normalizeAggregation(widget.aggregation || 'sum') });
                     });
                 }
 
@@ -179,7 +183,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                     widget.values.forEach(field => {
                         // Avoid duplicates if already added via yAxisConfigs/yAxis
                         if (!meass.some(m => m.field === field)) {
-                            meass.push({ field, aggregation: widget.aggregation || 'sum' });
+                            meass.push({ field, aggregation: normalizeAggregation(widget.aggregation || 'sum') });
                         }
                     });
                 }
@@ -188,7 +192,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 if (widget.measures && widget.measures.length > 0) {
                     widget.measures.forEach(field => {
                         if (!meass.some(m => m.field === field)) {
-                            meass.push({ field, aggregation: widget.aggregation || 'sum' });
+                            meass.push({ field, aggregation: normalizeAggregation(widget.aggregation || 'sum') });
                         }
                     });
                 }
@@ -196,21 +200,26 @@ export const useDirectQuery = (widget: BIWidget) => {
                 // Support for lineAxisConfigs (Combo charts)
                 if (widget.lineAxisConfigs && widget.lineAxisConfigs.length > 0) {
                     widget.lineAxisConfigs.forEach(c => {
-                        meass.push({ field: c.field, aggregation: c.aggregation || 'sum' });
+                        meass.push({ field: c.field, aggregation: normalizeAggregation(c.aggregation || 'sum') });
                     });
+                }
+
+                // If user only drags dimension(s) without any explicit measure,
+                // auto-create COUNT on the first dimension so chart still renders values.
+                if (dims.length > 0 && meass.length === 0) {
+                    meass.push({ field: dims[0], aggregation: 'count' });
                 }
                 break;
 
             case 'pivot':
-                const pivotDrillState = drillDowns[widget.id];
-                const activeRows = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
-                    ? DrillDownService.getCurrentFields(widget, pivotDrillState)
-                    : widget.pivotRows || [];
-                dims.push(...activeRows);
+                // Pivot must always query the full configured hierarchy.
+                // Per-node expand/collapse is handled at widget rendering layer, not by query-level drill state.
+                const pivotRows = widget.pivotRows || [];
+                dims.push(...pivotRows);
                 if (widget.pivotCols) dims.push(...widget.pivotCols);
                 if (widget.pivotValues) {
                     widget.pivotValues.forEach(v => {
-                        meass.push({ field: v.field, aggregation: v.aggregation || 'sum' });
+                        meass.push({ field: v.field, aggregation: normalizeAggregation(v.aggregation || 'sum') });
                     });
                 }
                 break;
@@ -225,10 +234,10 @@ export const useDirectQuery = (widget: BIWidget) => {
             case 'gauge':
                 const metricField = widget.yAxis?.[0] || widget.metric || widget.measures?.[0];
                 if (metricField) {
-                    meass.push({ field: metricField, aggregation: widget.aggregation || 'sum' });
+                    meass.push({ field: metricField, aggregation: normalizeAggregation(widget.aggregation || 'sum') });
                 }
                 if (widget.comparisonValue) {
-                    meass.push({ field: widget.comparisonValue, aggregation: widget.aggregation || 'sum' });
+                    meass.push({ field: widget.comparisonValue, aggregation: normalizeAggregation(widget.aggregation || 'sum') });
                 }
                 break;
 
@@ -239,22 +248,14 @@ export const useDirectQuery = (widget: BIWidget) => {
                 break;
         }
 
-        // AUTO-CORRECT AGGREGATION based on Schema
+        // AUTO-CORRECT AGGREGATION based on field type schema
         if (dataSource?.schema) {
             meass = meass.map(m => {
-                // If aggregation is explicitly compatible with string (count, countDistinct), keep it.
-                if (['count', 'countDistinct', 'min', 'max'].includes(m.aggregation)) return m;
-
                 const fieldDef = dataSource.schema.find(f => f.name === m.field);
-                if (fieldDef) {
-                    const type = fieldDef.type.toLowerCase();
-                    // If it's a string/date and currently set to sum/avg (default), switch to count
-                    if ((type === 'string' || type === 'date' || type === 'timestamp' || type === 'boolean') &&
-                        (m.aggregation === 'sum' || m.aggregation === 'avg')) {
-                        return { ...m, aggregation: 'count' };
-                    }
-                }
-                return m;
+                return {
+                    ...m,
+                    aggregation: coerceAggregationForFieldType(m.aggregation, fieldDef?.type)
+                };
             });
         }
 
@@ -291,7 +292,6 @@ export const useDirectQuery = (widget: BIWidget) => {
     useEffect(() => {
         let isMounted = true;
         const abortController = new AbortController();
-
         const fetchData = async () => {
             if (!dataSource) {
                 if (widget.dataSourceId || widget.dataSourceName) {
@@ -303,6 +303,186 @@ export const useDirectQuery = (widget: BIWidget) => {
             }
 
             if (dataSource.type !== 'bigquery') {
+                const processLocalData = (rawRows: any[]) => {
+                    const localFilters: Filter[] = [];
+
+                    if (widget.filters) localFilters.push(...widget.filters);
+                    globalFilters.forEach(gf => {
+                        if (!gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)) {
+                            localFilters.push({ field: gf.field, operator: gf.operator, value: gf.value, enabled: true });
+                        }
+                    });
+
+                    const activeCrossFilters = getFiltersForWidget(widget.id);
+                    localFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
+
+                    const drillDownState = drillDowns[widget.id];
+                    if (widget.type === 'chart' && drillDownState && drillDownState.breadcrumbs.length > 0) {
+                        drillDownState.breadcrumbs.forEach(bc => {
+                            localFilters.push({
+                                field: drillDownState.hierarchy[bc.level],
+                                operator: 'equals',
+                                value: bc.value,
+                                enabled: true
+                            });
+                        });
+                    }
+
+                    const filteredRows = localFilters.length > 0 ? applyFilters(rawRows, localFilters) : rawRows;
+
+                    if (widget.type !== 'chart') {
+                        setData(filteredRows);
+                        return;
+                    }
+
+                    if (dimensions.length === 0) {
+                        if (measures.length === 0) {
+                            setData([]);
+                            return;
+                        }
+
+                        const totalRow: Record<string, any> = { _autoCategory: 'Total' };
+                        measures.forEach((m) => {
+                            totalRow[m.field] = aggregateValues(filteredRows, m.field, m.aggregation);
+                        });
+                        setData([totalRow]);
+                        return;
+                    }
+
+                    const grouped = new Map<string, any[]>();
+                    filteredRows.forEach(row => {
+                        const parts = dimensions.map(d => String(getFieldValue(row, d) ?? '(Blank)'));
+                        const key = parts.join('__360__');
+                        if (!grouped.has(key)) grouped.set(key, []);
+                        grouped.get(key)!.push(row);
+                    });
+
+                    const aggregatedRows: any[] = Array.from(grouped.values()).map(groupRows => {
+                        const first = groupRows[0] || {};
+                        const nextRow: Record<string, any> = {};
+                        dimensions.forEach(dim => {
+                            nextRow[dim] = getFieldValue(first, dim);
+                        });
+                        measures.forEach(m => {
+                            nextRow[m.field] = aggregateValues(groupRows, m.field, m.aggregation);
+                        });
+                        return nextRow;
+                    });
+
+                    const axisFields = DrillDownService.getCurrentFields(widget, drillDownState);
+                    const formatLevelValue = (val: any, field: string) => {
+                        if (val === null || val === undefined) return '(Blank)';
+                        if (field.includes('___')) {
+                            const part = field.split('___')[1];
+                            switch (part) {
+                                case 'year': return String(val);
+                                case 'quarter': return `Q${val}`;
+                                case 'half': return `H${val}`;
+                                case 'month': {
+                                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                    const mIdx = parseInt(val) - 1;
+                                    return months[mIdx] || `M${val}`;
+                                }
+                                case 'day': return `Day ${val}`;
+                                case 'hour': return `${String(val).padStart(2, '0')}:00`;
+                                case 'minute': return `:${String(val).padStart(2, '0')}`;
+                                case 'second': return `:${String(val).padStart(2, '0')}s`;
+                                default: return String(val);
+                            }
+                        }
+                        return String(val);
+                    };
+
+                    let processedData = aggregatedRows;
+                    const axisKey = (drillDownState?.mode === 'expand' && axisFields.length > 1) ? '_combinedAxis' : '_formattedAxis';
+
+                    if (axisFields.length > 0) {
+                        processedData = processedData.map(row => {
+                            let label = '';
+                            if (drillDownState?.mode === 'expand' && axisFields.length > 1) {
+                                label = axisFields.map(f => formatLevelValue(row[f], f)).reverse().join('\n');
+                            } else {
+                                label = formatLevelValue(row[axisFields[0]], axisFields[0]);
+                            }
+                            return { ...row, [axisKey]: label };
+                        });
+                    }
+
+                    const willPivot = widget.legend && dimensions.includes(widget.legend);
+                    if (axisFields.length > 0 && !willPivot) {
+                        const groupedMap = new Map<string, any>();
+                        processedData.forEach(row => {
+                            const label = row[axisKey];
+                            if (!groupedMap.has(label)) {
+                                groupedMap.set(label, { ...row });
+                            } else {
+                                const existing = groupedMap.get(label);
+                                measures.forEach(m => {
+                                    existing[m.field] = (existing[m.field] || 0) + (row[m.field] || 0);
+                                });
+                            }
+                        });
+                        processedData = Array.from(groupedMap.values());
+                    }
+
+                    const legendFields = new Set<string>();
+                    if (widget.legend && dimensions.includes(widget.legend)) {
+                        const xFieldKey = axisKey;
+                        const legendField = widget.legend;
+                        const measureFields = measures.map(m => m.field);
+                        const pivotMap = new Map<string, any>();
+
+                        processedData.forEach(row => {
+                            const xValue = row[xFieldKey];
+                            const legendValue = String(row[legendField] || 'Other');
+                            legendFields.add(legendValue);
+
+                            if (!pivotMap.has(xValue)) {
+                                pivotMap.set(xValue, { ...row });
+                            }
+                            const pivotRow = pivotMap.get(xValue);
+                            measureFields.forEach(mf => {
+                                pivotRow[legendValue] = row[mf];
+                            });
+                        });
+                        processedData = Array.from(pivotMap.values());
+                    }
+
+                    if (widget.sortBy && widget.sortBy !== 'none') {
+                        const [type, dir] = widget.sortBy.split('_');
+                        const isDesc = dir === 'desc';
+
+                        processedData.sort((a, b) => {
+                            let valA: any;
+                            let valB: any;
+
+                            if (type === 'category') {
+                                valA = a[axisKey] || '';
+                                valB = b[axisKey] || '';
+                                if (!isNaN(Date.parse(valA)) && !isNaN(Date.parse(valB))) {
+                                    valA = new Date(valA).getTime();
+                                    valB = new Date(valB).getTime();
+                                }
+                            } else {
+                                const calcTotal = (row: any) => {
+                                    if (legendFields.size > 0) {
+                                        return Array.from(legendFields).reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
+                                    }
+                                    return measures.reduce((sum, m) => sum + (Number(row[m.field]) || 0), 0);
+                                };
+                                valA = calcTotal(a);
+                                valB = calcTotal(b);
+                            }
+
+                            if (valA < valB) return isDesc ? 1 : -1;
+                            if (valA > valB) return isDesc ? -1 : 1;
+                            return 0;
+                        });
+                    }
+
+                    setData(processedData);
+                };
+
                 if (dataSource.type === 'excel' && (!dataSource.isLoaded || !dataSource.data || dataSource.data.length === 0)) {
                     try {
                         updateDataSource(dataSource.id, {
@@ -317,10 +497,17 @@ export const useDirectQuery = (widget: BIWidget) => {
                         let offset = 0;
                         let hasMore = true;
                         let totalRows = dataSource.totalRows || 0;
+                        let backendSchema: { name: string; type: 'string' | 'number' | 'date' | 'boolean' }[] | null = null;
 
                         while (hasMore) {
                             const page = await fetchExcelTableData(tableId, offset, pageSize);
                             const pageRows = page.rows || [];
+                            if (!backendSchema && Array.isArray(page.schema) && page.schema.length > 0) {
+                                backendSchema = page.schema.map((field) => ({
+                                    name: field.name,
+                                    type: normalizeFieldType(field.type),
+                                }));
+                            }
 
                             allRows.push(...pageRows);
                             totalRows = page.totalRows ?? totalRows;
@@ -332,13 +519,14 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                         loadTableData(dataSource.id, allRows);
                         updateDataSource(dataSource.id, {
+                            schema: backendSchema || dataSource.schema,
                             isLoaded: true,
                             isLoadingPartial: false,
                             syncStatus: 'ready',
                             totalRows: totalRows || allRows.length,
                             lastSyncAt: new Date().toISOString(),
                         });
-                        setData(allRows);
+                        processLocalData(allRows);
                     } catch (err: any) {
                         if (!isMounted) return;
                         updateDataSource(dataSource.id, {
@@ -350,7 +538,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                         setData([]);
                     }
                 } else {
-                    setData(dataSource.data || []);
+                    processLocalData(dataSource.data || []);
                 }
                 return;
             }
@@ -364,11 +552,9 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                 if (!projectId) throw new Error("Missing Project ID");
 
-                let token = googleToken;
-                if (connection?.authType === 'ServiceAccount' && connection.serviceAccountKey) {
-                    const { getServiceAccountToken } = await import('../../../services/googleAuth');
-                    token = await getServiceAccountToken(connection.serviceAccountKey);
-                }
+                const { getTokenForConnection } = await import('../../../services/googleAuth');
+                const clientId = process.env.GOOGLE_CLIENT_ID || '';
+                const token = connection ? await getTokenForConnection(connection, clientId) : null;
 
                 if (!token) {
                     setError("Relink your account to fetch data");
@@ -387,7 +573,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 bqFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
 
                 const drillDownState = drillDowns[widget.id];
-                if (drillDownState && drillDownState.breadcrumbs.length > 0) {
+                if (widget.type === 'chart' && drillDownState && drillDownState.breadcrumbs.length > 0) {
                     drillDownState.breadcrumbs.forEach(bc => {
                         bqFilters.push({
                             field: drillDownState.hierarchy[bc.level],
@@ -470,7 +656,7 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                 if (isMounted) {
                     // 1. Normalize data: Map SQL aliases to field names and ensure numeric types
-                    const normalizedData = result.map(row => {
+                    let normalizedData = result.map(row => {
                         const newRow: Record<string, any> = {};
 
                         // Copy dimension values (handle hierarchy case-insensitively)
@@ -505,6 +691,18 @@ export const useDirectQuery = (widget: BIWidget) => {
                         });
                         return newRow;
                     });
+
+                    if (widget.type !== 'chart') {
+                        setData(normalizedData);
+                        return;
+                    }
+
+                    if (dimensions.length === 0 && measures.length > 0) {
+                        normalizedData = normalizedData.map((row) => ({
+                            ...row,
+                            _autoCategory: row._autoCategory || 'Total',
+                        }));
+                    }
 
                     const innerDrillDownState = drillDowns[widget.id];
                     const axisFields = DrillDownService.getCurrentFields(widget, innerDrillDownState);

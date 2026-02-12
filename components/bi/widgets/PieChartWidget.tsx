@@ -10,7 +10,7 @@ import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useDirectQuery } from '../hooks/useDirectQuery';
 import { formatValue } from '../engine/calculations';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import BaseWidget from './BaseWidget';
 import CustomTooltip from './CustomTooltip';
 import EmptyChartState from './EmptyChartState';
@@ -114,17 +114,18 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
     const categoryField = useMemo(() => {
         if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
         if (rawChartData && rawChartData.length > 0 && rawChartData[0]._formattedAxis) return '_formattedAxis';
+        if (!categoryFieldRaw) return '_autoCategory';
         return categoryFieldRaw;
     }, [drillDownState?.mode, xFields, rawChartData, categoryFieldRaw]);
 
     // Map to name/value for Recharts Pie
     const chartData = useMemo(() => {
-        if (!rawChartData || !categoryField || !valueField) return [];
+        if (!rawChartData || !valueField) return [];
         return rawChartData.map(item => {
             const originalName = item[categoryField];
             const alias = widget.legendAliases?.[originalName];
             return {
-                name: alias || originalName,
+                name: alias || originalName || 'Total',
                 value: item[valueField]
             };
         });
@@ -165,8 +166,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
 
     if (chartData.length === 0) {
         let errorMsg = 'No data available';
-        if (!categoryField) errorMsg = 'Select Category field';
-        else if (!valueField) errorMsg = 'Select Value field';
+        if (!valueField) errorMsg = 'Select Value field';
 
         return (
             <BaseWidget
@@ -203,12 +203,13 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                             data={chartData}
                             cx="50%"
                             cy="50%"
+                            isAnimationActive={false}
                             labelLine={widget.showLabels !== false}
                             label={widget.showLabels !== false ? (props: any) => {
                                 const { name, value, percent } = props;
                                 if (value === undefined || value === null) return null;
                                 const pVal = percent ? (percent * 100).toFixed(1) + '%' : '0%';
-                                const formattedValue = formatBIValue(value, widget.labelFormat || widget.valueFormat || 'standard');
+                                const formattedValue = formatSmartDataLabel(value, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 });
                                 switch (widget.labelMode) {
                                     case 'value': return formattedValue;
                                     case 'percent': return pVal;

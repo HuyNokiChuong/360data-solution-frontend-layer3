@@ -4,7 +4,7 @@ import { SyncedTable, Connection } from '../types';
 import { MOCK_DATA_MAP } from '../constants';
 import { fetchTableData } from '../services/bigquery';
 import { fetchExcelTableData } from '../services/excel';
-import { getGoogleToken } from '../services/googleAuth';
+import { normalizeSchema } from '../utils/schema';
 
 interface TablesProps {
   tables: SyncedTable[];
@@ -202,30 +202,30 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
 
           console.log(`📊 Preview results: ${rows.length} rows, ${schema.length} columns`);
           setPreviewData(rows);
-          setPreviewSchema(schema.length > 0 ? schema : previewTable.schema);
+          setPreviewSchema(normalizeSchema(schema.length > 0 ? schema : previewTable.schema));
         } catch (error) {
           console.error("❌ Failed to load real data", error);
-          setPreviewSchema(previewTable.schema);
+          setPreviewSchema(normalizeSchema(previewTable.schema));
           setPreviewData([]); // Ensure data is cleared on error
         } finally {
           setIsLoadingPreview(false);
         }
-      } else if (conn?.type === 'Excel' || conn?.type === 'GoogleSheets') {
+      } else if (conn?.type === 'Excel' || conn?.type === 'GoogleSheets' || conn?.type === 'PostgreSQL') {
         setIsLoadingPreview(true);
         try {
           const result = await fetchExcelTableData(previewTable.id, 0, 1000);
-          setPreviewSchema((result.schema && result.schema.length > 0) ? result.schema : previewTable.schema);
+          setPreviewSchema(normalizeSchema((result.schema && result.schema.length > 0) ? result.schema : previewTable.schema));
           setPreviewData(result.rows || []);
         } catch (error) {
-          console.error("❌ Failed to load Excel preview data", error);
-          setPreviewSchema(previewTable.schema);
+          console.error("❌ Failed to load imported preview data", error);
+          setPreviewSchema(normalizeSchema(previewTable.schema));
           setPreviewData([]);
         } finally {
           setIsLoadingPreview(false);
         }
       } else {
         // Fallback for non-BigQuery or missing project info
-        setPreviewSchema(previewTable.schema);
+        setPreviewSchema(normalizeSchema(previewTable.schema));
         const mock = MOCK_DATA_MAP[previewTable.tableName];
         if (mock) {
           setPreviewData(mock);
