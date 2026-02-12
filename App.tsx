@@ -6,6 +6,7 @@ import { initGoogleAuth } from './services/googleAuth';
 import { PersistentStorage } from './services/storage';
 import { importExcelSheets } from './services/excel';
 import { connectGoogleSheetsOAuth, importGoogleSheetsData, updateGoogleSheetsSyncSettings, GoogleSheetSelectionInput } from './services/googleSheets';
+import { API_BASE } from './services/api';
 import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
 import { ConfirmationModal } from './components/ConfirmationModal';
@@ -100,7 +101,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch('http://localhost:3001/api/auth/me', {
+      fetch(`${API_BASE}/auth/me`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
         .then(res => res.json())
@@ -136,8 +137,6 @@ const App: React.FC = () => {
   const [isMainSidebarCollapsed, setIsMainSidebarCollapsed] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(256);
-  const API_BASE = 'http://localhost:3001/api';
-
   const normalizeSyncedTable = (table: SyncedTable): SyncedTable => ({
     ...table,
     schema: normalizeSchema(table?.schema || []),
@@ -280,7 +279,7 @@ const App: React.FC = () => {
         });
 
         // Sync users from backend
-        fetch('http://localhost:3001/api/users', {
+        fetch(`${API_BASE}/users`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
           .then(async res => {
@@ -295,7 +294,7 @@ const App: React.FC = () => {
 
         // Sync Dashboards & Folders (handled mainly in BIMain store, but keeping here for consistency if needed)
         // Actually, reportSessions are managed in App.tsx state.
-        fetch('http://localhost:3001/api/sessions', {
+        fetch(`${API_BASE}/sessions`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
           .then(async res => {
@@ -316,7 +315,7 @@ const App: React.FC = () => {
 
               if (removed.length > 0) {
                 removed.forEach((session) => {
-                  fetch(`http://localhost:3001/api/sessions/${session.id}`, {
+                  fetch(`${API_BASE}/sessions/${session.id}`, {
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${token}` }
                   }).catch(console.error);
@@ -421,7 +420,7 @@ const App: React.FC = () => {
     for (const session of reportSessions) {
       if (!prevIds.has(session.id)) {
         // New session → create on backend
-        fetch('http://localhost:3001/api/sessions', {
+        fetch(`${API_BASE}/sessions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ id: session.id, title: session.title })
@@ -444,7 +443,7 @@ const App: React.FC = () => {
         // Existing session — check if title changed
         const prev = prevSessions.find(s => s.id === session.id);
         if (prev && prev.title !== session.title) {
-          fetch(`http://localhost:3001/api/sessions/${session.id}`, {
+          fetch(`${API_BASE}/sessions/${session.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify({ title: session.title })
@@ -461,7 +460,7 @@ const App: React.FC = () => {
     const currentIds = new Set(reportSessions.map(s => s.id));
     for (const prev of prevSessions) {
       if (!currentIds.has(prev.id)) {
-        fetch(`http://localhost:3001/api/sessions/${prev.id}`, {
+        fetch(`${API_BASE}/sessions/${prev.id}`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${token}` }
         }).then((r) => {
@@ -496,7 +495,7 @@ const App: React.FC = () => {
     const backendAuth = async (authEmail: string, authPassword: string, authName: string): Promise<{ user: any; token: string } | null> => {
       try {
         // Try login first to avoid noisy 409 conflict when account already exists.
-        const loginRes = await fetch('http://localhost:3001/api/auth/login', {
+        const loginRes = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, password: authPassword })
@@ -507,7 +506,7 @@ const App: React.FC = () => {
         }
 
         // Not found yet (or first use) -> register then use returned token.
-        const regRes = await fetch('http://localhost:3001/api/auth/register', {
+        const regRes = await fetch(`${API_BASE}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, password: authPassword, name: authName })
@@ -561,7 +560,7 @@ const App: React.FC = () => {
       const companySize = formData.get('companySize') as string;
 
       // Call Backend Register API
-      fetch('http://localhost:3001/api/auth/register', {
+      fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -616,7 +615,7 @@ const App: React.FC = () => {
 
     } else {
       // Call Backend Login API
-      fetch('http://localhost:3001/api/auth/login', {
+      fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -645,7 +644,7 @@ const App: React.FC = () => {
   const handleOnboardingComplete = (finalUser: User) => {
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch('http://localhost:3001/api/users/profile', {
+      fetch(`${API_BASE}/users/profile`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -798,14 +797,14 @@ const App: React.FC = () => {
     // Sync to Backend
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch(`http://localhost:3001/api/connections/${conn.id}`, {
+      fetch(`${API_BASE}/connections/${conn.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(conn)
       }).catch(console.error);
 
       if (newTables && newTables.length > 0) {
-        fetch(`http://localhost:3001/api/connections/${conn.id}/tables`, {
+        fetch(`${API_BASE}/connections/${conn.id}/tables`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ tables: newTables })
@@ -831,7 +830,7 @@ const App: React.FC = () => {
     // Sync to Backend
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch(`http://localhost:3001/api/connections/${id}`, {
+      fetch(`${API_BASE}/connections/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       }).catch(console.error);
@@ -858,7 +857,7 @@ const App: React.FC = () => {
     // Sync to Backend
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch(`http://localhost:3001/api/connections/tables/${id}`, {
+      fetch(`${API_BASE}/connections/tables/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       }).catch(console.error);
@@ -872,7 +871,7 @@ const App: React.FC = () => {
     const token = localStorage.getItem('auth_token');
     if (token) {
       Promise.all(ids.map(id =>
-        fetch(`http://localhost:3001/api/connections/tables/${id}`, {
+        fetch(`${API_BASE}/connections/tables/${id}`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${token}` }
         })

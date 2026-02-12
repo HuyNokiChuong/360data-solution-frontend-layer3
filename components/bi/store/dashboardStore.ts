@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import { BIDashboard, BIFolder, BIWidget, GlobalFilter, DashboardPage, SharePermission } from '../types';
+import { API_BASE } from '../../../services/api';
 
 interface DashboardState {
     // Data
@@ -342,7 +343,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch('http://localhost:3001/api/folders', {
+            fetch(`${API_BASE}/folders`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ name, parentId })
@@ -366,7 +367,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/folders/${id}`, {
+            fetch(`${API_BASE}/folders/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify(updates)
@@ -396,7 +397,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend (cascade deletes children via FK)
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/folders/${id}`, {
+            fetch(`${API_BASE}/folders/${id}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             }).catch(console.error);
@@ -411,7 +412,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/folders/${id}/share`, {
+            fetch(`${API_BASE}/folders/${id}/share`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ permissions })
@@ -444,7 +445,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch('http://localhost:3001/api/dashboards', {
+            fetch(`${API_BASE}/dashboards`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({
@@ -478,7 +479,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/dashboards/${id}`, {
+            fetch(`${API_BASE}/dashboards/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify(updates)
@@ -499,7 +500,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/dashboards/${id}`, {
+            fetch(`${API_BASE}/dashboards/${id}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             }).catch(console.error);
@@ -516,7 +517,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
         if (token) {
-            fetch(`http://localhost:3001/api/dashboards/${id}/share`, {
+            fetch(`${API_BASE}/dashboards/${id}/share`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ permissions })
@@ -966,8 +967,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 const token = localStorage.getItem('auth_token');
                 if (token) {
                     Promise.all([
-                        fetch('http://localhost:3001/api/folders', { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()),
-                        fetch('http://localhost:3001/api/dashboards', { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json())
+                        fetch(`${API_BASE}/folders`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()),
+                        fetch(`${API_BASE}/dashboards`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json())
                     ]).then(([folderRes, dashboardRes]) => {
                         if (folderRes.success && dashboardRes.success) {
                             set({

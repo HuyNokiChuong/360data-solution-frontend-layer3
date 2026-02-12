@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User } from '../types';
 import { emailService } from '../services/emailService';
+import { API_BASE } from '../services/api';
 
 interface OnboardingProps {
     currentUser: User;
@@ -45,7 +46,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
     const triggerEmail = async () => {
         setLoading(true);
         try {
-            await fetch('http://localhost:3001/api/auth/register', {
+            await fetch(`${API_BASE}/auth/register`, {
                 method: 'POST', // Re-register triggers resend/update in our logic? 
                 // Actually, backend register throws "User already exists".
                 // We need a specific "resend-code" endpoint or modify register.
@@ -118,7 +119,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setErrorMessage(null);
         setLoading(true);
 
-        fetch('http://localhost:3001/api/auth/verify', {
+        fetch(`${API_BASE}/auth/verify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -155,7 +156,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
         setVerificationCode(['', '', '', '', '', '']);
 
         try {
-            const res = await fetch('http://localhost:3001/api/auth/resend-code', {
+            const res = await fetch(`${API_BASE}/auth/resend-code`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: currentUser.email })

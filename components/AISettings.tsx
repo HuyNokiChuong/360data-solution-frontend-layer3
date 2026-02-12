@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AI_MODELS } from '../constants';
 import { testApiKey } from '../services/ai';
+import { API_BASE } from '../services/api';
 
 const AISettings: React.FC = () => {
   const [openaiKey, setOpenaiKey] = useState(localStorage.getItem('openai_api_key') || '');
@@ -17,7 +18,7 @@ const AISettings: React.FC = () => {
     // Sync to Backend
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch('http://localhost:3001/api/ai-settings/bulk', {
+      fetch(`${API_BASE}/ai-settings/bulk`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({

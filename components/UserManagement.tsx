@@ -3,6 +3,7 @@ import { User, UserRole } from '../types';
 import { isCorporateDomain } from '../utils/domain';
 import { useDashboardStore } from './bi/store/dashboardStore';
 import { SharePermission } from './bi/types';
+import { API_BASE } from '../services/api';
 
 interface UserManagementProps {
   users: User[];
@@ -24,7 +25,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, curren
     const token = localStorage.getItem('auth_token');
     setUsers(users.filter(u => u.id !== id));
     if (token) {
-      fetch(`http://localhost:3001/api/users/${id}`, {
+      fetch(`${API_BASE}/users/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       }).catch(console.error);
@@ -35,7 +36,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, curren
     setUsers(users.map(u => u.id === id ? { ...u, status: u.status === 'Active' ? 'Disabled' : 'Active' } : u));
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch(`http://localhost:3001/api/users/${id}/status`, {
+      fetch(`${API_BASE}/users/${id}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
       }).catch(console.error);
@@ -82,7 +83,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, setUsers, curren
     // 1. Sync to Backend
     const token = localStorage.getItem('auth_token');
     if (token) {
-      fetch('http://localhost:3001/api/users/invite', {
+      fetch(`${API_BASE}/users/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ name: newUser.name, email: newUser.email, role: newUser.role })
