@@ -41,7 +41,7 @@ interface DataTableNodeData {
 const DataTableNode: React.FC<{ data: DataTableNodeData }> = ({ data }) => {
   return (
     <div className="min-w-[260px] bg-white dark:bg-slate-900 border border-slate-300 dark:border-white/10 rounded-xl shadow-lg">
-      <div className="px-3 py-2 border-b border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 rounded-t-xl">
+      <div className="table-drag-handle px-3 py-2 border-b border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/40 rounded-t-xl cursor-grab active:cursor-grabbing">
         <div className="text-xs font-black text-slate-900 dark:text-white truncate">{data.tableName}</div>
         <div className="text-[10px] text-slate-500 truncate">{data.datasetName || 'dataset'}</div>
       </div>
@@ -137,11 +137,22 @@ const DiagramView: React.FC<DiagramViewProps> = ({
     });
   }, [tables]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   useEffect(() => {
-    setNodes(initialNodes);
+    // Reconcile nodes from tables while preserving current dragged positions.
+    setNodes((prev) => {
+      const prevMap = new Map(prev.map((node) => [node.id, node]));
+      return initialNodes.map((nextNode) => {
+        const existing = prevMap.get(nextNode.id);
+        if (!existing) return nextNode;
+        return {
+          ...existing,
+          data: nextNode.data,
+        };
+      });
+    });
   }, [initialNodes, setNodes]);
 
   useEffect(() => {
@@ -307,6 +318,9 @@ const DiagramView: React.FC<DiagramViewProps> = ({
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
+        onNodeDrag={(_, node) => {
+          positionMap.current.set(node.id, node.position);
+        }}
         onNodeDragStop={(_, node) => {
           positionMap.current.set(node.id, node.position);
         }}
@@ -331,6 +345,8 @@ const DiagramView: React.FC<DiagramViewProps> = ({
         connectionMode={ConnectionMode.Loose}
         connectionRadius={36}
         nodesConnectable={canEdit}
+        nodesDraggable={canEdit}
+        dragHandle=".table-drag-handle"
         deleteKeyCode={canEdit ? ['Backspace', 'Delete'] : []}
         onEdgesDelete={async (deletedEdges) => {
           if (!canEdit) return;
