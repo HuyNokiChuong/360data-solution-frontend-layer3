@@ -60,6 +60,19 @@ const getConditionalFormatResult = (value: number | undefined, rules?: Condition
     return { style, icon: null as string | null };
 };
 
+const toSafeVarName = (raw: string) => String(raw || '').replace(/[^a-zA-Z0-9_]/g, '_');
+
+const evaluateCompareFormula = (formula: string | undefined, context: Record<string, any>) => {
+    if (!formula || !formula.trim()) return undefined;
+    try {
+        // Trusted in-app expression evaluator for power-user conditional formatting.
+        const fn = new Function('ctx', 'Math', `with (ctx) { return (${formula}); }`);
+        return fn(context, Math);
+    } catch {
+        return undefined;
+    }
+};
+
 const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
     widget,
     onEdit,
@@ -225,6 +238,38 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         currentValueCfg: PivotValue,
         context: { node?: any; colKey?: string }
     ) => {
+        const scope = rule.compareScope || 'cell';
+        const currentMeasureKey = measureKeyOf(currentValueCfg.field, currentValueCfg.aggregation);
+        const currentRowTotal = context.node ? getNodeRowTotalByMeasureKey(context.node, currentMeasureKey) : undefined;
+        const currentColumnTotal = context.colKey ? colTotals?.[context.colKey]?.[currentMeasureKey] : undefined;
+        const currentGrandTotal = grandTotal?.[currentMeasureKey];
+
+        if (rule.compareMode === 'formula') {
+            const formulaCtx: Record<string, any> = {
+                VALUE: scope === 'rowTotal'
+                    ? currentRowTotal
+                    : scope === 'columnTotal'
+                        ? currentColumnTotal
+                        : scope === 'grandTotal'
+                            ? currentGrandTotal
+                            : (context.node && context.colKey ? context.node?.values?.[context.colKey]?.[currentMeasureKey] : undefined),
+                ROW_TOTAL: currentRowTotal,
+                COLUMN_TOTAL: currentColumnTotal,
+                GRAND_TOTAL: currentGrandTotal
+            };
+
+            valueFields.forEach((mv) => {
+                const mk = measureKeyOf(mv.field, mv.aggregation);
+                const safeKey = toSafeVarName(mk);
+                formulaCtx[`VALUE_${safeKey}`] = context.node && context.colKey ? context.node?.values?.[context.colKey]?.[mk] : undefined;
+                formulaCtx[`ROW_TOTAL_${safeKey}`] = context.node ? getNodeRowTotalByMeasureKey(context.node, mk) : undefined;
+                formulaCtx[`COLUMN_TOTAL_${safeKey}`] = context.colKey ? colTotals?.[context.colKey]?.[mk] : undefined;
+                formulaCtx[`GRAND_TOTAL_${safeKey}`] = grandTotal?.[mk];
+            });
+
+            return evaluateCompareFormula(rule.compareFormula, formulaCtx);
+        }
+
         if (!rule.compareMode || rule.compareMode === 'literal') {
             return rule.value;
         }
@@ -232,7 +277,6 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         const targetField = rule.compareField || currentValueCfg.field;
         const targetAgg = rule.compareAggregation || currentValueCfg.aggregation;
         const targetMeasureKey = measureKeyOf(targetField, targetAgg);
-        const scope = rule.compareScope || 'cell';
 
         if (scope === 'grandTotal') {
             return grandTotal?.[targetMeasureKey];

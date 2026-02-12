@@ -379,7 +379,7 @@ const PivotValueSelector: React.FC<{
             ...newValues[index],
             conditionalFormatting: [
                 ...currentRules,
-                { condition: 'greater', value: 0, textColor: '#10b981', compareMode: 'literal', compareScope: 'cell' }
+                { condition: 'greater', value: 0, textColor: '#10b981', compareMode: 'literal', compareScope: 'cell', compareFormula: 'ROW_TOTAL * 0.1' }
             ]
         };
         onChange(newValues);
@@ -598,6 +598,7 @@ const PivotValueSelector: React.FC<{
                             {activeRuleMetric.conditionalFormatting?.map((rule, rIdx) => {
                                 const compareTarget = `${rule.compareField || activeRuleMetric.field}::${rule.compareAggregation || activeRuleMetric.aggregation}`;
                                 const useLiteral = !rule.compareMode || rule.compareMode === 'literal' || rule.condition === 'between';
+                                const useFormula = rule.compareMode === 'formula' && rule.condition !== 'between';
                                 return (
                                     <div key={rIdx} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-xl p-4 space-y-3">
                                         <div className="flex items-center justify-between">
@@ -635,6 +636,7 @@ const PivotValueSelector: React.FC<{
                                                     >
                                                         <option value="literal">Fixed Number</option>
                                                         <option value="field">Metric / Total</option>
+                                                        <option value="formula">Formula</option>
                                                     </select>
                                                 </div>
                                             )}
@@ -648,6 +650,17 @@ const PivotValueSelector: React.FC<{
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { value: e.target.value })}
                                                         className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                         placeholder="Enter threshold..."
+                                                    />
+                                                </div>
+                                            ) : useFormula ? (
+                                                <div className="md:col-span-2">
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Formula</label>
+                                                    <input
+                                                        type="text"
+                                                        value={rule.compareFormula || ''}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareFormula: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 font-mono"
+                                                        placeholder="e.g. ROW_TOTAL * 0.1 or VALUE_doanh_so_san_sum * 1.2"
                                                     />
                                                 </div>
                                             ) : (
@@ -683,6 +696,12 @@ const PivotValueSelector: React.FC<{
                                                 </div>
                                             )}
                                         </div>
+
+                                        {useFormula && (
+                                            <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
+                                                Variables: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>, <span className="font-mono">ROW_TOTAL_[field]_[agg]</span>
+                                            </div>
+                                        )}
 
                                         {rule.condition === 'between' && (
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
