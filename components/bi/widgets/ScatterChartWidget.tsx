@@ -194,7 +194,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                     if (xFieldType === 'number') return formatBIValue(val, getAdaptiveNumericFormat(widget.valueFormat));
                                     return val;
                                 }}
-                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
+                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: widget.fontFamily || 'Outfit' }}
                                 tickLine={false}
                                 axisLine={false}
                             />
@@ -205,7 +205,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                 name={widget.yAxis?.[0]}
                                 stroke="#94a3b8"
                                 tickFormatter={(val) => formatBIValue(val, getAdaptiveNumericFormat(widget.valueFormat))}
-                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'Outfit' }}
+                                tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: widget.fontFamily || 'Outfit' }}
                                 tickLine={false}
                                 axisLine={false}
                                 width={120}
@@ -238,7 +238,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                         widget={widget}
                                         layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
                                         align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                        fontSize={widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px'}
+                                        fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '9px')}
                                     />}
                                 />
                             )}
@@ -270,7 +270,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                                         fill="#94a3b8"
                                         fontSize={10}
                                         formatter={(val: any) => formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 })}
-                                        style={{ fontFamily: 'Outfit' }}
+                                        style={{ fontFamily: widget.fontFamily || 'Outfit' }}
                                     />
                                 )}
                             </Scatter>

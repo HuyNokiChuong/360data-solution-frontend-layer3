@@ -163,7 +163,7 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                             className="font-black max-w-full break-words px-2"
                             style={{
                                 color: mainColor,
-                                fontFamily: 'Outfit',
+                                fontFamily: widget.fontFamily || 'Outfit',
                                 fontSize: (() => {
                                     const formatted = formatBIValue(value, getAdaptiveNumericFormat(widget.valueFormat));
                                     const len = formatted.length;
@@ -180,7 +180,7 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                             {percentage.toFixed(1)}%
                         </div>
                         {widget.comparisonValue && (
-                            <div className="text-xs text-slate-500 mt-1" style={{ fontFamily: 'Outfit' }}>
+                            <div className="text-xs text-slate-500 mt-1" style={{ fontFamily: widget.fontFamily || 'Outfit' }}>
                                 Target: {formatBIValue(maxValue, getAdaptiveNumericFormat(widget.valueFormat))}
                             </div>
                         )}

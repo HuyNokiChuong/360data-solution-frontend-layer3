@@ -7,7 +7,7 @@ import React from 'react';
  * Supports drawing separator lines for a table-like look.
  */
 export const HierarchicalAxisTick = (props: any) => {
-    const { x, y, payload, index, data } = props;
+    const { x, y, payload, index, data, fontFamily = 'Outfit' } = props;
     if (!payload.value || !data) return null;
 
     const lines = String(payload.value).split('\n');
@@ -108,7 +108,7 @@ export const HierarchicalAxisTick = (props: any) => {
                     textAnchor="middle"
                     fill="#94a3b8"
                     fontSize={10}
-                    fontFamily="Outfit"
+                    fontFamily={fontFamily}
                 >
                     {lines[0]}
                 </text>
@@ -137,7 +137,7 @@ export const HierarchicalAxisTick = (props: any) => {
                         fill={isTopLevel ? "#f1f5f9" : "#64748b"}
                         fontSize={isTopLevel ? 10 : 9}
                         fontWeight={isTopLevel ? "700" : "500"}
-                        fontFamily="Outfit"
+                        fontFamily={fontFamily}
                     >
                         {lines[level]}
                     </text>

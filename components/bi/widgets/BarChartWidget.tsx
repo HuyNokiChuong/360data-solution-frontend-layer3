@@ -217,6 +217,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                     fill="#e2e8f0"
                     fontSize={10}
                     fontWeight={700}
+                    fontFamily={widget.fontFamily || 'Outfit'}
                     stroke="#020617"
                     strokeWidth={3}
                     paintOrder="stroke"
@@ -241,6 +242,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                 fill={fill}
                 fontSize={10}
                 fontWeight={700}
+                fontFamily={widget.fontFamily || 'Outfit'}
                 stroke="#020617"
                 strokeWidth={3}
                 paintOrder="stroke"
@@ -265,6 +267,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                 fill="#fef08a"
                 fontSize={10}
                 fontWeight={700}
+                fontFamily={widget.fontFamily || 'Outfit'}
                 stroke="#020617"
                 strokeWidth={3}
                 paintOrder="stroke"
@@ -371,7 +374,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             tickLine={false}
                                             axisLine={false}
                                             tickFormatter={(val) => formatBIValue(val, leftFormat)}
-                                            fontFamily="Outfit"
+                                            fontFamily={widget.fontFamily || 'Outfit'}
                                         />
                                         {hasRightAxis && (
                                             <XAxis
@@ -383,7 +386,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 tickLine={false}
                                                 axisLine={false}
                                                 tickFormatter={(val) => formatBIValue(val, rightFormat)}
-                                                fontFamily="Outfit"
+                                                fontFamily={widget.fontFamily || 'Outfit'}
                                             />
                                         )}
                                         <YAxis
@@ -394,7 +397,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             tickLine={false}
                                             axisLine={false}
                                             width={120}
-                                            fontFamily="Outfit"
+                                            fontFamily={widget.fontFamily || 'Outfit'}
                                             interval={0}
                                         />
                                     </>
@@ -411,16 +414,16 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             tickLine={false}
                                             axisLine={false}
                                             interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
-                                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                                            tick={<HierarchicalAxisTick data={effectiveChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
                                             height={xAxisHeight}
-                                            fontFamily="Outfit"
+                                            fontFamily={widget.fontFamily || 'Outfit'}
                                         />
                                         <YAxis
                                             yAxisId="left"
                                             type="number"
                                             stroke="#94a3b8"
                                             tickFormatter={(val) => formatBIValue(val, leftFormat)}
-                                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: widget.fontFamily || 'Outfit' }}
                                             width={80}
                                         />
                                         {hasRightAxis && (
@@ -429,7 +432,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                                 orientation="right"
                                                 stroke="#94a3b8"
                                                 tickFormatter={(val) => formatBIValue(val, rightFormat)}
-                                                style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                                style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: widget.fontFamily || 'Outfit' }}
                                                 width={80}
                                             />
                                         )}

@@ -288,9 +288,9 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                             tickLine={false}
                             axisLine={false}
                             interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
-                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                            tick={<HierarchicalAxisTick data={effectiveChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
                             height={xAxisHeight}
-                            fontFamily="Outfit"
+                            fontFamily={widget.fontFamily || 'Outfit'}
                         />
                         {(() => {
                             // Determine formats for axes based on first series assigned to them
@@ -326,7 +326,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         yAxisId="left"
                                         stroke="#94a3b8"
                                         tickFormatter={(val) => formatBIValue(val, leftFormat)}
-                                        style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                        style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: widget.fontFamily || 'Outfit' }}
                                         width={80}
                                     />
                                     {((widget.yAxisConfigs?.some(c => c.yAxisId === 'right')) || (widget.lineAxisConfigs?.some(c => c.yAxisId === 'right'))) && (
@@ -335,7 +335,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                             orientation="right"
                                             stroke="#94a3b8"
                                             tickFormatter={(val) => formatBIValue(val, rightFormat)}
-                                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: widget.fontFamily || 'Outfit' }}
                                             width={80}
                                         />
                                     )}
@@ -409,6 +409,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                                 dy={idx % 2 === 0 ? -6 : 6}
                                                 fill="#94a3b8"
                                                 fontSize={10}
+                                                style={{ fontFamily: widget.fontFamily || 'Outfit' }}
                                                 formatter={(val: any, _name: any, labelProps: any) => {
                                                     const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
                                                     const category = resolveCategoryLabel(labelProps?.payload);
@@ -465,6 +466,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                                 dy={(series.length + idx) % 2 === 0 ? -6 : 6}
                                                 fill="#94a3b8"
                                                 fontSize={10}
+                                                style={{ fontFamily: widget.fontFamily || 'Outfit' }}
                                                 formatter={(val: any, _name: any, labelProps: any) => {
                                                     const formatted = formatSmartDataLabel(val, format, { maxLength: 10 });
                                                     const category = resolveCategoryLabel(labelProps?.payload);
@@ -510,6 +512,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         position="top"
                                         fill="#94a3b8"
                                         fontSize={10}
+                                        style={{ fontFamily: widget.fontFamily || 'Outfit' }}
                                         formatter={(val: any, _name: any, labelProps: any) => {
                                             const formatted = formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 });
                                             const category = resolveCategoryLabel(labelProps?.payload);

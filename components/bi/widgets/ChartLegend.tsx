@@ -115,6 +115,7 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
         gap: '4px 8px',
         padding: '4px 0',
         fontSize: `calc(${fontSize} - 1px)`,
+        fontFamily: widget.fontFamily || 'Outfit',
         maxWidth: '100%',
         margin: '0 auto'
     };

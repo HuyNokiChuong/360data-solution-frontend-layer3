@@ -196,7 +196,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
                                 if (len <= 20) return '1.5rem'; // text-2xl (24px)
                                 return '1.25rem'; // text-xl (20px)
                             })(),
-                            fontFamily: 'Outfit',
+                            fontFamily: widget.fontFamily || 'Outfit',
                             lineHeight: '1.2'
                         }}
                     >

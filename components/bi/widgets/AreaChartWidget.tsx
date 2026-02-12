@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot, Label, ReferenceLine } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot, Label, ReferenceLine, LabelList } from 'recharts';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
@@ -10,7 +10,7 @@ import CustomTooltip from './CustomTooltip';
 import EmptyChartState from './EmptyChartState';
 import { DrillDownService } from '../engine/DrillDownService';
 import { useChartColors } from '../utils/chartColors';
-import { formatBIValue } from '../engine/utils';
+import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import ChartLegend from './ChartLegend';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 
@@ -125,6 +125,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
     const { chartColors } = useChartColors();
     const colors = widget.colors || chartColors;
     const isFiltered = isWidgetFiltered(widget.id) || (drillDownState && drillDownState.currentLevel > 0);
+    const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
 
     const handleAreaClick = (data: any) => {
         if (onDataClick && widget.enableCrossFilter !== false) {
@@ -137,6 +138,32 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         if (!cf) return undefined;
         return cf.filters.find(f => f.field === xField)?.value;
     }, [allDashboardFilters, widget.id, xField]);
+
+    const resolveCategoryLabel = (payload: any) => {
+        if (!payload) return '';
+        const raw = payload[xFieldDisplay] ?? payload[xField] ?? payload._autoCategory ?? '';
+        const asString = String(raw ?? '');
+        if (!asString) return '';
+        if (asString.includes('\n')) {
+            const parts = asString.split('\n').filter(Boolean);
+            return parts[parts.length - 1] || asString;
+        }
+        return asString;
+    };
+
+    const renderLabelText = (labelMode: BIWidget['labelMode'], valueText: string, categoryText: string) => {
+        switch (labelMode) {
+            case 'value':
+                return valueText;
+            case 'category':
+                return categoryText;
+            case 'categoricalPercent':
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+            case 'categoricalValue':
+            default:
+                return categoryText && valueText ? `${categoryText}: ${valueText}` : (valueText || categoryText);
+        }
+    };
 
     const hierarchyDepth = useMemo(() => {
         if (drillDownState?.mode !== 'expand') return 1;
@@ -206,9 +233,9 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             fontSize={10}
                             tickLine={false}
                             axisLine={false}
-                            tick={<HierarchicalAxisTick data={effectiveChartData} />}
+                            tick={<HierarchicalAxisTick data={effectiveChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
                             height={xAxisHeight}
-                            fontFamily="Outfit"
+                            fontFamily={widget.fontFamily || 'Outfit'}
                         />
                         <YAxis
                             stroke="#94a3b8"
@@ -217,7 +244,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                 const format = (!widget.valueFormat || overrideFormats.includes(widget.valueFormat)) ? 'smart_axis' : widget.valueFormat;
                                 return formatBIValue(val, format);
                             }}
-                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: 'Outfit' }}
+                            style={{ fontSize: widget.fontSize ? `${Math.max(8, widget.fontSize - 2)}px` : '11px', fontFamily: widget.fontFamily || 'Outfit' }}
                             width={80}
                         />
                         <Tooltip
@@ -232,12 +259,12 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             <Legend
                                 layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
                                 align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                verticalAlign={(widget.legendPosition === 'top') ? 'top' : 'bottom'}
+                                verticalAlign={(widget.legendPosition === 'top') ? 'top' : (widget.legendPosition === 'bottom' || !widget.legendPosition ? 'bottom' : 'middle')}
                                 content={<ChartLegend
                                     widget={widget}
                                     layout={(widget.legendPosition === 'left' || widget.legendPosition === 'right') ? 'vertical' : 'horizontal'}
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
-                                    fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : '10px'}
+                                    fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '10px')}
                                 />}
                                 wrapperStyle={hasBottomLegend ? { paddingTop: 8 } : undefined}
                             />
@@ -272,7 +299,6 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                     dot={(dotProps: any) => {
                                         const { cx, cy, payload } = dotProps;
                                         if (!cx || !cy) return null;
-                                        const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
 
                                         // Only show dots if selected or if hovering (but hover is handled by activeDot)
                                         // Here we show dots ONLY for the selected item to avoid clutter, 
@@ -293,7 +319,22 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                         }
                                         return null;
                                     }}
-                                />
+                                >
+                                    {shouldRenderDataLabels && (
+                                        <LabelList
+                                            dataKey={sField}
+                                            position="top"
+                                            formatter={(val: any, _name: any, labelProps: any) => {
+                                                const formatted = formatSmartDataLabel(val, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 });
+                                                const category = resolveCategoryLabel(labelProps?.payload);
+                                                return renderLabelText(widget.labelMode, formatted, category);
+                                            }}
+                                            fill="#94a3b8"
+                                            fontSize={10}
+                                            style={{ fontFamily: widget.fontFamily || 'Outfit' }}
+                                        />
+                                    )}
+                                </Area>
                             );
                         })}
 

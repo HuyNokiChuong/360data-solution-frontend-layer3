@@ -30,6 +30,37 @@ interface BIVisualBuilderProps {
     setActiveTab: (tab: 'visualizations' | 'data' | 'format' | 'calculations') => void;
 }
 
+interface ConditionalRuleRecommendation {
+    id: string;
+    title: string;
+    description: string;
+    category: 'threshold' | 'trend' | 'comparison' | 'anomaly';
+    buildRule: (metric: PivotValue) => ConditionalFormat;
+}
+
+const toFormulaSafeVar = (raw: string) => String(raw || '').replace(/[^a-zA-Z0-9_]/g, '_');
+
+const FORMULA_OPERATOR_SNIPPETS: Array<{ label: string; snippet: string }> = [
+    { label: '+', snippet: ' + ' },
+    { label: '-', snippet: ' - ' },
+    { label: '*', snippet: ' * ' },
+    { label: '/', snippet: ' / ' },
+    { label: '()', snippet: '()' },
+    { label: '>=', snippet: ' >= ' },
+    { label: '<=', snippet: ' <= ' },
+];
+
+const FORMULA_FUNCTION_SNIPPETS: Array<{ label: string; snippet: string; hint: string }> = [
+    { label: 'IF', snippet: 'IF(VALUE > ROW_TOTAL * 0.1, 1, 0)', hint: 'if/else condition' },
+    { label: 'SAFE_DIV', snippet: 'SAFE_DIV(VALUE, ROW_TOTAL)', hint: 'avoid divide-by-zero' },
+    { label: 'PERCENT_OF', snippet: 'PERCENT_OF(VALUE, GRAND_TOTAL)', hint: 'convert to % share' },
+    { label: 'PERCENT_CHANGE', snippet: 'PERCENT_CHANGE(VALUE, ROW_TOTAL)', hint: '% change vs baseline' },
+    { label: 'AVG', snippet: 'AVG(VALUE, ROW_TOTAL, COLUMN_TOTAL)', hint: 'average of many values' },
+    { label: 'CLAMP', snippet: 'CLAMP(VALUE, 0, GRAND_TOTAL)', hint: 'bound in range' },
+    { label: 'ABS', snippet: 'ABS(VALUE - ROW_TOTAL)', hint: 'absolute difference' },
+    { label: 'MAX', snippet: 'MAX(VALUE, ROW_TOTAL)', hint: 'max value' },
+];
+
 const FieldIcon: React.FC<{ field: any }> = ({ field }) => {
     let icon = "fa-question";
     let color = "text-slate-400";
@@ -342,6 +373,8 @@ const PivotValueSelector: React.FC<{
     });
 
     const [rulesModalIndex, setRulesModalIndex] = useState<number | null>(null);
+    const [activeFormulaRuleIndex, setActiveFormulaRuleIndex] = useState<number | null>(null);
+    const [showRecommendations, setShowRecommendations] = useState(false);
 
     const getDefaultAggregation = (fieldName: string): AggregationType => {
         const selectedField = fields.find((f) => f.name === fieldName);
@@ -467,6 +500,153 @@ const PivotValueSelector: React.FC<{
         return options;
     }, [values, fields]);
 
+    const formulaVariables = React.useMemo(() => {
+        if (!activeRuleMetric) return [];
+
+        const core = ['VALUE', 'ROW_TOTAL', 'COLUMN_TOTAL', 'GRAND_TOTAL'];
+        const measureVars = compareMetricOptions.flatMap((mv) => {
+            const key = `${mv.field}_${mv.aggregation}`;
+            const safe = toFormulaSafeVar(key);
+            return [
+                `VALUE_${safe}`,
+                `ROW_TOTAL_${safe}`,
+                `COLUMN_TOTAL_${safe}`,
+                `GRAND_TOTAL_${safe}`
+            ];
+        });
+        return [...new Set([...core, ...measureVars])];
+    }, [activeRuleMetric, compareMetricOptions]);
+
+    const validateFormulaSyntax = (formula?: string) => {
+        if (!formula || !formula.trim()) return 'Formula is required';
+        try {
+            // eslint-disable-next-line no-new-func
+            new Function(
+                'ctx',
+                'Math',
+                'IF',
+                'ABS',
+                'ROUND',
+                'FLOOR',
+                'CEIL',
+                'MIN',
+                'MAX',
+                'SUM',
+                'AVG',
+                'SAFE_DIV',
+                'PERCENT_OF',
+                'PERCENT_CHANGE',
+                'CLAMP',
+                `with (ctx) { return (${formula}); }`
+            );
+            return '';
+        } catch {
+            return 'Invalid formula syntax';
+        }
+    };
+
+    const insertFormulaSnippet = (ruleIndex: number, snippet: string) => {
+        if (rulesModalIndex === null) return;
+        const current = activeRuleMetric?.conditionalFormatting?.[ruleIndex]?.compareFormula || '';
+        let next = '';
+        if (snippet === '()') {
+            next = `${current}()`;
+        } else if (!current) {
+            next = snippet.trim();
+        } else {
+            next = `${current}${snippet}`;
+        }
+        handleUpdateRule(rulesModalIndex, ruleIndex, { compareFormula: next, compareMode: 'formula' });
+    };
+
+    const recommendations: ConditionalRuleRecommendation[] = React.useMemo(() => {
+        return [
+            {
+                id: 'high-share',
+                title: 'High Share (> 10% Grand Total)',
+                description: 'Highlight cells contributing more than 10% of the grand total.',
+                category: 'threshold',
+                buildRule: () => ({
+                    condition: 'greater',
+                    value: 0,
+                    compareMode: 'formula',
+                    compareScope: 'cell',
+                    compareFormula: 'GRAND_TOTAL * 0.1',
+                    textColor: '#10b981'
+                })
+            },
+            {
+                id: 'row-outlier',
+                title: 'Row Outlier (> 1.5x Row Total)',
+                description: 'Mark values that are unusually high within the same row.',
+                category: 'anomaly',
+                buildRule: () => ({
+                    condition: 'greater',
+                    value: 0,
+                    compareMode: 'formula',
+                    compareScope: 'cell',
+                    compareFormula: 'ROW_TOTAL * 1.5',
+                    textColor: '#f59e0b',
+                    icon: 'fas fa-circle-exclamation'
+                })
+            },
+            {
+                id: 'gt-column-avg',
+                title: 'Above Column Baseline',
+                description: 'Color cells greater than column total average estimate.',
+                category: 'comparison',
+                buildRule: () => ({
+                    condition: 'greater',
+                    value: 0,
+                    compareMode: 'formula',
+                    compareScope: 'cell',
+                    compareFormula: 'COLUMN_TOTAL / 10',
+                    textColor: '#3b82f6'
+                })
+            },
+            {
+                id: 'drop-vs-row',
+                title: 'Drop Vs Row Total (< 8%)',
+                description: 'Flag weak cells under 8% of row total.',
+                category: 'trend',
+                buildRule: () => ({
+                    condition: 'less',
+                    value: 0,
+                    compareMode: 'formula',
+                    compareScope: 'cell',
+                    compareFormula: 'ROW_TOTAL * 0.08',
+                    textColor: '#ef4444',
+                    icon: 'fas fa-arrow-down'
+                })
+            },
+            {
+                id: 'safe-margin',
+                title: 'Safe Margin (Ratio > 20%)',
+                description: 'Use safe division to avoid divide-by-zero while comparing margins.',
+                category: 'comparison',
+                buildRule: (metric) => ({
+                    condition: 'greater',
+                    value: 0,
+                    compareMode: 'formula',
+                    compareScope: 'cell',
+                    compareFormula: `SAFE_DIV(VALUE, ROW_TOTAL_${toFormulaSafeVar(`${metric.field}_${metric.aggregation}`)}) > 0.2 ? 0.2 : 1`,
+                    textColor: '#10b981',
+                    icon: 'fas fa-arrow-up'
+                })
+            }
+        ];
+    }, []);
+
+    const applyRecommendation = (recommendation: ConditionalRuleRecommendation) => {
+        if (rulesModalIndex === null || !activeRuleMetric) return;
+        const newValues = [...values];
+        const currentRules = [...(newValues[rulesModalIndex].conditionalFormatting || [])];
+        currentRules.push(recommendation.buildRule(activeRuleMetric));
+        newValues[rulesModalIndex] = { ...newValues[rulesModalIndex], conditionalFormatting: currentRules };
+        onChange(newValues);
+        setShowRecommendations(false);
+    };
+
     return (
         <div ref={setNodeRef} className={`space-y-2 p-2 rounded-lg transition-all ${isOver ? 'bg-indigo-50 dark:bg-indigo-600/20 ring-2 ring-indigo-500/50' : ''}`}>
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">{label}</label>
@@ -549,7 +729,11 @@ const PivotValueSelector: React.FC<{
             {rulesModalIndex !== null && activeRuleMetric && (
                 <div
                     className="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-[2px] flex items-center justify-center p-4"
-                    onClick={() => setRulesModalIndex(null)}
+                    onClick={() => {
+                        setRulesModalIndex(null);
+                        setShowRecommendations(false);
+                        setActiveFormulaRuleIndex(null);
+                    }}
                 >
                     <div
                         className="w-full max-w-4xl max-h-[85vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl"
@@ -563,7 +747,11 @@ const PivotValueSelector: React.FC<{
                                 </div>
                             </div>
                             <button
-                                onClick={() => setRulesModalIndex(null)}
+                                onClick={() => {
+                                    setRulesModalIndex(null);
+                                    setShowRecommendations(false);
+                                    setActiveFormulaRuleIndex(null);
+                                }}
                                 className="w-8 h-8 rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                             >
                                 <i className="fas fa-times"></i>
@@ -586,6 +774,12 @@ const PivotValueSelector: React.FC<{
                                         <option value="stoplight">Stoplight (Bg)</option>
                                         <option value="heatmap">Heatmap</option>
                                     </select>
+                                    <button
+                                        onClick={() => setShowRecommendations(true)}
+                                        className="text-xs bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-500 transition-colors font-black"
+                                    >
+                                        Recommendations
+                                    </button>
                                     <button
                                         onClick={() => handleAddRule(rulesModalIndex)}
                                         className="text-xs bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-black"
@@ -655,13 +849,38 @@ const PivotValueSelector: React.FC<{
                                             ) : useFormula ? (
                                                 <div className="md:col-span-2">
                                                     <label className="block text-[11px] font-bold text-slate-500 mb-1">Formula</label>
-                                                    <input
-                                                        type="text"
+                                                    <textarea
                                                         value={rule.compareFormula || ''}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareFormula: e.target.value })}
-                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 font-mono"
-                                                        placeholder="e.g. ROW_TOTAL * 0.1 or VALUE_doanh_so_san_sum * 1.2"
+                                                        className="w-full min-h-[72px] resize-y bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 font-mono"
+                                                        placeholder="e.g. ROW_TOTAL * 0.1 or SAFE_DIV(VALUE, GRAND_TOTAL) * 100"
                                                     />
+                                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                                        {FORMULA_OPERATOR_SNIPPETS.map((item) => (
+                                                            <button
+                                                                key={`${rIdx}-operator-${item.label}`}
+                                                                onClick={() => insertFormulaSnippet(rIdx, item.snippet)}
+                                                                className="px-2 py-1 text-[10px] font-black border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors"
+                                                            >
+                                                                {item.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                    <div className="mt-2 flex items-center justify-between">
+                                                        <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                                                            {validateFormulaSyntax(rule.compareFormula) ? (
+                                                                <span className="text-red-500">{validateFormulaSyntax(rule.compareFormula)}</span>
+                                                            ) : (
+                                                                <span className="text-emerald-500">Formula syntax looks good</span>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setActiveFormulaRuleIndex(activeFormulaRuleIndex === rIdx ? null : rIdx)}
+                                                            className="text-[10px] font-black text-indigo-500 hover:text-indigo-400"
+                                                        >
+                                                            {activeFormulaRuleIndex === rIdx ? 'Hide Helpers' : 'Show Helpers'}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div>
@@ -698,8 +917,43 @@ const PivotValueSelector: React.FC<{
                                         </div>
 
                                         {useFormula && (
-                                            <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
-                                                Variables: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>, <span className="font-mono">ROW_TOTAL_[field]_[agg]</span>
+                                            <div className="space-y-2">
+                                                <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
+                                                    Variables: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>
+                                                </div>
+                                                {activeFormulaRuleIndex === rIdx && (
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border border-slate-200 dark:border-white/10 rounded-lg p-3 bg-white/60 dark:bg-slate-900/40">
+                                                        <div>
+                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">Functions</div>
+                                                            <div className="flex flex-wrap gap-1.5">
+                                                                {FORMULA_FUNCTION_SNIPPETS.map((fn) => (
+                                                                    <button
+                                                                        key={`${rIdx}-func-${fn.label}`}
+                                                                        onClick={() => insertFormulaSnippet(rIdx, fn.snippet)}
+                                                                        className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors"
+                                                                        title={fn.hint}
+                                                                    >
+                                                                        {fn.label}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">Variables</div>
+                                                            <div className="max-h-24 overflow-y-auto flex flex-wrap gap-1.5 custom-scrollbar">
+                                                                {formulaVariables.map((variable) => (
+                                                                    <button
+                                                                        key={`${rIdx}-var-${variable}`}
+                                                                        onClick={() => insertFormulaSnippet(rIdx, variable)}
+                                                                        className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors font-mono"
+                                                                    >
+                                                                        {variable}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 
@@ -774,6 +1028,53 @@ const PivotValueSelector: React.FC<{
                                     No rules yet. Click <span className="font-bold text-indigo-500">+ Add Rule</span> to start.
                                 </div>
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showRecommendations && activeRuleMetric && (
+                <div
+                    className="fixed inset-0 z-[130] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4"
+                    onClick={() => setShowRecommendations(false)}
+                >
+                    <div
+                        className="w-full max-w-3xl max-h-[85vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="sticky top-0 z-10 px-5 py-4 border-b border-slate-200 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between">
+                            <div>
+                                <div className="text-sm font-black text-slate-900 dark:text-white">Recommended Rules</div>
+                                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                    One click to apply for metric <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeRuleMetric.field}</span>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setShowRecommendations(false)}
+                                className="w-8 h-8 rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                            >
+                                <i className="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {recommendations.map((item) => (
+                                <div key={item.id} className="border border-slate-200 dark:border-white/10 rounded-xl p-3 bg-slate-50 dark:bg-slate-950/60">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-sm font-black text-slate-900 dark:text-white">{item.title}</div>
+                                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+                                            {item.category}
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{item.description}</div>
+                                    <button
+                                        onClick={() => applyRecommendation(item)}
+                                        className="mt-3 text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-500 transition-colors font-black"
+                                    >
+                                        Apply Rule
+                                    </button>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -1203,6 +1504,13 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         }
         setSelectedDataSource(dsId || null);
     };
+
+    const currentChartType = activeWidget?.type === 'chart' ? activeWidget.chartType : undefined;
+    const supportsLegendInFormat = activeWidget?.type === 'chart';
+    const supportsGridInFormat = activeWidget?.type === 'chart' && currentChartType !== 'pie' && currentChartType !== 'donut';
+    const supportsLabelsInFormat = activeWidget?.type === 'chart';
+    const supportsPercentLabelMode = currentChartType === 'pie' || currentChartType === 'donut';
+    const supportsChartColors = activeWidget?.type === 'chart';
 
     return (
         <div className="flex flex-col h-full bg-white dark:bg-slate-950 transition-colors duration-300">
@@ -1760,17 +2068,6 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                                     hint="Select a field to control bubble size"
                                                     slotId="yAxis-size"
                                                 />
-                                                <HierarchyFieldSelector
-                                                    label="Legend / Category"
-                                                    hierarchy={activeWidget.legendHierarchy}
-                                                    fields={fields.filter(f => f.type === 'string')}
-                                                    onChange={(h) => handleUpdateWidget({
-                                                        legendHierarchy: h,
-                                                        legend: h[0] || ''
-                                                    })}
-                                                    placeholder="Add category..."
-                                                    slotId="legend-hierarchy"
-                                                />
                                             </div>
                                         );
                                     }
@@ -2168,114 +2465,126 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                 </div>
                             )}
 
-                            <div className="space-y-2">
-                                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={activeWidget.showLegend !== false}
-                                        onChange={(e) => handleUpdateWidget({ showLegend: e.target.checked })}
-                                        className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
-                                    />
-                                    Show Legend
-                                </label>
-
-                                {activeWidget.showLegend !== false && (
-                                    <div className="ml-6 pl-2 border-l border-slate-200 dark:border-white/10 space-y-2">
-                                        <label className="block text-[9px] text-slate-500 uppercase">Position</label>
-                                        <select
-                                            value={activeWidget.legendPosition || 'bottom'}
-                                            onChange={(e) => handleUpdateWidget({ legendPosition: e.target.value as any })}
-                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none"
-                                        >
-                                            <option value="right">Right</option>
-                                            <option value="bottom">Bottom</option>
-                                            <option value="top">Top</option>
-                                            <option value="left">Left</option>
-                                        </select>
-                                        <div className="pt-1">
-                                            <label className="flex justify-between items-center text-[9px] text-slate-500 uppercase mb-1">
-                                                <span>Font Size</span>
-                                                <span className="text-slate-900 dark:text-white font-mono">{activeWidget.legendFontSize || 10}px</span>
+                            {(supportsLegendInFormat || supportsGridInFormat || supportsLabelsInFormat) && (
+                                <div className="space-y-2">
+                                    {supportsLegendInFormat && (
+                                        <>
+                                            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={activeWidget.showLegend !== false}
+                                                    onChange={(e) => handleUpdateWidget({ showLegend: e.target.checked })}
+                                                    className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
+                                                />
+                                                Show Legend
                                             </label>
+
+                                            {activeWidget.showLegend !== false && (
+                                                <div className="ml-6 pl-2 border-l border-slate-200 dark:border-white/10 space-y-2">
+                                                    <label className="block text-[9px] text-slate-500 uppercase">Position</label>
+                                                    <select
+                                                        value={activeWidget.legendPosition || 'bottom'}
+                                                        onChange={(e) => handleUpdateWidget({ legendPosition: e.target.value as any })}
+                                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none"
+                                                    >
+                                                        <option value="right">Right</option>
+                                                        <option value="bottom">Bottom</option>
+                                                        <option value="top">Top</option>
+                                                        <option value="left">Left</option>
+                                                    </select>
+                                                    <div className="pt-1">
+                                                        <label className="flex justify-between items-center text-[9px] text-slate-500 uppercase mb-1">
+                                                            <span>Font Size</span>
+                                                            <span className="text-slate-900 dark:text-white font-mono">{activeWidget.legendFontSize || 10}px</span>
+                                                        </label>
+                                                        <input
+                                                            type="range"
+                                                            min="6"
+                                                            max="24"
+                                                            step="1"
+                                                            value={activeWidget.legendFontSize || 10}
+                                                            onChange={(e) => handleUpdateWidget({ legendFontSize: parseInt(e.target.value) })}
+                                                            className="w-full h-1 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {supportsGridInFormat && (
+                                        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                                             <input
-                                                type="range"
-                                                min="6"
-                                                max="24"
-                                                step="1"
-                                                value={activeWidget.legendFontSize || 10}
-                                                onChange={(e) => handleUpdateWidget({ legendFontSize: parseInt(e.target.value) })}
-                                                className="w-full h-1 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                                type="checkbox"
+                                                checked={activeWidget.showGrid !== false}
+                                                onChange={(e) => handleUpdateWidget({ showGrid: e.target.checked })}
+                                                className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
                                             />
-                                        </div>
-                                    </div>
-                                )}
+                                            Show Grid
+                                        </label>
+                                    )}
 
-                                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={activeWidget.showGrid !== false}
-                                        onChange={(e) => handleUpdateWidget({ showGrid: e.target.checked })}
-                                        className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
-                                    />
-                                    Show Grid
-                                </label>
+                                    {supportsLabelsInFormat && (
+                                        <>
+                                            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={activeWidget.showLabels !== false}
+                                                    onChange={(e) => handleUpdateWidget({ showLabels: e.target.checked })}
+                                                    className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
+                                                />
+                                                Show Labels
+                                            </label>
 
-                                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={activeWidget.showLabels !== false}
-                                        onChange={(e) => handleUpdateWidget({ showLabels: e.target.checked })}
-                                        className="rounded border-slate-200 dark:border-white/20 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
-                                    />
-                                    Show Labels
-                                </label>
+                                            {activeWidget.showLabels !== false && (
+                                                <div className="ml-6 pl-2 border-l border-slate-200 dark:border-white/10 space-y-2">
+                                                    <label className="block text-[9px] text-slate-500 uppercase">Label Mode</label>
+                                                    <select
+                                                        value={activeWidget.labelMode || 'categoricalValue'}
+                                                        onChange={(e) => handleUpdateWidget({ labelMode: e.target.value as any })}
+                                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none"
+                                                    >
+                                                        <option value="value">Value Only</option>
+                                                        {supportsPercentLabelMode && <option value="percent">Percent Only</option>}
+                                                        <option value="category">Category Only</option>
+                                                        <option value="categoricalValue">Category + Value</option>
+                                                        {supportsPercentLabelMode && <option value="categoricalPercent">Category + Percent</option>}
+                                                    </select>
 
-                                {activeWidget.showLabels !== false && (
-                                    <div className="ml-6 pl-2 border-l border-slate-200 dark:border-white/10 space-y-2">
-                                        <label className="block text-[9px] text-slate-500 uppercase">Label Mode</label>
-                                        <select
-                                            value={activeWidget.labelMode || 'categoricalValue'}
-                                            onChange={(e) => handleUpdateWidget({ labelMode: e.target.value as any })}
-                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none"
-                                        >
-                                            <option value="value">Value Only</option>
-                                            <option value="percent">Percent Only</option>
-                                            <option value="category">Category Only</option>
-                                            <option value="categoricalValue">Category + Value</option>
-                                            <option value="categoricalPercent">Category + Percent</option>
-                                        </select>
-
-                                        {(!activeWidget.labelMode || ['value', 'categoricalValue', 'categoricalPercent'].includes(activeWidget.labelMode)) && (
-                                            <div className="mt-2 space-y-1">
-                                                <div className="flex justify-between items-center group">
-                                                    <label className="block text-[9px] text-slate-500 uppercase">Override Format</label>
-                                                    {activeWidget.labelFormat && (
-                                                        <button
-                                                            onClick={() => handleUpdateWidget({ labelFormat: undefined })}
-                                                            className="text-[8px] text-indigo-400 hover:text-indigo-300"
-                                                        >
-                                                            Reset
-                                                        </button>
+                                                    {(!activeWidget.labelMode || ['value', 'categoricalValue'].includes(activeWidget.labelMode)) && (
+                                                        <div className="mt-2 space-y-1">
+                                                            <div className="flex justify-between items-center group">
+                                                                <label className="block text-[9px] text-slate-500 uppercase">Override Format</label>
+                                                                {activeWidget.labelFormat && (
+                                                                    <button
+                                                                        onClick={() => handleUpdateWidget({ labelFormat: undefined })}
+                                                                        className="text-[8px] text-indigo-400 hover:text-indigo-300"
+                                                                    >
+                                                                        Reset
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                            <select
+                                                                value={activeWidget.labelFormat || activeWidget.valueFormat || 'standard'}
+                                                                onChange={(e) => handleUpdateWidget({ labelFormat: e.target.value })}
+                                                                className={`w-full bg-slate-50 dark:bg-slate-900 border ${activeWidget.labelFormat ? 'border-indigo-500/50' : 'border-slate-200 dark:border-white/10'} rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none`}
+                                                            >
+                                                                <option value="">Use Global Format</option>
+                                                                <option value="standard">Standard (1,000,000)</option>
+                                                                <option value="compact">Compact (1M / 1B)</option>
+                                                                <option value="integer">Integer (No decimals)</option>
+                                                                <option value="percentage">Percent (0.0%)</option>
+                                                                <option value="currency_vnd">Currency (VND)</option>
+                                                                <option value="currency_usd">Currency (USD)</option>
+                                                            </select>
+                                                        </div>
                                                     )}
                                                 </div>
-                                                <select
-                                                    value={activeWidget.labelFormat || activeWidget.valueFormat || 'standard'}
-                                                    onChange={(e) => handleUpdateWidget({ labelFormat: e.target.value })}
-                                                    className={`w-full bg-slate-50 dark:bg-slate-900 border ${activeWidget.labelFormat ? 'border-indigo-500/50' : 'border-slate-200 dark:border-white/10'} rounded px-2 py-1 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 outline-none`}
-                                                >
-                                                    <option value="">Use Global Format</option>
-                                                    <option value="standard">Standard (1,000,000)</option>
-                                                    <option value="compact">Compact (1M / 1B)</option>
-                                                    <option value="integer">Integer (No decimals)</option>
-                                                    <option value="percentage">Percent (0.0%)</option>
-                                                    <option value="currency_vnd">Currency (VND)</option>
-                                                    <option value="currency_usd">Currency (USD)</option>
-                                                </select>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            )}
 
                             <div className="space-y-4 pt-4 border-t border-white/5">
                                 <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
@@ -2354,29 +2663,31 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                 </div>
                             </div>
 
-                            <div className="space-y-4 pt-4 border-t border-white/5">
-                                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
-                                    Chart Colors
-                                </label>
-                                <div className="grid grid-cols-2 gap-3 max-h-[200px] overflow-y-auto custom-scrollbar p-1">
-                                    {Array.from({ length: Math.max(4, activeWidget.colors?.length || 0) + 2 }).map((_, idx) => (
-                                        <ColorPicker
-                                            key={idx}
-                                            label={`Series ${idx + 1}`}
-                                            color={activeWidget.colors?.[idx] || CHART_COLORS[idx % CHART_COLORS.length]}
-                                            onChange={(c) => handleColorChange(idx, c)}
-                                        />
-                                    ))}
+                            {supportsChartColors && (
+                                <div className="space-y-4 pt-4 border-t border-white/5">
+                                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
+                                        Chart Colors
+                                    </label>
+                                    <div className="grid grid-cols-2 gap-3 max-h-[200px] overflow-y-auto custom-scrollbar p-1">
+                                        {Array.from({ length: Math.max(4, activeWidget.colors?.length || 0) + 2 }).map((_, idx) => (
+                                            <ColorPicker
+                                                key={idx}
+                                                label={`Series ${idx + 1}`}
+                                                color={activeWidget.colors?.[idx] || CHART_COLORS[idx % CHART_COLORS.length]}
+                                                onChange={(c) => handleColorChange(idx, c)}
+                                            />
+                                        ))}
+                                    </div>
+                                    <div className="mt-2 flex justify-end">
+                                        <button
+                                            onClick={() => handleUpdateWidget({ colors: CHART_COLORS })}
+                                            className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-wider"
+                                        >
+                                            Reset to Default Palette
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="mt-2 flex justify-end">
-                                    <button
-                                        onClick={() => handleUpdateWidget({ colors: CHART_COLORS })}
-                                        className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-wider"
-                                    >
-                                        Reset to Default Palette
-                                    </button>
-                                </div>
-                            </div>
+                            )}
                         </div>
                     )
                 }

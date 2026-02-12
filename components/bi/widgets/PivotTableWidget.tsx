@@ -62,12 +62,56 @@ const getConditionalFormatResult = (value: number | undefined, rules?: Condition
 
 const toSafeVarName = (raw: string) => String(raw || '').replace(/[^a-zA-Z0-9_]/g, '_');
 
+const toNumber = (value: any) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+};
+
+const FormulaHelpers = {
+    IF: (condition: any, trueValue: any, falseValue: any = null) => (condition ? trueValue : falseValue),
+    ABS: (x: any) => Math.abs(toNumber(x)),
+    ROUND: (x: any, digits: any = 0) => {
+        const precision = Math.max(0, Math.floor(toNumber(digits)));
+        const factor = Math.pow(10, precision);
+        return Math.round(toNumber(x) * factor) / factor;
+    },
+    FLOOR: (x: any) => Math.floor(toNumber(x)),
+    CEIL: (x: any) => Math.ceil(toNumber(x)),
+    MIN: (...args: any[]) => Math.min(...args.map(toNumber)),
+    MAX: (...args: any[]) => Math.max(...args.map(toNumber)),
+    SUM: (...args: any[]) => args.reduce((acc, item) => acc + toNumber(item), 0),
+    AVG: (...args: any[]) => {
+        if (args.length === 0) return 0;
+        return args.reduce((acc, item) => acc + toNumber(item), 0) / args.length;
+    },
+    SAFE_DIV: (numerator: any, denominator: any, fallback: any = 0) => {
+        const num = toNumber(numerator);
+        const den = toNumber(denominator);
+        if (!den) return toNumber(fallback);
+        return num / den;
+    },
+    PERCENT_OF: (value: any, total: any) => {
+        const den = toNumber(total);
+        if (!den) return 0;
+        return (toNumber(value) / den) * 100;
+    },
+    PERCENT_CHANGE: (current: any, baseline: any) => {
+        const base = toNumber(baseline);
+        if (!base) return 0;
+        return ((toNumber(current) - base) / base) * 100;
+    },
+    CLAMP: (value: any, minValue: any, maxValue: any) => Math.max(toNumber(minValue), Math.min(toNumber(value), toNumber(maxValue))),
+};
+
 const evaluateCompareFormula = (formula: string | undefined, context: Record<string, any>) => {
     if (!formula || !formula.trim()) return undefined;
     try {
         // Trusted in-app expression evaluator for power-user conditional formatting.
-        const fn = new Function('ctx', 'Math', `with (ctx) { return (${formula}); }`);
-        return fn(context, Math);
+        const helperNames = Object.keys(FormulaHelpers);
+        const helperValues = Object.values(FormulaHelpers);
+        // eslint-disable-next-line no-new-func
+        const fn = new Function('ctx', 'Math', ...helperNames, `with (ctx) { return (${formula}); }`);
+        return fn(context, Math, ...helperValues);
     } catch {
         return undefined;
     }
