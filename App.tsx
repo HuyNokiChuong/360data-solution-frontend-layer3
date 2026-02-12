@@ -14,16 +14,44 @@ import { ConfirmationModal } from './components/ConfirmationModal';
 import { normalizeSchema } from './utils/schema';
 import { generateUUID, isUUID } from './utils/id';
 
-const Sidebar = lazy(() => import('./components/Sidebar'));
-const Connections = lazy(() => import('./components/Connections'));
-const Tables = lazy(() => import('./components/Tables'));
-const Reports = lazy(() => import('./components/Reports'));
-const DataModeling = lazy(() => import('./components/data-modeling/DataModeling'));
-const AISettings = lazy(() => import('./components/AISettings'));
-const UserManagement = lazy(() => import('./components/UserManagement'));
-const BIMain = lazy(() => import('./components/bi/BIMain'));
-const LogViewer = lazy(() => import('./components/LogViewer'));
-const Onboarding = lazy(() => import('./components/Onboarding'));
+const lazyWithRetry = <T extends React.ComponentType<any>>(
+  importer: () => Promise<{ default: T }>,
+  key: string
+) =>
+  lazy(async () => {
+    const reloadKey = `lazy-retry:${key}`;
+    const alreadyReloaded = sessionStorage.getItem(reloadKey) === '1';
+
+    try {
+      const mod = await importer();
+      sessionStorage.removeItem(reloadKey);
+      return mod;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isChunkError =
+        message.includes('Failed to fetch dynamically imported module') ||
+        message.includes('Importing a module script failed') ||
+        message.includes('Loading chunk');
+
+      if (isChunkError && !alreadyReloaded) {
+        sessionStorage.setItem(reloadKey, '1');
+        window.location.reload();
+      }
+
+      throw error;
+    }
+  });
+
+const Sidebar = lazyWithRetry(() => import('./components/Sidebar'), 'Sidebar');
+const Connections = lazyWithRetry(() => import('./components/Connections'), 'Connections');
+const Tables = lazyWithRetry(() => import('./components/Tables'), 'Tables');
+const Reports = lazyWithRetry(() => import('./components/Reports'), 'Reports');
+const DataModeling = lazyWithRetry(() => import('./components/data-modeling/DataModeling'), 'DataModeling');
+const AISettings = lazyWithRetry(() => import('./components/AISettings'), 'AISettings');
+const UserManagement = lazyWithRetry(() => import('./components/UserManagement'), 'UserManagement');
+const BIMain = lazyWithRetry(() => import('./components/bi/BIMain'), 'BIMain');
+const LogViewer = lazyWithRetry(() => import('./components/LogViewer'), 'LogViewer');
+const Onboarding = lazyWithRetry(() => import('./components/Onboarding'), 'Onboarding');
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState(false);

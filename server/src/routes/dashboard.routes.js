@@ -14,23 +14,36 @@ router.use(authenticate);
  */
 router.get('/', async (req, res) => {
     try {
-        const result = await query(
-            `SELECT d.*, 
-        COALESCE(
-          (SELECT json_agg(json_build_object(
-            'userId', ds.user_id,
-            'permission', ds.permission,
-            'sharedAt', ds.shared_at,
-            'allowedPageIds', COALESCE(to_jsonb(ds)->'allowed_page_ids', '[]'::jsonb),
-            'rls', COALESCE(to_jsonb(ds)->'rls_config', '{}'::jsonb)
-          ))
-           FROM dashboard_shares ds WHERE ds.dashboard_id = d.id), '[]'
-        ) as shared_with
-       FROM dashboards d 
-       WHERE d.workspace_id = $1 AND d.is_deleted = FALSE
-       ORDER BY d.updated_at DESC`,
-            [req.user.workspace_id]
-        );
+        let result;
+        try {
+            // Preferred query for latest schema.
+            result = await query(
+                `SELECT d.*, 
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                'userId', ds.user_id,
+                'permission', ds.permission,
+                'sharedAt', ds.shared_at,
+                'allowedPageIds', COALESCE(to_jsonb(ds)->'allowed_page_ids', '[]'::jsonb),
+                'rls', COALESCE(to_jsonb(ds)->'rls_config', '{}'::jsonb)
+              ))
+               FROM dashboard_shares ds WHERE ds.dashboard_id = d.id), '[]'
+            ) as shared_with
+           FROM dashboards d 
+           WHERE d.workspace_id = $1 AND COALESCE(d.is_deleted, FALSE) = FALSE
+           ORDER BY d.updated_at DESC`,
+                [req.user.workspace_id]
+            );
+        } catch (primaryErr) {
+            // Fallback for older DB schemas (missing is_deleted / dashboard_shares / RLS columns).
+            result = await query(
+                `SELECT d.*, '[]'::json as shared_with
+                 FROM dashboards d
+                 WHERE d.workspace_id = $1
+                 ORDER BY d.updated_at DESC`,
+                [req.user.workspace_id]
+            );
+        }
 
         res.json({ success: true, data: result.rows.map(formatDashboard).map((d) => applyPageAccessConstraint(d, req.user.email)) });
     } catch (err) {

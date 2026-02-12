@@ -17,6 +17,8 @@ router.get('/', async (req, res) => {
     try {
         const { userId, action, entityType, limit = 100, offset = 0 } = req.query;
         const workspaceId = req.user.workspace_id;
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 1000);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
 
         const conditions = ['workspace_id = $1'];
         const values = [workspaceId];
@@ -35,28 +37,43 @@ router.get('/', async (req, res) => {
             values.push(entityType);
         }
 
-        const countResult = await query(
-            `SELECT COUNT(*) FROM audit_logs WHERE ${conditions.join(' AND ')}`,
-            values
-        );
+        let countResult;
+        let logsResult;
+        try {
+            countResult = await query(
+                `SELECT COUNT(*) FROM audit_logs WHERE ${conditions.join(' AND ')}`,
+                values
+            );
 
-        const logsResult = await query(
-            `SELECT al.*, u.email as user_email, u.name as user_name 
-             FROM audit_logs al
-             LEFT JOIN users u ON al.user_id = u.id
-             WHERE ${conditions.join(' AND ')}
-             ORDER BY al.created_at DESC
-             LIMIT $${idx++} OFFSET $${idx++}`,
-            [...values, limit, offset]
-        );
+            logsResult = await query(
+                `SELECT al.*, u.email as user_email, u.name as user_name 
+                 FROM audit_logs al
+                 LEFT JOIN users u ON al.user_id = u.id
+                 WHERE ${conditions.join(' AND ')}
+                 ORDER BY al.created_at DESC
+                 LIMIT $${idx++} OFFSET $${idx++}`,
+                [...values, safeLimit, safeOffset]
+            );
+        } catch (tableErr) {
+            // Backward-compatible fallback if audit_logs table is unavailable.
+            return res.json({
+                success: true,
+                data: [],
+                pagination: {
+                    total: 0,
+                    limit: safeLimit,
+                    offset: safeOffset,
+                }
+            });
+        }
 
         res.json({
             success: true,
             data: logsResult.rows,
             pagination: {
                 total: parseInt(countResult.rows[0].count),
-                limit: parseInt(limit),
-                offset: parseInt(offset),
+                limit: safeLimit,
+                offset: safeOffset,
             }
         });
     } catch (err) {
