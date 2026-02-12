@@ -82,8 +82,8 @@ export const useAggregatedData = (widget: BIWidget) => {
                 }
 
                 // Resolve Token (Service Account or OAuth)
-                const { getTokenForConnection } = await import('../../../services/googleAuth');
-                const clientId = process.env.GOOGLE_CLIENT_ID || '';
+                const { getTokenForConnection, getGoogleClientId } = await import('../../../services/googleAuth');
+                const clientId = getGoogleClientId();
                 const token = connection ? await getTokenForConnection(connection, clientId) : null;
 
                 if (!token) {

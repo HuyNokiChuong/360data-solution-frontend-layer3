@@ -15,12 +15,13 @@ import { fetchTableData, fetchTableSchema } from '../../services/bigquery';
 import { useDashboardStore } from './store/dashboardStore';
 import { useDataStore } from './store/dataStore';
 import { useFilterStore } from './store/filterStore';
-import { BIWidget, ChartType, Field } from './types';
+import { BIWidget, ChartType, Field, DataSource } from './types';
 import { useKeyboardShortcuts } from './utils/useKeyboardShortcuts';
 import PageTabs from './PageTabs';
 import DashboardAIChat from './DashboardAIChat';
 import { getAutoTitle } from './utils/widgetUtils';
 import { normalizeFieldType } from '../../utils/schema';
+import { getDefaultDataModel, getModelTables } from '../../services/dataModeling';
 import {
     DndContext,
     useSensor,
@@ -83,8 +84,12 @@ const BIMain: React.FC<BIMainProps> = ({
         lastReloadTimestamp
     } = useDashboardStore();
 
-    const { dataSources, selectedDataSourceId, clearAllBigQueryData, setGoogleToken, setConnections } = useDataStore();
+    const { dataSources, selectedDataSourceId, clearAllBigQueryData, setGoogleToken, setConnections, upsertDataSource } = useDataStore();
     const { clearAllFilters } = useFilterStore();
+    const [reloadTrigger, setReloadTrigger] = useState(0);
+    const [metadataReloadTrigger, setMetadataReloadTrigger] = useState(0);
+    const lastReloadTriggerRef = useRef(0);
+    const [isAuthRequired, setIsAuthRequired] = useState(false);
 
     // Sync external props to local store for hooks to consume
     useEffect(() => {
@@ -95,10 +100,97 @@ const BIMain: React.FC<BIMainProps> = ({
         setConnections(connections);
     }, [connections, setConnections]);
 
-    const [reloadTrigger, setReloadTrigger] = useState(0);
-    const [metadataReloadTrigger, setMetadataReloadTrigger] = useState(0);
-    const lastReloadTriggerRef = useRef(0);
-    const [isAuthRequired, setIsAuthRequired] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+
+        const syncSemanticDataSource = async () => {
+            try {
+                const [defaultModel, modelTables] = await Promise.all([
+                    getDefaultDataModel(),
+                    getModelTables(),
+                ]);
+
+                if (cancelled) return;
+
+                const activeTableIds = new Set(
+                    tables
+                        .filter((table) => table.status === 'Active')
+                        .map((table) => table.id)
+                );
+                const scopedModelTables = modelTables.filter((table) => activeTableIds.has(table.syncedTableId));
+
+                const fieldMap: Record<string, { tableId: string; column: string }> = {};
+                const schema: Field[] = [];
+                const usedFieldNames = new Set<string>();
+
+                scopedModelTables.forEach((table) => {
+                    (table.schema || []).forEach((column) => {
+                        const normalizedType = normalizeFieldType(column.type);
+                        const preferredName = `${table.tableName}.${column.name}`;
+                        const fallbackName = `${table.datasetName || 'dataset'}.${table.tableName}.${column.name}`;
+                        const uniqueName = !usedFieldNames.has(preferredName)
+                            ? preferredName
+                            : (!usedFieldNames.has(fallbackName) ? fallbackName : `${table.id}.${column.name}`);
+
+                        usedFieldNames.add(uniqueName);
+                        fieldMap[uniqueName] = {
+                            tableId: table.id,
+                            column: column.name,
+                        };
+
+                        schema.push({
+                            name: uniqueName,
+                            type: normalizedType,
+                        });
+                    });
+                });
+
+                const runtimeEngines = new Set(scopedModelTables.map((table) => table.runtimeEngine));
+                const semanticEngine = runtimeEngines.size === 1
+                    ? Array.from(runtimeEngines)[0] as 'bigquery' | 'postgres'
+                    : undefined;
+
+                const sourceIds = Array.from(
+                    new Set(
+                        scopedModelTables
+                            .map((table) => table.sourceId)
+                            .filter(Boolean)
+                    )
+                ) as string[];
+
+                const semanticId = `semantic:${defaultModel.id}`;
+                const existingSource = useDataStore.getState().dataSources.find((source) => source.id === semanticId);
+
+                const semanticSource: DataSource = {
+                    id: semanticId,
+                    name: defaultModel.name || 'Workspace Semantic Model',
+                    type: 'semantic_model',
+                    data: [],
+                    schema,
+                    createdAt: existingSource?.createdAt || new Date().toISOString(),
+                    connectionId: sourceIds.length === 1 ? sourceIds[0] : undefined,
+                    datasetName: 'semantic_model',
+                    tableName: defaultModel.name || 'Semantic Model',
+                    dataModelId: defaultModel.id,
+                    semanticFieldMap: fieldMap,
+                    semanticTableIds: scopedModelTables.map((table) => table.id),
+                    semanticEngine,
+                    isLoaded: true,
+                    totalRows: 0,
+                    syncStatus: 'ready',
+                };
+
+                upsertDataSource(semanticSource);
+            } catch (error) {
+                console.warn('[BI] Unable to sync semantic data source:', (error as any)?.message || error);
+            }
+        };
+
+        syncSemanticDataSource();
+        return () => {
+            cancelled = true;
+        };
+    }, [tables, metadataReloadTrigger, upsertDataSource]);
 
     const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
 
@@ -113,8 +205,8 @@ const BIMain: React.FC<BIMainProps> = ({
 
         // 1. If BigQuery connection exists, handle token refresh
         if (bqConn) {
-            const clientId = process.env.GOOGLE_CLIENT_ID || '';
-            const { getTokenForConnection, getGoogleToken } = await import('../../services/googleAuth');
+            const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../../services/googleAuth');
+            const clientId = getGoogleClientId();
             let validToken = await getTokenForConnection(bqConn, clientId);
 
             if (validToken) {
@@ -165,8 +257,8 @@ const BIMain: React.FC<BIMainProps> = ({
         if (bqConn?.authType !== 'GoogleMail') return;
 
         try {
-            const clientId = process.env.GOOGLE_CLIENT_ID || '';
-            const { getGoogleToken } = await import('../../services/googleAuth');
+            const { getGoogleToken, getGoogleClientId } = await import('../../services/googleAuth');
+            const clientId = getGoogleClientId();
             const newToken = await getGoogleToken(clientId);
             setGlobalGoogleToken(newToken);
             setIsAuthRequired(false);
@@ -192,8 +284,8 @@ const BIMain: React.FC<BIMainProps> = ({
             if (connection) {
                 try {
                     // 1. Ensure we have a valid token (refresh if needed)
-                    const clientId = process.env.GOOGLE_CLIENT_ID || '';
-                    const { getTokenForConnection } = await import('../../services/googleAuth');
+                    const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
+                    const clientId = getGoogleClientId();
                     const validToken = await getTokenForConnection(connection, clientId);
 
                     if (!validToken) {
@@ -359,8 +451,8 @@ const BIMain: React.FC<BIMainProps> = ({
                 return;
             }
 
-            const clientId = process.env.GOOGLE_CLIENT_ID || '';
-            const { getTokenForConnection } = await import('../../services/googleAuth');
+            const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
+            const clientId = getGoogleClientId();
 
             try {
                 const tokenToTest = await getTokenForConnection(bqConn, clientId);
@@ -774,8 +866,8 @@ const BIMain: React.FC<BIMainProps> = ({
             }
 
             const { fetchBatchTableMetadata } = await import('../../services/bigquery-batch');
-            const { getTokenForConnection } = await import('../../services/googleAuth');
-            const clientId = process.env.GOOGLE_CLIENT_ID || '';
+            const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
+            const clientId = getGoogleClientId();
 
             await Promise.all(
                 Array.from(tablesByDataset.entries()).map(async ([datasetKey, { connection, tables: datasetTables }]) => {
@@ -941,8 +1033,8 @@ const BIMain: React.FC<BIMainProps> = ({
                             while (attempt < MAX_RETRIES && !success && !signal.aborted) {
                                 attempt++;
                                 try {
-                                    const clientId = process.env.GOOGLE_CLIENT_ID || '';
-                                    const { getTokenForConnection } = await import('../../services/googleAuth');
+                                    const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
+                                    const clientId = getGoogleClientId();
                                     const validToken = await getTokenForConnection(connection, clientId);
 
                                     if (!validToken) {

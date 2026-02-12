@@ -86,10 +86,13 @@ const Connections: React.FC<ConnectionsProps> = ({
   googleToken,
   setGoogleToken
 }) => {
-  const { t } = useLanguageStore();
+  const { t, language } = useLanguageStore();
+  const isVi = language === 'vi';
+  // Don't use optional chaining with import.meta.env - Vite won't inject env vars reliably.
+  const viteEnv = import.meta.env as any;
   const googleClientId =
-    (import.meta as any)?.env?.VITE_GOOGLE_OAUTH_CLIENT_ID ||
-    (import.meta as any)?.env?.VITE_GOOGLE_CLIENT_ID ||
+    viteEnv.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+    viteEnv.VITE_GOOGLE_CLIENT_ID ||
     process.env.GOOGLE_CLIENT_ID ||
     '';
   const [isWizardOpen, setIsWizardOpen] = useState(false);
@@ -2400,7 +2403,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                               type="text"
                               value={projectSearchTerm}
                               onChange={(e) => setProjectSearchTerm(e.target.value)}
-                              placeholder="Search Projects..."
+                              placeholder={isVi ? 'Tìm dự án...' : 'Search Projects...'}
                               className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
                             />
                           </div>
@@ -2448,7 +2451,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                               onClick={() => { setSelectedContext(''); setBqDatasets([]); setDatasetSearchTerm(''); }}
                               className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-2"
                             >
-                              <i className="fas fa-arrow-left"></i> Back to Projects
+                              <i className="fas fa-arrow-left"></i> {isVi ? 'Quay lại dự án' : 'Back to Projects'}
                             </button>
                           </div>
 
@@ -2458,7 +2461,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                               type="text"
                               value={datasetSearchTerm}
                               onChange={(e) => setDatasetSearchTerm(e.target.value)}
-                              placeholder="Search Datasets..."
+                              placeholder={isVi ? 'Tìm dataset...' : 'Search Datasets...'}
                               className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm"
                             />
                           </div>
@@ -2467,7 +2470,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                             {bqDatasets.length === 0 ? (
                               <div className="text-center py-12 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
                                 <i className="fas fa-circle-notch fa-spin text-slate-300 dark:text-slate-600 text-2xl mb-3"></i>
-                                <p className="text-xs text-slate-400 dark:text-slate-500">Fetching Datasets...</p>
+                                <p className="text-xs text-slate-400 dark:text-slate-500">{isVi ? 'Đang tải danh sách dataset...' : 'Fetching Datasets...'}</p>
                               </div>
                             ) : (
                               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
@@ -2951,7 +2954,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                 }}
                 className={`font-black text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors ${step === 1 ? 'invisible' : ''}`}
               >
-                Back
+                {isVi ? 'Quay lại' : 'Back'}
               </button>
               <button
                 onClick={async () => {

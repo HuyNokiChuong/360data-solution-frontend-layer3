@@ -76,6 +76,8 @@ export interface User {
   industry?: string;
   phoneNumber?: string;
   companySize?: string;
+  note?: string;
+  tags?: string[];
 }
 
 export interface Connection {
@@ -187,4 +189,113 @@ export interface DashboardConfig {
   actions?: ActionItem[];
   kpis?: KPIConfig[];
   suggestions?: string[];
+}
+
+export interface DataModel {
+  id: string;
+  workspaceId: string;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelTable {
+  id: string;
+  syncedTableId: string;
+  tableName: string;
+  datasetName?: string;
+  sourceId?: string;
+  sourceType: WarehouseType | string;
+  runtimeEngine: 'bigquery' | 'postgres';
+  runtimeRef?: string;
+  isExecutable: boolean;
+  executableReason?: string;
+  schema: { name: string; type: string }[];
+}
+
+export interface ModelRelationship {
+  id: string;
+  dataModelId: string;
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+  fromTableId: string;
+  toTableId: string;
+  relationshipType: '1-1' | '1-n' | 'n-n';
+  crossFilterDirection: 'single' | 'both';
+  validationStatus: 'valid' | 'invalid';
+  invalidReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelationshipSuggestion {
+  id: string;
+  dataModelId: string;
+  fromTableId: string;
+  fromTable: string;
+  fromColumn: string;
+  toTableId: string;
+  toTable: string;
+  toColumn: string;
+  relationshipType: '1-1' | '1-n' | 'n-n';
+  crossFilterDirection: 'single' | 'both';
+  confidence: number;
+  validationStatus: 'valid' | 'invalid';
+  invalidReason?: string;
+  reasons: string[];
+}
+
+export interface SemanticSelectItem {
+  tableId: string;
+  column: string;
+  aggregation?: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'countDistinct' | 'none' | 'raw';
+  alias?: string;
+}
+
+export interface SemanticFilterItem {
+  tableId: string;
+  column: string;
+  operator:
+    | 'equals'
+    | 'notEquals'
+    | 'contains'
+    | 'notContains'
+    | 'startsWith'
+    | 'endsWith'
+    | 'greaterThan'
+    | 'lessThan'
+    | 'greaterOrEqual'
+    | 'lessOrEqual'
+    | 'between'
+    | 'in'
+    | 'notIn'
+    | 'isNull'
+    | 'isNotNull';
+  value?: any;
+  value2?: any;
+}
+
+export interface SemanticQuerySpec {
+  dataModelId?: string;
+  tableIds: string[];
+  select: SemanticSelectItem[];
+  filters?: SemanticFilterItem[];
+  groupBy?: Array<{ tableId: string; column: string }>;
+  orderBy?: Array<{ tableId: string; column: string; dir?: 'ASC' | 'DESC' }>;
+  limit?: number;
+}
+
+export interface SemanticExecutionError {
+  message: string;
+  code:
+    | 'CROSS_SOURCE_BLOCKED'
+    | 'NO_RELATIONSHIP_PATH'
+    | 'TABLE_NOT_EXECUTABLE'
+    | 'ENGINE_NOT_SUPPORTED'
+    | 'PLAN_BUILD_FAILED'
+    | 'QUERY_EXECUTION_FAILED'
+    | string;
 }

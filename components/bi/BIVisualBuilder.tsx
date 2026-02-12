@@ -1445,6 +1445,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         switch (ds.type) {
             case 'bigquery': return 'BigQuery';
             case 'excel': return 'Excel';
+            case 'semantic_model': return 'Semantic Model';
             case 'csv': return 'CSV';
             case 'json': return 'JSON';
             case 'api': return 'API';

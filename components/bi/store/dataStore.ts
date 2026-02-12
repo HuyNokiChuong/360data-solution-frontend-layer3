@@ -23,6 +23,7 @@ interface DataState {
 
     // Data source actions
     addDataSource: (dataSource: Omit<DataSource, 'id' | 'createdAt'>) => void;
+    upsertDataSource: (dataSource: DataSource) => void;
     updateDataSource: (id: string, updates: Partial<DataSource>) => void;
     deleteDataSource: (id: string) => void;
 
@@ -139,6 +140,22 @@ export const useDataStore = create<DataState>((set, get) => ({
             selectedDataSourceId: newDataSource.id
         }));
         saveToStorage(get(), newDataSource.id);
+    },
+
+    upsertDataSource: (dataSource) => {
+        set((state) => {
+            const existingIndex = state.dataSources.findIndex((source) => source.id === dataSource.id);
+            if (existingIndex >= 0) {
+                const nextDataSources = [...state.dataSources];
+                nextDataSources[existingIndex] = {
+                    ...nextDataSources[existingIndex],
+                    ...dataSource,
+                };
+                return { dataSources: nextDataSources };
+            }
+            return { dataSources: [...state.dataSources, dataSource] };
+        });
+        saveToStorage(get(), dataSource.id);
     },
 
     updateDataSource: (id, updates) => {

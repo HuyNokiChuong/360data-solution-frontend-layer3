@@ -6,6 +6,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { BIDashboard } from './types';
 import { DashboardConfig } from '../../types';
 import { analyzeDashboardContent } from '../../services/ai';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface Message {
     id: string;
@@ -22,6 +23,8 @@ interface DashboardAIChatProps {
 }
 
 const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
+    const { language } = useLanguageStore();
+    const isVi = language === 'vi';
     const [isOpen, setIsOpen] = useState(false);
     const [position, setPosition] = useState({ x: window.innerWidth - 100, y: window.innerHeight - 100 });
     const [isDragging, setIsDragging] = useState(false);
@@ -32,7 +35,9 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
         {
             id: 'welcome',
             role: 'assistant',
-            content: `Xin chào! Tôi là AI Advisor của bạn. Tôi đã nắm được cấu trúc của dashboard "${dashboard.title}".\nBạn muốn tôi phân tích điều gì hôm nay?`,
+            content: isVi
+                ? `Xin chào! Tôi là AI Advisor của bạn. Tôi đã nắm được cấu trúc của dashboard "${dashboard.title}".\nBạn muốn tôi phân tích điều gì hôm nay?`
+                : `Hello! I am your AI Advisor. I already understand the structure of dashboard "${dashboard.title}".\nWhat would you like me to analyze today?`,
             timestamp: new Date()
         }
     ]);
@@ -124,15 +129,17 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
             setMessages(prev => [...prev, assistantMsg]);
         } catch (error: any) {
             console.error("Chat Error:", error);
-            const rawMsg = error.message || "Xin lỗi, đã có lỗi xảy ra.";
+            const rawMsg = error.message || (isVi ? 'Xin lỗi, đã có lỗi xảy ra.' : 'Sorry, something went wrong.');
             const isLeaked = rawMsg.toLowerCase().includes('leaked');
 
             setMessages(prev => [...prev, {
                 id: `err-${Date.now()}`,
                 role: 'assistant',
                 content: isLeaked
-                    ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
-                    : `Error: ${rawMsg}`,
+                    ? (isVi
+                        ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
+                        : `⚠️ SECURITY ALERT: Your Gemini API key was detected as leaked by Google and has been disabled.\n\nHOW TO FIX:\n1. Go to https://aistudio.google.com/\n2. Create a new API key.\n3. Update it in the 'AI Setting' tab.`)
+                    : `${isVi ? 'Lỗi' : 'Error'}: ${rawMsg}`,
                 timestamp: new Date()
             }]);
         } finally {
@@ -166,7 +173,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                             <h3 className="text-sm font-black text-white uppercase tracking-wider">AI Advisor</h3>
                             <div className="flex items-center gap-1">
                                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                                <span className="text-[10px] text-white/70 font-bold uppercase tracking-widest">Online Analysis</span>
+                                <span className="text-[10px] text-white/70 font-bold uppercase tracking-widest">{isVi ? 'Phân tích trực tuyến' : 'Online Analysis'}</span>
                             </div>
                         </div>
                     </div>
@@ -227,7 +234,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                                     handleSend();
                                 }
                             }}
-                            placeholder="Hỏi AI Advisor về dashboard này..."
+                            placeholder={isVi ? 'Hỏi AI Advisor về dashboard này...' : 'Ask AI Advisor about this dashboard...'}
                             className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 pr-12 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-600 outline-none transition-all resize-none min-h-[44px] max-h-[120px]"
                             rows={1}
                         />
@@ -243,7 +250,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                         </button>
                     </div>
                     <div className="mt-2 text-[9px] text-slate-500 text-center font-bold uppercase tracking-widest">
-                        Press Enter to send • 360data Precision AI
+                        {isVi ? 'Nhấn Enter để gửi' : 'Press Enter to send'} • 360data Precision AI
                     </div>
                 </div>
             </div>

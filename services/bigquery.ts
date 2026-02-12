@@ -37,7 +37,9 @@ const getBearerToken = (headers: HeadersInit | undefined): string | null => {
 };
 
 const getClientId = (): string => {
-    const envClientId = process.env.GOOGLE_CLIENT_ID || '';
+    // Keep consistent with other modules: deployments may set only VITE_GOOGLE_CLIENT_ID.
+    const env = import.meta.env as any;
+    const envClientId = env.VITE_GOOGLE_OAUTH_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
     return String(envClientId).trim();
 };
 

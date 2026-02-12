@@ -11,6 +11,32 @@ const router = express.Router();
 // All user routes require authentication
 router.use(authenticate);
 
+const normalizeTags = (value) => {
+    if (!value) return [];
+    const asArray = Array.isArray(value)
+        ? value
+        : (typeof value === 'string'
+            ? value.split(',').map((item) => item.trim())
+            : []);
+
+    const deduped = [];
+    const seen = new Set();
+    asArray.forEach((item) => {
+        const normalized = String(item || '').trim();
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        deduped.push(normalized.slice(0, 40));
+    });
+    return deduped.slice(0, 20);
+};
+
+const normalizeOptionalTags = (value) => {
+    if (value === undefined) return null;
+    return normalizeTags(value);
+};
+
 /**
  * GET /api/users - List workspace users
  */
@@ -18,7 +44,7 @@ router.get('/', async (req, res) => {
     try {
         const result = await query(
             `SELECT id, email, name, role, status, joined_at, job_title, phone_number, 
-              company_size, level, department, industry
+              company_size, level, department, industry, note, tags
        FROM users WHERE workspace_id = $1 ORDER BY joined_at DESC`,
             [req.user.workspace_id]
         );
@@ -35,7 +61,8 @@ router.get('/', async (req, res) => {
  */
 router.put('/profile', async (req, res) => {
     try {
-        const { name, jobTitle, phoneNumber, companySize, level, department, industry } = req.body;
+        const { name, jobTitle, phoneNumber, companySize, level, department, industry, note, tags } = req.body;
+        const normalizedTags = normalizeOptionalTags(tags);
 
         const result = await query(
             `UPDATE users SET
@@ -46,10 +73,12 @@ router.put('/profile', async (req, res) => {
          level = COALESCE($5, level),
          department = COALESCE($6, department),
          industry = COALESCE($7, industry),
+         note = COALESCE($8, note),
+         tags = COALESCE($9::jsonb, tags),
          status = 'Active'
-       WHERE id = $8
-       RETURNING id, email, name, role, status, joined_at, job_title, phone_number, company_size, level, department, industry`,
-            [name, jobTitle, phoneNumber, companySize, level, department, industry, req.user.id]
+       WHERE id = $10
+       RETURNING id, email, name, role, status, joined_at, job_title, phone_number, company_size, level, department, industry, note, tags`,
+            [name, jobTitle, phoneNumber, companySize, level, department, industry, note || null, normalizedTags === null ? null : JSON.stringify(normalizedTags), req.user.id]
         );
 
         if (result.rows.length === 0) {
@@ -68,7 +97,8 @@ router.put('/profile', async (req, res) => {
  */
 router.post('/invite', requireAdmin, async (req, res) => {
     try {
-        const { name, email, role } = req.body;
+        const { name, email, role, note, tags } = req.body;
+        const normalizedTags = normalizeTags(tags);
 
         if (!name || !email) {
             return res.status(400).json({ success: false, message: 'Name and email are required' });
@@ -96,10 +126,10 @@ router.post('/invite', requireAdmin, async (req, res) => {
         const passwordHash = await bcrypt.hash(tempPassword, 12);
 
         const result = await query(
-            `INSERT INTO users (workspace_id, email, password_hash, name, role, status)
-       VALUES ($1, $2, $3, $4, $5, 'Active')
-       RETURNING id, email, name, role, status, joined_at`,
-            [req.user.workspace_id, email, passwordHash, name, role || 'Viewer']
+            `INSERT INTO users (workspace_id, email, password_hash, name, role, status, note, tags)
+       VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7::jsonb)
+       RETURNING id, email, name, role, status, joined_at, note, tags`,
+            [req.user.workspace_id, email, passwordHash, name, role || 'Viewer', note || null, JSON.stringify(normalizedTags)]
         );
 
         res.status(201).json({
@@ -134,7 +164,7 @@ router.put('/:id/status', requireAdmin, async (req, res) => {
 
         const result = await query(
             `UPDATE users SET status = $1 WHERE id = $2 AND workspace_id = $3
-       RETURNING id, email, name, role, status, joined_at, job_title, phone_number, company_size, level, department, industry`,
+       RETURNING id, email, name, role, status, joined_at, job_title, phone_number, company_size, level, department, industry, note, tags`,
             [newStatus, id, req.user.workspace_id]
         );
 
@@ -142,6 +172,42 @@ router.put('/:id/status', requireAdmin, async (req, res) => {
     } catch (err) {
         console.error('Toggle user status error:', err);
         res.status(500).json({ success: false, message: 'Failed to update user status' });
+    }
+});
+
+/**
+ * PUT /api/users/:id - Update a user (Admin only)
+ */
+router.put('/:id', requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, role, note, tags } = req.body || {};
+        const normalizedTags = normalizeOptionalTags(tags);
+
+        // Avoid self role escalation/demotion via admin endpoint.
+        if (id === req.user.id && typeof role === 'string' && role.length > 0) {
+            return res.status(400).json({ success: false, message: 'Cannot change your own role' });
+        }
+
+        const result = await query(
+            `UPDATE users SET
+         name = COALESCE($1, name),
+         role = COALESCE($2, role),
+         note = COALESCE($3, note),
+         tags = COALESCE($4::jsonb, tags)
+       WHERE id = $5 AND workspace_id = $6
+       RETURNING id, email, name, role, status, joined_at, job_title, phone_number, company_size, level, department, industry, note, tags`,
+            [name || null, role || null, note || null, normalizedTags === null ? null : JSON.stringify(normalizedTags), id, req.user.workspace_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        res.json({ success: true, data: formatUser(result.rows[0]) });
+    } catch (err) {
+        console.error('Update user error:', err);
+        res.status(500).json({ success: false, message: 'Failed to update user' });
     }
 });
 
@@ -186,6 +252,8 @@ function formatUser(row) {
         level: row.level || undefined,
         department: row.department || undefined,
         industry: row.industry || undefined,
+        note: row.note || undefined,
+        tags: Array.isArray(row.tags) ? row.tags : [],
     };
 }
 

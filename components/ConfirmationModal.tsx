@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { useLanguageStore } from '../store/languageStore';
 
 interface ConfirmationModalProps {
     isOpen: boolean;
@@ -18,11 +19,15 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     onConfirm,
     title,
     message,
-    confirmText = 'Confirm',
-    cancelText = 'Cancel',
+    confirmText,
+    cancelText,
     type = 'danger'
 }) => {
+    const { t } = useLanguageStore();
     if (!isOpen) return null;
+
+    const effectiveConfirmText = confirmText || t('confirm.confirm');
+    const effectiveCancelText = cancelText || t('confirm.cancel');
 
     const colors = {
         danger: {
@@ -82,13 +87,13 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
                         onClick={onClose}
                         className="px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10"
                     >
-                        {cancelText}
+                        {effectiveCancelText}
                     </button>
                     <button
                         onClick={() => { onConfirm(); onClose(); }}
                         className={`px-8 py-3 rounded-xl text-white ${theme.bg} ${theme.hover} ${theme.shadow} shadow-lg transition-all font-black text-xs uppercase tracking-widest active:scale-95 flex items-center gap-2`}
                     >
-                        <span>{confirmText}</span>
+                        <span>{effectiveConfirmText}</span>
                     </button>
                 </div>
             </div>

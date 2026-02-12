@@ -62,6 +62,8 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
                 return 'fa-database';
             case 'excel':
                 return 'fa-file-excel';
+            case 'semantic_model':
+                return 'fa-project-diagram';
             case 'csv':
                 return 'fa-file-csv';
             case 'json':
@@ -79,6 +81,8 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
                 return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
             case 'excel':
                 return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+            case 'semantic_model':
+                return 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40';
             case 'csv':
                 return 'bg-green-500/20 text-green-400 border-green-500/30';
             case 'json':
@@ -267,9 +271,9 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
                                                         Lỗi kết nối
                                                     </span>
                                                 ) : null}
-                                                {ds.type === 'bigquery' ? (
+                                                {ds.type === 'bigquery' || ds.type === 'semantic_model' ? (
                                                     <span className="text-indigo-400 font-bold uppercase tracking-widest text-[8px]">
-                                                        Direct Query
+                                                        {ds.type === 'semantic_model' ? 'Semantic Query' : 'Direct Query'}
                                                     </span>
                                                 ) : (
                                                     <>

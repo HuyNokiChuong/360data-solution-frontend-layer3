@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { ChartConfig } from '../../types';
 import { useThemeStore } from '../../store/themeStore';
+import { useLanguageStore } from '../../store/languageStore';
 
 const DARK_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#4f46e5'];
 const LIGHT_COLORS = ['#1f4fd6', '#0f766e', '#0ea5e9', '#d97706', '#be123c', '#6d28d9', '#2563eb', '#059669'];
@@ -47,6 +48,8 @@ const CustomTooltip = ({ active, payload, label, theme }: any) => {
 };
 
 export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUpdateSQL }) => {
+    const { language } = useLanguageStore();
+    const isVi = language === 'vi';
     const { type, data, dataKeys, xAxisKey, title, insight, sql } = chart;
     const [showSQL, setShowSQL] = useState(false);
     const [editedSQL, setEditedSQL] = useState(sql || '');
@@ -80,13 +83,13 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                 <div className="p-10 pb-6 flex justify-between items-start z-10">
                     <div>
                         <h4 className={`text-lg font-black uppercase tracking-[0.2em] mb-2 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{title}</h4>
-                        <div className="text-xs font-bold text-slate-500 uppercase tracking-tight italic">Chart #{index + 1}</div>
+                        <div className="text-xs font-bold text-slate-500 uppercase tracking-tight italic">{isVi ? `Biểu đồ #${index + 1}` : `Chart #${index + 1}`}</div>
                     </div>
                     {onUpdateSQL && (
                         <button
                             onClick={() => setShowSQL(!showSQL)}
                             className={`p-3 rounded-lg transition-all ${theme === 'dark' ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
-                            title="Debug SQL"
+                            title={isVi ? 'Gỡ lỗi SQL' : 'Debug SQL'}
                         >
                             <i className="fas fa-code text-sm"></i>
                         </button>
@@ -97,15 +100,15 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                     <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mb-8 border border-red-500/20">
                         <i className="fas fa-exclamation-triangle text-2xl text-red-500 animate-pulse"></i>
                     </div>
-                    <h5 className={`text-sm font-black uppercase tracking-widest mb-3 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Query Execution Issue</h5>
+                    <h5 className={`text-sm font-black uppercase tracking-widest mb-3 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{isVi ? 'Lỗi thực thi truy vấn' : 'Query Execution Issue'}</h5>
                     <p className="text-xs text-slate-500 font-medium leading-relaxed max-w-[300px]">
-                        AI was unable to fetch data for this chart. This is often due to strict filters or schema mismatches.
+                        {isVi ? 'AI không thể lấy dữ liệu cho biểu đồ này. Thường do bộ lọc quá chặt hoặc sai lệch schema.' : 'AI was unable to fetch data for this chart. This is often due to strict filters or schema mismatches.'}
                     </p>
                     <button
                         onClick={() => setShowSQL(true)}
                         className="mt-8 text-xs font-black text-indigo-400 uppercase tracking-[0.2em] hover:text-indigo-300 transition-colors border-b border-indigo-500/20 pb-1"
                     >
-                        Adjust SQL Query <i className="fas fa-arrow-right ml-2 text-[8px]"></i>
+                        {isVi ? 'Điều chỉnh truy vấn SQL' : 'Adjust SQL Query'} <i className="fas fa-arrow-right ml-2 text-[8px]"></i>
                     </button>
                 </div>
 
@@ -114,7 +117,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                         <div className="flex justify-between items-center">
                             <h5 className="text-[10px] font-black text-white uppercase tracking-widest flex items-center gap-2">
                                 <i className="fas fa-terminal text-indigo-500"></i>
-                                SQL DEBUGGER
+                                {isVi ? 'TRÌNH GỠ LỖI SQL' : 'SQL DEBUGGER'}
                             </h5>
                             <button onClick={() => setShowSQL(false)} className="text-slate-500 hover:text-white transition-colors p-2">
                                 <i className="fas fa-times"></i>
@@ -125,7 +128,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                                 value={editedSQL}
                                 onChange={(e) => setEditedSQL(e.target.value)}
                                 className="w-full h-full bg-black border border-white/5 rounded-2xl p-6 text-[11px] font-mono text-emerald-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 shadow-inner resize-none"
-                                placeholder="-- Enter SQL Query..."
+                                placeholder={isVi ? '-- Nhập truy vấn SQL...' : '-- Enter SQL Query...'}
                             />
                         </div>
                         <div className="flex gap-3">
@@ -133,7 +136,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                                 onClick={() => setShowSQL(false)}
                                 className="flex-1 bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
                             >
-                                Cancel
+                                {isVi ? 'Hủy' : 'Cancel'}
                             </button>
                             <button
                                 onClick={handleExecuteSQL}
@@ -141,7 +144,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                                 className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-lg shadow-indigo-600/30 active:scale-95 disabled:opacity-50 transition-all"
                             >
                                 {isExecuting ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-play"></i>}
-                                Execute & Re-Analyze
+                                {isVi ? 'Chạy lại & phân tích lại' : 'Execute & Re-Analyze'}
                             </button>
                         </div>
                     </div>
@@ -161,13 +164,13 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
             <div className="p-10 pb-6 flex justify-between items-start z-10">
                 <div>
                     <h4 className={`text-lg font-black uppercase tracking-[0.2em] mb-2 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{title}</h4>
-                    <div className="text-xs font-bold text-slate-500 uppercase tracking-tight italic">Chart #{index + 1}</div>
+                    <div className="text-xs font-bold text-slate-500 uppercase tracking-tight italic">{isVi ? `Biểu đồ #${index + 1}` : `Chart #${index + 1}`}</div>
                 </div>
                 {onUpdateSQL && (
                     <button
                         onClick={() => setShowSQL(!showSQL)}
                         className={`p-3 rounded-lg transition-all ${theme === 'dark' ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
-                        title="Debug SQL"
+                        title={isVi ? 'Gỡ lỗi SQL' : 'Debug SQL'}
                     >
                         <i className="fas fa-code text-sm"></i>
                     </button>
@@ -232,14 +235,14 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
             {showSQL && (
                 <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-[50] p-8 flex flex-col gap-4">
                     <div className="flex justify-between items-center">
-                        <h5 className="text-[10px] font-black text-white uppercase tracking-widest">SQL Editor</h5>
+                        <h5 className="text-[10px] font-black text-white uppercase tracking-widest">{isVi ? 'Trình soạn SQL' : 'SQL Editor'}</h5>
                         <button onClick={() => setShowSQL(false)} className="text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
                     </div>
                     <textarea
                         value={editedSQL}
                         onChange={(e) => setEditedSQL(e.target.value)}
                         className="flex-1 bg-black border border-white/10 rounded-xl p-4 text-[10px] font-mono text-emerald-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        placeholder="Enter SQL Query..."
+                        placeholder={isVi ? 'Nhập truy vấn SQL...' : 'Enter SQL Query...'}
                     />
                     <button
                         onClick={handleExecuteSQL}
@@ -247,7 +250,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                         className="bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
                     >
                         {isExecuting ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-play"></i>}
-                        Run Query
+                        {isVi ? 'Chạy truy vấn' : 'Run Query'}
                     </button>
                 </div>
             )}
@@ -263,7 +266,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                 `}>
                     <div className="flex items-center gap-3 mb-4">
                         <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,1)]"></div>
-                        <span className="text-xs font-black uppercase text-indigo-400 tracking-widest">Analysis</span>
+                        <span className="text-xs font-black uppercase text-indigo-400 tracking-widest">{isVi ? 'Phân tích' : 'Analysis'}</span>
                     </div>
                     {typeof insight === 'string' ? (
                         <p className={`text-sm leading-relaxed font-medium ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>{insight}</p>
@@ -276,7 +279,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ chart, index, onUp
                             </p>
                             <p className={`text-sm font-bold flex items-start gap-2 leading-relaxed ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'}`}>
                                 <i className="fas fa-check mt-1.5 text-[9px]"></i>
-                                Action: {insight.action}
+                                {isVi ? 'Hành động:' : 'Action:'} {insight.action}
                             </p>
                         </div>
                     )}

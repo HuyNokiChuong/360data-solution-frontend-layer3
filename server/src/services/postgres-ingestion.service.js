@@ -5,6 +5,7 @@ const {
     fetchPrimaryKey,
     runInReadOnlyTransaction,
 } = require('./postgres-connection.service');
+const { registerPostgresSnapshotRuntime } = require('./runtime-materialization.service');
 
 const SNAPSHOT_SCHEMA = 'ingestion_snapshots';
 const DEFAULT_BATCH_SIZE = 500;
@@ -566,6 +567,14 @@ const ingestPostgresTable = async ({
             upsertKeyColumns: resolvedUpsertKeyColumns,
             lastSyncValue,
             jobId,
+        });
+
+        await registerPostgresSnapshotRuntime(internalClient, {
+            workspaceId: connectionRow.workspace_id,
+            syncedTableId: syncedTable.id,
+            connectionId,
+            sourceType: connectionRow.type || 'PostgreSQL',
+            snapshotTableName,
         });
 
         await internalClient.query('COMMIT');

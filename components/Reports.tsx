@@ -3,6 +3,12 @@ import { SyncedTable, Connection, ReportSession } from '../types';
 import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
 import { generateReportInsight } from '../services/ai';
+import {
+  executeSemanticRawSql,
+  getDefaultDataModel,
+  getModelTables,
+  getRelationships,
+} from '../services/dataModeling';
 import { useLanguageStore } from '../store/languageStore';
 import { generateUUID } from '../utils/id';
 
@@ -59,8 +65,8 @@ const Reports: React.FC<ReportsProps> = ({
   // Proactively check token validity once on mount or when googleToken changes
   useEffect(() => {
     const checkAuth = async () => {
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const { getTokenForConnection } = await import('../services/googleAuth');
+      const { getTokenForConnection, getGoogleClientId } = await import('../services/googleAuth');
+      const clientId = getGoogleClientId();
       const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
 
       if (!bqConn) {
@@ -97,8 +103,8 @@ const Reports: React.FC<ReportsProps> = ({
     if (!text.trim() || (loading && !isRetry)) return;
 
     const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
-    const clientId = process.env.GOOGLE_CLIENT_ID || '';
-    const { getTokenForConnection, getGoogleToken } = await import('../services/googleAuth');
+    const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
+    const clientId = getGoogleClientId();
 
     // Stop previous job if any
     if (abortControllerRef.current) {
@@ -154,8 +160,6 @@ const Reports: React.FC<ReportsProps> = ({
       const activeTables = tables.filter(t => selectedTableIds.includes(t.id));
       const tableNames = (activeTables || []).map(t => t.tableName);
 
-      const activeSession = sessions.find(s => s.id === activeSessionId);
-
       let schemaStr = "";
       if (activeTables && activeTables.length > 0) {
         schemaStr = activeTables.map(t => {
@@ -163,6 +167,60 @@ const Reports: React.FC<ReportsProps> = ({
           const prefix = bqConn?.projectId ? `${bqConn.projectId}.` : "";
           return `${prefix}${t.datasetName}.${t.tableName}: [${cols}]`;
         }).join(' | ');
+      }
+
+      let semanticModelId: string | undefined;
+      let semanticTableScope: string[] = [];
+      let semanticEngine: 'bigquery' | 'postgres' | undefined;
+      let semanticContext = '';
+
+      try {
+        const [defaultModel, modelTables, modelRelationships] = await Promise.all([
+          getDefaultDataModel(),
+          getModelTables(),
+          getRelationships(),
+        ]);
+
+        const activeModelTables = modelTables.filter((modelTable) =>
+          activeTables.some((table) => table.id === modelTable.syncedTableId)
+        );
+
+        if (activeModelTables.length > 0) {
+          semanticModelId = defaultModel.id;
+          semanticTableScope = activeModelTables.map((table) => table.id);
+
+          const engineSet = new Set(activeModelTables.map((table) => table.runtimeEngine));
+          if (engineSet.size > 1) {
+            throw new Error('Cross-source query is blocked: selected tables must belong to the same runtime engine.');
+          }
+          semanticEngine = Array.from(engineSet)[0] as any;
+
+          const relScope = modelRelationships.filter((rel) =>
+            activeModelTables.some((table) => table.id === rel.fromTableId)
+            && activeModelTables.some((table) => table.id === rel.toTableId)
+          );
+
+          const tableContext = activeModelTables.map((table) => {
+            const cols = (table.schema || []).map((field) => `${field.name}(${field.type})`).join(', ');
+            return `- ${table.tableName}: [${cols}]`;
+          }).join('\n');
+          const relationshipContext = relScope.length > 0
+            ? relScope.map((rel) =>
+              `- ${rel.fromTable}.${rel.fromColumn} -> ${rel.toTable}.${rel.toColumn} (${rel.relationshipType}, ${rel.crossFilterDirection}, ${rel.validationStatus})`
+            ).join('\n')
+            : '- (No relationship in current table scope)';
+
+          semanticContext = `Data Model: ${defaultModel.name}\nTables:\n${tableContext}\nRelationships:\n${relationshipContext}`;
+          schemaStr = activeModelTables.map((table) => {
+            const cols = (table.schema || []).map((field) => `${field.name}(${field.type})`).join(',');
+            return `${table.datasetName}.${table.tableName}: [${cols}]`;
+          }).join(' | ');
+        }
+      } catch (semanticErr: any) {
+        if (String(semanticErr?.message || '').toLowerCase().includes('cross-source')) {
+          throw semanticErr;
+        }
+        console.warn('Unable to load semantic context, fallback to schema-only mode:', semanticErr?.message || semanticErr);
       }
 
       let token = providedToken || googleToken;
@@ -181,7 +239,28 @@ const Reports: React.FC<ReportsProps> = ({
         }
       }
 
-      const options = (bqConn && token) ? { token, projectId: bqConn.projectId, signal: abortControllerRef.current.signal } : { signal: abortControllerRef.current.signal };
+      const options: any = {
+        signal: abortControllerRef.current.signal,
+        semanticContext,
+      };
+      if (semanticEngine === 'postgres') {
+        options.semanticEngine = 'postgres';
+        options.executeSql = async (sql: string) => {
+          if (!semanticModelId || semanticTableScope.length === 0) {
+            throw new Error('Missing semantic table scope for postgres execution');
+          }
+          const executed = await executeSemanticRawSql({
+            dataModelId: semanticModelId,
+            tableIds: semanticTableScope,
+            rawSql: sql,
+          });
+          return executed.rows || [];
+        };
+      } else if (bqConn && token) {
+        options.semanticEngine = 'bigquery';
+        options.token = token;
+        options.projectId = bqConn.projectId;
+      }
 
       // 3. Call AI Service
       const result = await generateReportInsight(model, text, schemaStr, tableNames, options);
@@ -323,8 +402,8 @@ const Reports: React.FC<ReportsProps> = ({
       setLoading(true);
       const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
       let token = googleToken;
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const { getTokenForConnection, getGoogleToken } = await import('../services/googleAuth');
+      const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
+      const clientId = getGoogleClientId();
 
       if (bqConn) {
         token = await getTokenForConnection(bqConn, clientId);
@@ -400,8 +479,8 @@ const Reports: React.FC<ReportsProps> = ({
       setLoading(true);
       const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
       let token = googleToken;
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const { getTokenForConnection, getGoogleToken } = await import('../services/googleAuth');
+      const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
+      const clientId = getGoogleClientId();
 
       if (bqConn) {
         token = await getTokenForConnection(bqConn, clientId);
@@ -482,8 +561,8 @@ const Reports: React.FC<ReportsProps> = ({
 
   const handleReauth = async () => {
     try {
-      const { getGoogleToken } = await import('../services/googleAuth');
-      const token = await getGoogleToken(process.env.GOOGLE_CLIENT_ID || '');
+      const { getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
+      const token = await getGoogleToken(getGoogleClientId());
       setGoogleToken(token);
       alert("BigQuery Link Refreshed Successfully!");
     } catch (e: any) {

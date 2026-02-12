@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { User } from '../types';
 import { emailService } from '../services/emailService';
 import { API_BASE } from '../services/api';
+import { useLanguageStore } from '../store/languageStore';
 
 interface OnboardingProps {
     currentUser: User;
@@ -10,6 +11,8 @@ interface OnboardingProps {
 }
 
 const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) => {
+    const { language } = useLanguageStore();
+    const isVi = language === 'vi';
     const navigate = useNavigate();
     const [step, setStep] = useState(() => {
         // If we already have the basic info from registration, go straight to verification
@@ -140,7 +143,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                 onUpdateUser(updatedUser);
             })
             .catch(err => {
-                setErrorMessage(err.message || "Mã xác thực không hợp lệ");
+                setErrorMessage(err.message || (isVi ? 'Mã xác thực không hợp lệ' : 'Invalid verification code'));
             })
             .finally(() => setLoading(false));
     };
@@ -166,7 +169,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
 
             // Success feedback could be added here if needed
         } catch (err: any) {
-            setErrorMessage(err.message || "Failed to resend code");
+            setErrorMessage(err.message || (isVi ? 'Gửi lại mã thất bại' : 'Failed to resend code'));
             setCanResend(true);
         }
     };
@@ -231,21 +234,25 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                     {/* Header */}
                     <div className="mb-10 text-center">
                         <span className="text-xs font-black text-indigo-500 uppercase tracking-[0.2em] mb-3 block">
-                            {step === 4 ? "Final Step" : `Step ${step} of 4`}
+                            {step === 4 ? (isVi ? 'Bước cuối' : 'Final Step') : `${isVi ? 'Bước' : 'Step'} ${step} ${isVi ? 'trên' : 'of'} 4`}
                         </span>
                         <h2 className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white mb-4 tracking-tight">
-                            {step === 1 && "What is your primary role?"}
-                            {step === 2 && "How large is your organization?"}
-                            {step === 3 && "Let's stay in touch"}
-                            {step === 4 && "Verify your Security Code"}
+                            {step === 1 && (isVi ? 'Vai trò chính của bạn là gì?' : 'What is your primary role?')}
+                            {step === 2 && (isVi ? 'Quy mô tổ chức của bạn là bao nhiêu?' : 'How large is your organization?')}
+                            {step === 3 && (isVi ? 'Hãy giữ kết nối' : "Let's stay in touch")}
+                            {step === 4 && (isVi ? 'Xác thực mã bảo mật' : 'Verify your Security Code')}
                         </h2>
                         <p className="text-slate-500 font-medium text-lg">
-                            {step === 1 && "Help us tailor the experience to your needs."}
-                            {step === 2 && "We'll optimize the data capacity for your team."}
-                            {step === 3 && "Secure your account with verified contact info."}
+                            {step === 1 && (isVi ? 'Giúp chúng tôi cá nhân hóa trải nghiệm cho bạn.' : 'Help us tailor the experience to your needs.')}
+                            {step === 2 && (isVi ? 'Chúng tôi sẽ tối ưu năng lực dữ liệu cho đội ngũ của bạn.' : "We'll optimize the data capacity for your team.")}
+                            {step === 3 && (isVi ? 'Bảo mật tài khoản bằng thông tin liên hệ đã xác minh.' : 'Secure your account with verified contact info.')}
                             {step === 4 && (
                                 <span>
-                                    We've sent a 6-digit verification code to <span className="text-indigo-600 font-bold">{currentUser.email}</span>. Please enter it below to complete your setup.
+                                    {isVi ? (
+                                        <>Chúng tôi đã gửi mã xác thực 6 chữ số tới <span className="text-indigo-600 font-bold">{currentUser.email}</span>. Vui lòng nhập bên dưới để hoàn tất thiết lập.</>
+                                    ) : (
+                                        <>We've sent a 6-digit verification code to <span className="text-indigo-600 font-bold">{currentUser.email}</span>. Please enter it below to complete your setup.</>
+                                    )}
                                 </span>
                             )}
                         </p>
@@ -318,7 +325,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                         <form onSubmit={(e) => { e.preventDefault(); nextStep(); }} className="animate-in slide-in-from-right-8 duration-300">
                             <div className="mb-8">
                                 <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-3 px-1">
-                                    Phone Number
+                                    {isVi ? 'Số điện thoại' : 'Phone Number'}
                                 </label>
                                 <div className="relative">
                                     <div className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400">
@@ -341,7 +348,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                                 disabled={!formData.phoneNumber}
                                 className="w-full bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black text-lg tracking-tight hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
                             >
-                                <span>Continue</span>
+                                <span>{isVi ? 'Tiếp tục' : 'Continue'}</span>
                                 <i className="fas fa-arrow-right"></i>
                             </button>
                         </form>
@@ -380,7 +387,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                                 >
                                     {loading ? <i className="fas fa-circle-notch animate-spin"></i> : (
                                         <>
-                                            <span>Verify & Complete</span>
+                                            <span>{isVi ? 'Xác thực & Hoàn tất' : 'Verify & Complete'}</span>
                                             <i className="fas fa-check-circle"></i>
                                         </>
                                     )}
@@ -390,15 +397,15 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                             <div className="mt-8 flex flex-col items-center gap-3">
                                 <span className="text-slate-400 font-medium">
                                     {timeLeft > 0
-                                        ? `Resend code in 00:${timeLeft.toString().padStart(2, '0')}`
-                                        : "Didn't receive the code?"}
+                                        ? (isVi ? `Gửi lại mã sau 00:${timeLeft.toString().padStart(2, '0')}` : `Resend code in 00:${timeLeft.toString().padStart(2, '0')}`)
+                                        : (isVi ? 'Chưa nhận được mã?' : "Didn't receive the code?")}
                                 </span>
                                 {timeLeft === 0 && (
                                     <button
                                         onClick={handleResendCode}
                                         className="text-indigo-500 font-bold hover:text-indigo-400 transition-colors uppercase tracking-widest text-xs"
                                     >
-                                        Resend Code
+                                        {isVi ? 'Gửi lại mã' : 'Resend Code'}
                                     </button>
                                 )}
                             </div>
@@ -412,7 +419,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ currentUser, onUpdateUser }) =>
                             className="mt-8 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-sm font-bold flex items-center gap-2 mx-auto transition-colors"
                         >
                             <i className="fas fa-arrow-left text-xs"></i>
-                            Back
+                            {isVi ? 'Quay lại' : 'Back'}
                         </button>
                     )}
                 </div>

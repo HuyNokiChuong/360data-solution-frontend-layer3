@@ -6,7 +6,7 @@
 // Data Source Types
 // --------------------------------------------
 
-export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'excel' | 'manual';
+export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'excel' | 'manual' | 'semantic_model';
 
 export interface DataSource {
     id: string;
@@ -19,6 +19,10 @@ export interface DataSource {
     tableName?: string;
     datasetName?: string;
     syncedTableId?: string; // For Excel tables stored in backend
+    dataModelId?: string;
+    semanticFieldMap?: Record<string, { tableId: string; column: string }>;
+    semanticTableIds?: string[];
+    semanticEngine?: 'bigquery' | 'postgres';
     isLoaded?: boolean;
     totalRows?: number;
     isLoadingPartial?: boolean;

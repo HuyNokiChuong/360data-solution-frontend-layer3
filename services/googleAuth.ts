@@ -27,6 +27,19 @@ export const initGoogleAuth = (clientId: string) => {
     });
 };
 
+// Resolve Google OAuth client id across environments:
+// - Vite prefers `import.meta.env.VITE_*` at build time.
+// - Some deployments only set `VITE_GOOGLE_CLIENT_ID` (not `GOOGLE_CLIENT_ID`).
+export const getGoogleClientId = (): string => {
+    const env = import.meta.env as any;
+    return String(
+        env.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+        env.VITE_GOOGLE_CLIENT_ID ||
+        process.env.GOOGLE_CLIENT_ID ||
+        ''
+    );
+};
+
 // Storage keys
 const ACCESS_TOKEN_KEY = 'googleToken'; // Matches App.tsx domain_googleToken
 const TOKEN_EXPIRY_KEY = 'googleTokenExpiry';
@@ -157,7 +170,9 @@ export const getGoogleAuthCode = async (clientId: string): Promise<string> => {
     return new Promise((resolve, reject) => {
         const codeClient = (window as any).google.accounts.oauth2.initCodeClient({
             client_id: clientId,
-            scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets.readonly',
+            // Keep scopes aligned with token flow so the user doesn't get forced into
+            // a second consent prompt when switching to Report Builder (BigQuery).
+            scope: 'https://www.googleapis.com/auth/bigquery.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/spreadsheets.readonly',
             ux_mode: 'popup',
             redirect_uri: 'postmessage',
             callback: (response: any) => {

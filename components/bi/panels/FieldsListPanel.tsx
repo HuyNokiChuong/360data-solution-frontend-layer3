@@ -175,9 +175,11 @@ const FieldsListPanel: React.FC<FieldsListPanelProps> = ({ onFieldDragStart }) =
                         <option value="">Select data table...</option>
                         {dataSources.map(ds => (
                             <option key={ds.id} value={ds.id}>
-                                {ds.datasetName && ds.tableName
-                                    ? `${ds.datasetName}.${ds.tableName}`
-                                    : ds.name
+                                {ds.type === 'semantic_model'
+                                    ? ds.name
+                                    : (ds.datasetName && ds.tableName
+                                        ? `${ds.datasetName}.${ds.tableName}`
+                                        : ds.name)
                                 }
                                 {ds.type !== 'bigquery' && ` (${ds.type})`}
                             </option>

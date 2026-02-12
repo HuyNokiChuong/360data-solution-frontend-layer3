@@ -38,6 +38,7 @@ const { startGoogleSheetsScheduler } = require('./services/google-sheets-sync.se
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
+const HOST = String(process.env.BACKEND_HOST || '').trim();
 
 // ============================================
 // Security & Middleware
@@ -102,6 +103,7 @@ app.use('/api/folders', require('./routes/folder.routes'));
 app.use('/api/sessions', require('./routes/session.routes'));
 app.use('/api/ai-settings', require('./routes/ai-settings.routes'));
 app.use('/api/logs', require('./routes/audit.routes'));
+app.use('/api/data-modeling', require('./routes/data-modeling.routes'));
 
 // Health check
 app.get('/api/health', async (req, res) => {
@@ -141,17 +143,25 @@ app.use((err, req, res, next) => {
 // ============================================
 // Start Server
 // ============================================
-app.listen(PORT, '0.0.0.0', () => {
+const startMessage = () => {
+    const hostLabel = HOST || 'localhost';
     console.log('');
     console.log('╔══════════════════════════════════════════╗');
     console.log('║   360data Solutions - Backend Server     ║');
-    console.log(`║   Running on http://0.0.0.0:${PORT}         ║`);
+    console.log(`║   Running on http://${hostLabel}:${PORT}         ║`);
     console.log('║   Frontend:   http://localhost:8080      ║');
     console.log('╚══════════════════════════════════════════╝');
     console.log('');
 
     // Optional background sync for Google Sheets interval mode.
     startGoogleSheetsScheduler();
-});
+};
+
+if (HOST) {
+    app.listen(PORT, HOST, startMessage);
+} else {
+    // No host binding => Node chooses dual-stack where available (works better with localhost on IPv4/IPv6)
+    app.listen(PORT, startMessage);
+}
 
 module.exports = app;

@@ -85,6 +85,7 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
+        const devBypassAuth = String(process.env.DEV_AUTH_BYPASS || '').toLowerCase() === 'true';
 
         if (!email || !password) {
             return res.status(400).json({ success: false, message: 'Email and password are required' });
@@ -97,18 +98,59 @@ router.post('/login', async (req, res) => {
             [email]
         );
 
-        if (result.rows.length === 0) {
-            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        let dbUser = result.rows[0];
+
+        // Dev-only convenience: allow login without knowing the stored password.
+        // This is intentionally opt-in and should never be enabled in production.
+        if (!dbUser && devBypassAuth) {
+            const client = await getClient();
+            try {
+                await client.query('BEGIN');
+                const domain = String(email.split('@')[1] || '').toLowerCase();
+                let workspaceResult = await client.query('SELECT id FROM workspaces WHERE domain = $1', [domain]);
+                let workspaceId;
+                if (workspaceResult.rows.length === 0) {
+                    const wsInsert = await client.query(
+                        'INSERT INTO workspaces (domain, name) VALUES ($1, $2) RETURNING id',
+                        [domain, domain]
+                    );
+                    workspaceId = wsInsert.rows[0].id;
+                } else {
+                    workspaceId = workspaceResult.rows[0].id;
+                }
+
+                const nameGuess = String(email.split('@')[0] || 'User');
+                const passwordHash = await bcrypt.hash(password, 12);
+                const userCount = await client.query('SELECT COUNT(*) FROM users WHERE workspace_id = $1', [workspaceId]);
+                const role = parseInt(userCount.rows[0].count) === 0 ? 'Admin' : 'Viewer';
+
+                const userResult = await client.query(
+                    `INSERT INTO users (workspace_id, email, password_hash, name, role, status)
+                     VALUES ($1, $2, $3, $4, $5, 'Active')
+                     RETURNING *, $6::text as domain`,
+                    [workspaceId, email, passwordHash, nameGuess, role, domain]
+                );
+
+                await client.query('COMMIT');
+                dbUser = userResult.rows[0];
+            } catch (err) {
+                await client.query('ROLLBACK');
+                throw err;
+            } finally {
+                client.release();
+            }
         }
 
-        const dbUser = result.rows[0];
+        if (!dbUser) {
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
 
         if (dbUser.status === 'Disabled') {
             return res.status(403).json({ success: false, message: 'Account is disabled' });
         }
 
         const validPassword = await bcrypt.compare(password, dbUser.password_hash);
-        if (!validPassword) {
+        if (!validPassword && !devBypassAuth) {
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
 
@@ -165,6 +207,8 @@ function formatUser(row) {
         level: row.level || undefined,
         department: row.department || undefined,
         industry: row.industry || undefined,
+        note: row.note || undefined,
+        tags: Array.isArray(row.tags) ? row.tags : [],
     };
 }
 

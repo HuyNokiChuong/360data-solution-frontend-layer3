@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Field } from './types';
 import { CalculationEngine } from './engine/calculationEngine';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface FormulaEditorModalProps {
     isOpen: boolean;
@@ -47,6 +48,8 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
     existingFieldNames = [],
     editingFieldName = '',
 }) => {
+    const { language } = useLanguageStore();
+    const isVi = language === 'vi';
     const [name, setName] = useState(initialName);
     const [formula, setFormula] = useState(initialFormula);
     const [activeTab, setActiveTab] = useState<'fields' | 'functions'>('fields');
@@ -74,16 +77,16 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
         existingNameSet.has(normalizedName.toLowerCase());
 
     const formulaValidation = useMemo(() => {
-        if (!normalizedFormula) return { valid: false, error: 'Formula is required' };
+        if (!normalizedFormula) return { valid: false, error: isVi ? 'Công thức là bắt buộc' : 'Formula is required' };
         return CalculationEngine.validateFormula(normalizedFormula, availableFieldNames);
-    }, [normalizedFormula, availableFieldNames]);
+    }, [normalizedFormula, availableFieldNames, isVi]);
 
     const formError = useMemo(() => {
-        if (!normalizedName) return 'Field name is required';
-        if (isDuplicateName) return 'Field name already exists';
-        if (!formulaValidation.valid) return formulaValidation.error || 'Invalid formula';
+        if (!normalizedName) return isVi ? 'Tên trường là bắt buộc' : 'Field name is required';
+        if (isDuplicateName) return isVi ? 'Tên trường đã tồn tại' : 'Field name already exists';
+        if (!formulaValidation.valid) return formulaValidation.error || (isVi ? 'Công thức không hợp lệ' : 'Invalid formula');
         return '';
-    }, [normalizedName, isDuplicateName, formulaValidation]);
+    }, [normalizedName, isDuplicateName, formulaValidation, isVi]);
 
     const filteredFields = useMemo(() => {
         const keyword = searchTerm.trim().toLowerCase();
@@ -138,7 +141,7 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                         <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
                             <i className="fas fa-calculator text-lg"></i>
                         </div>
-                        <h2 className="text-lg font-bold text-slate-900 dark:text-white">Formula Editor</h2>
+                        <h2 className="text-lg font-bold text-slate-900 dark:text-white">{isVi ? 'Trình soạn công thức' : 'Formula Editor'}</h2>
                     </div>
                     <button
                         onClick={onClose}
@@ -150,27 +153,27 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
 
                 <div className="flex-1 flex flex-col p-6 gap-6 overflow-hidden">
                     <div className="flex flex-col gap-2">
-                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Field Name</label>
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">{isVi ? 'Tên trường' : 'Field Name'}</label>
                         <input
                             type="text"
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            placeholder="Enter calculated field name..."
+                            placeholder={isVi ? 'Nhập tên trường tính toán...' : 'Enter calculated field name...'}
                             className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                         />
                     </div>
 
                     <div className="flex-1 flex flex-col gap-2 min-h-0">
                         <div className="flex items-center justify-between">
-                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Formula Expression</label>
-                            <span className="text-[10px] text-slate-400 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded">Use `[FieldName]` syntax</span>
+                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">{isVi ? 'Biểu thức công thức' : 'Formula Expression'}</label>
+                            <span className="text-[10px] text-slate-400 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded">{isVi ? 'Dùng cú pháp `[FieldName]`' : 'Use `[FieldName]` syntax'}</span>
                         </div>
                         <div className="flex-1 relative group">
                             <textarea
                                 ref={textareaRef}
                                 value={formula}
                                 onChange={(e) => setFormula(e.target.value)}
-                                placeholder="// Example: [Revenue] - [Cost]"
+                                placeholder={isVi ? '// Ví dụ: [Revenue] - [Cost]' : '// Example: [Revenue] - [Cost]'}
                                 className="w-full h-full resize-none bg-slate-50 dark:bg-[#0B1121] border border-slate-200 dark:border-white/10 rounded-xl p-4 font-mono text-sm text-slate-900 dark:text-indigo-100 leading-relaxed focus:ring-2 focus:ring-indigo-500 focus:outline-none custom-scrollbar"
                                 spellCheck={false}
                             />
@@ -178,7 +181,7 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                 <button
                                     onClick={() => setFormula('')}
                                     className="p-1.5 text-xs bg-slate-200 dark:bg-white/10 hover:bg-red-500 hover:text-white rounded text-slate-500 transition-colors"
-                                    title="Clear"
+                                    title={isVi ? 'Xóa' : 'Clear'}
                                 >
                                     <i className="fas fa-trash"></i>
                                 </button>
@@ -193,13 +196,13 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                     onClick={() => { setActiveTab('fields'); setSelectedItem(null); }}
                                     className={`flex-1 py-2 text-xs font-bold uppercase transition-colors border-b-2 ${activeTab === 'fields' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10' : 'border-transparent text-slate-500 hover:bg-slate-50'}`}
                                 >
-                                    Fields
+                                    {isVi ? 'Trường' : 'Fields'}
                                 </button>
                                 <button
                                     onClick={() => { setActiveTab('functions'); setSelectedItem(null); }}
                                     className={`flex-1 py-2 text-xs font-bold uppercase transition-colors border-b-2 ${activeTab === 'functions' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10' : 'border-transparent text-slate-500 hover:bg-slate-50'}`}
                                 >
-                                    Functions
+                                    {isVi ? 'Hàm' : 'Functions'}
                                 </button>
                             </div>
 
@@ -209,7 +212,9 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                         type="text"
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
-                                        placeholder={activeTab === 'fields' ? 'Search fields...' : 'Search functions...'}
+                                        placeholder={activeTab === 'fields'
+                                            ? (isVi ? 'Tìm trường...' : 'Search fields...')
+                                            : (isVi ? 'Tìm hàm...' : 'Search functions...')}
                                         className="w-full text-xs bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 outline-none focus:border-indigo-500"
                                     />
                                     <i className="fas fa-search absolute right-2 top-1.5 text-slate-400 text-xs"></i>
@@ -241,7 +246,7 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                             </div>
                                         ))
                                     ) : (
-                                        <div className="p-2 text-xs text-slate-400 italic text-center">No matching fields</div>
+                                        <div className="p-2 text-xs text-slate-400 italic text-center">{isVi ? 'Không có trường phù hợp' : 'No matching fields'}</div>
                                     )
                                 ) : (
                                     filteredFunctions.length > 0 ? (
@@ -265,7 +270,7 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                             </div>
                                         ))
                                     ) : (
-                                        <div className="p-2 text-xs text-slate-400 italic text-center">No matching functions</div>
+                                        <div className="p-2 text-xs text-slate-400 italic text-center">{isVi ? 'Không có hàm phù hợp' : 'No matching functions'}</div>
                                     )
                                 )}
                             </div>
@@ -280,13 +285,13 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                                 <i className="fas fa-cube text-slate-400"></i>
                                                 {(selectedItem as Field).name}
                                             </h4>
-                                            <span className="text-xs text-slate-500 mt-1 block">Type: {(selectedItem as Field).type}</span>
+                                            <span className="text-xs text-slate-500 mt-1 block">{isVi ? 'Kiểu' : 'Type'}: {(selectedItem as Field).type}</span>
                                         </div>
                                         <button
                                             onClick={() => insertText(`[${(selectedItem as Field).name}]`)}
                                             className="w-full py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-500 transition-all flex items-center justify-center gap-2"
                                         >
-                                            <i className="fas fa-plus"></i> Insert Field
+                                            <i className="fas fa-plus"></i> {isVi ? 'Chèn trường' : 'Insert Field'}
                                         </button>
                                     </div>
                                 ) : (
@@ -299,13 +304,13 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                             <p className="text-xs text-slate-500 mt-2 leading-relaxed">{(selectedItem as FunctionDoc).description}</p>
                                         </div>
                                         <div className="space-y-2">
-                                            <div className="text-xs text-slate-500 uppercase font-bold">Syntax</div>
+                                            <div className="text-xs text-slate-500 uppercase font-bold">{isVi ? 'Cú pháp' : 'Syntax'}</div>
                                             <div className="bg-slate-200 dark:bg-white/5 border border-slate-300 dark:border-white/5 rounded p-2 font-mono text-xs text-slate-800 dark:text-slate-300">
                                                 {(selectedItem as FunctionDoc).syntax}
                                             </div>
                                         </div>
                                         <div className="space-y-2">
-                                            <div className="text-xs text-slate-500 uppercase font-bold">Example</div>
+                                            <div className="text-xs text-slate-500 uppercase font-bold">{isVi ? 'Ví dụ' : 'Example'}</div>
                                             <div className="bg-slate-200 dark:bg-white/5 border border-slate-300 dark:border-white/5 rounded p-2 font-mono text-xs text-emerald-600 dark:text-emerald-400">
                                                 {(selectedItem as FunctionDoc).example}
                                             </div>
@@ -314,14 +319,14 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                             onClick={() => insertText((selectedItem as FunctionDoc).syntax)}
                                             className="w-full py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-500 transition-all flex items-center justify-center gap-2"
                                         >
-                                            <i className="fas fa-code"></i> Insert Function
+                                            <i className="fas fa-code"></i> {isVi ? 'Chèn hàm' : 'Insert Function'}
                                         </button>
                                     </div>
                                 )
                             ) : (
                                 <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center">
                                     <i className="fas fa-mouse-pointer text-2xl mb-2 opacity-50"></i>
-                                    <p className="text-xs">Select an item from the list<br />to view details</p>
+                                    <p className="text-xs">{isVi ? 'Chọn một mục trong danh sách' : 'Select an item from the list'}<br />{isVi ? 'để xem chi tiết' : 'to view details'}</p>
                                 </div>
                             )}
                         </div>
@@ -331,21 +336,21 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                 <div className="px-6 py-4 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-950 flex items-center justify-between">
                     <div className={`text-xs flex items-center gap-2 ${formError ? 'text-red-500' : 'text-emerald-600'}`}>
                         <i className={`fas ${formError ? 'fa-exclamation-circle' : 'fa-check-circle'}`}></i>
-                        <span>{formError || 'Formula is valid'}</span>
+                        <span>{formError || (isVi ? 'Công thức hợp lệ' : 'Formula is valid')}</span>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
                             onClick={onClose}
                             className="px-4 py-2 text-sm text-slate-600 dark:text-slate-300 font-medium hover:text-slate-900 dark:hover:text-white transition-colors"
                         >
-                            Cancel
+                            {isVi ? 'Hủy' : 'Cancel'}
                         </button>
                         <button
                             onClick={handleSave}
                             disabled={!!formError}
                             className="px-6 py-2 bg-indigo-600 text-white text-sm font-bold rounded-lg hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            Save Calculation
+                            {isVi ? 'Lưu phép tính' : 'Save Calculation'}
                         </button>
                     </div>
                 </div>

@@ -4,6 +4,7 @@
 // ============================================
 
 import React from 'react';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface CanvasToolbarProps {
     zoom: number;
@@ -30,6 +31,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     selectedCount = 0,
     onAlign
 }) => {
+    const { language } = useLanguageStore();
+    const isVi = language === 'vi';
     return (
         <div className="absolute bottom-14 right-6 flex items-center bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl z-50 p-1.5 gap-2">
             {/* View Modes */}
@@ -37,21 +40,21 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 <button
                     onClick={() => onSetPreviewMode('desktop')}
                     className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${previewMode === 'desktop' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
-                    title="Desktop"
+                    title={isVi ? 'Máy tính' : 'Desktop'}
                 >
                     <i className="fas fa-desktop text-xs"></i>
                 </button>
                 <button
                     onClick={() => onSetPreviewMode('tablet')}
                     className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${previewMode === 'tablet' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
-                    title="Tablet"
+                    title={isVi ? 'Máy tính bảng' : 'Tablet'}
                 >
                     <i className="fas fa-tablet-alt text-xs"></i>
                 </button>
                 <button
                     onClick={() => onSetPreviewMode('mobile')}
                     className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${previewMode === 'mobile' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
-                    title="Mobile"
+                    title={isVi ? 'Di động' : 'Mobile'}
                 >
                     <i className="fas fa-mobile-alt text-xs"></i>
                 </button>
@@ -64,10 +67,10 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             {selectedCount !== undefined && selectedCount > 1 && (
                 <>
                     <div className="flex items-center gap-1">
-                        <button onClick={() => onAlign?.('left')} className="w-9 h-9 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title="Align Left">
+                        <button onClick={() => onAlign?.('left')} className="w-9 h-9 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title={isVi ? 'Căn trái' : 'Align Left'}>
                             <i className="fas fa-align-left text-xs"></i>
                         </button>
-                        <button onClick={() => onAlign?.('top')} className="w-9 h-9 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title="Align Top">
+                        <button onClick={() => onAlign?.('top')} className="w-9 h-9 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center" title={isVi ? 'Căn trên' : 'Align Top'}>
                             <i className="fas fa-align-left rotate-90 text-xs"></i>
                         </button>
                     </div>
@@ -79,7 +82,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <button
                 onClick={onToggleGrid}
                 className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${showGrid ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
-                title="Toggle Grid"
+                title={isVi ? 'Bật/tắt lưới' : 'Toggle Grid'}
             >
                 <i className="fas fa-border-all text-xs"></i>
             </button>
@@ -92,7 +95,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 <span
                     onClick={onZoomReset}
                     className="text-[11px] font-black w-12 text-center cursor-pointer text-slate-300 hover:text-indigo-400 transition-colors select-none"
-                    title="Reset Zoom"
+                    title={isVi ? 'Đặt lại thu phóng' : 'Reset Zoom'}
                 >
                     {Math.round(zoom * 100)}%
                 </span>

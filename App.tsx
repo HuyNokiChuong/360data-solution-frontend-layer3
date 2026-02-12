@@ -3,6 +3,7 @@ import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-
 import { Connection, SyncedTable, ReportSession, User } from './types';
 import { INITIAL_TABLES } from './constants';
 import { initGoogleAuth } from './services/googleAuth';
+import { getGoogleClientId } from './services/googleAuth';
 import { PersistentStorage } from './services/storage';
 import { importExcelSheets } from './services/excel';
 import { connectGoogleSheetsOAuth, importGoogleSheetsData, updateGoogleSheetsSyncSettings, GoogleSheetSelectionInput } from './services/googleSheets';
@@ -17,6 +18,7 @@ const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
 const Tables = lazy(() => import('./components/Tables'));
 const Reports = lazy(() => import('./components/Reports'));
+const DataModeling = lazy(() => import('./components/data-modeling/DataModeling'));
 const AISettings = lazy(() => import('./components/AISettings'));
 const UserManagement = lazy(() => import('./components/UserManagement'));
 const BIMain = lazy(() => import('./components/bi/BIMain'));
@@ -34,7 +36,7 @@ const App: React.FC = () => {
   const setActiveTab = (tab: string) => navigate(`/${tab}`);
 
   useEffect(() => {
-    initGoogleAuth(process.env.GOOGLE_CLIENT_ID || '').catch(console.error);
+    initGoogleAuth(getGoogleClientId()).catch(console.error);
   }, []);
 
   const { theme } = useThemeStore();
@@ -491,44 +493,33 @@ const App: React.FC = () => {
     const name = formData.get('name') as string;
     const d = email.split('@')[1];
 
-    // Helper: register or login on backend, returns { user, token }
-    const backendAuth = async (authEmail: string, authPassword: string, authName: string): Promise<{ user: any; token: string } | null> => {
+    // Helper: login on backend, returns { user, token }.
+    // For the Super Admin flow we intentionally do NOT auto-register, because
+    // backend returns 401 for both "wrong password" and "user missing", and we
+    // don't want to accidentally create/modify accounts.
+    const backendLogin = async (authEmail: string, authPassword: string): Promise<{ user: any; token: string } | { error: string }> => {
       try {
-        // Try login first to avoid noisy 409 conflict when account already exists.
         const loginRes = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, password: authPassword })
         });
-        const loginData = await loginRes.json();
-        if (loginData.success && loginData.data?.token) {
-          return { user: loginData.data.user, token: loginData.data.token };
-        }
-
-        // Not found yet (or first use) -> register then use returned token.
-        const regRes = await fetch(`${API_BASE}/auth/register`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail, password: authPassword, name: authName })
-        });
-        const regData = await regRes.json();
-        if (regData.success && regData.data?.token) {
-          return { user: regData.data.user, token: regData.data.token };
-        }
-        throw new Error(regData.message || loginData.message || 'Auth failed');
+        const loginData = await loginRes.json().catch(() => ({} as any));
+        if (!loginRes.ok) return { error: loginData.message || 'Login failed' };
+        if (loginData.success && loginData.data?.token) return { user: loginData.data.user, token: loginData.data.token };
+        return { error: loginData.message || 'Login failed' };
       } catch (err) {
         console.error('Backend auth error:', err);
-        return null;
+        return { error: 'Cannot connect to backend. Please ensure the server is running.' };
       }
     };
 
     // Super Admin — same backend flow, just pre-filled defaults
     if (email === 'admin@360data-solutions.ai') {
-      const adminName = name || 'Super Admin';
       const adminPass = password || 'admin123';
 
-      const result = await backendAuth(email, adminPass, adminName);
-      if (result) {
+      const result = await backendLogin(email, adminPass);
+      if ('token' in result) {
         localStorage.setItem('auth_token', result.token);
         const superAdmin: User = {
           ...result.user,
@@ -540,7 +531,7 @@ const App: React.FC = () => {
         setIsAuthenticated(true);
         localStorage.setItem(`${d}_users`, JSON.stringify([superAdmin]));
       } else {
-        setAuthError('Cannot connect to backend. Please ensure the server is running.');
+        setAuthError(result.error);
       }
       setLoading(false);
       return;
@@ -1176,6 +1167,13 @@ const App: React.FC = () => {
                     setLoading={setIsAIThinking}
                     googleToken={googleToken}
                     setGoogleToken={setGoogleToken}
+                    currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                  />
+                ) : <Navigate to="/connections" replace />
+              } />
+              <Route path="/data-modeling" element={
+                hasConnections ? (
+                  <DataModeling
                     currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
                   />
                 ) : <Navigate to="/connections" replace />

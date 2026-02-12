@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { BIWidget, Filter, FilterOperator, AggregationType } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
 import { useDashboardStore } from '../store/dashboardStore';
-import { fetchAggregatedData } from '../../../services/bigquery';
+import { fetchAggregatedData, runQuery } from '../../../services/bigquery';
 import { fetchExcelTableData } from '../../../services/excel';
+import { executeSemanticQuery, planSemanticQuery } from '../../../services/dataModeling';
 import { DrillDownService } from '../engine/DrillDownService';
 import { getFieldValue } from '../engine/utils';
 import { applyFilters } from '../engine/dataProcessing';
@@ -311,6 +312,53 @@ export const useDirectQuery = (widget: BIWidget) => {
         return { dimensions: [...new Set(dims)], measures: meass };
     }, [widget, drillDowns, dataSource, allCalculatedFields, allQuickMeasures]);
 
+    const normalizeSemanticAggregation = useCallback((aggregation: AggregationType | undefined) => {
+        const normalized = String(aggregation || 'none').trim().toLowerCase();
+        if (normalized === 'countdistinct') return 'countDistinct';
+        if (['sum', 'avg', 'count', 'min', 'max', 'none', 'raw', 'countDistinct'].includes(normalized)) {
+            return normalized as any;
+        }
+        return 'none';
+    }, []);
+
+    const resolveSemanticFieldBinding = useCallback((fieldName: string) => {
+        if (!dataSource || dataSource.type !== 'semantic_model') return null;
+        const semanticFieldMap = dataSource.semanticFieldMap || {};
+
+        const hierarchyIdx = fieldName.indexOf('___');
+        const baseField = hierarchyIdx >= 0 ? fieldName.slice(0, hierarchyIdx) : fieldName;
+        const hierarchyPart = hierarchyIdx >= 0 ? fieldName.slice(hierarchyIdx + 3) : '';
+
+        const direct = semanticFieldMap[fieldName] || semanticFieldMap[baseField];
+        if (direct) {
+            return {
+                tableId: direct.tableId,
+                column: direct.column,
+                hierarchyPart,
+            };
+        }
+
+        const parts = baseField.split('.');
+        const column = parts[parts.length - 1];
+        const tableHint = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
+        const fallbackKey = Object.keys(semanticFieldMap).find((key) => {
+            const binding = semanticFieldMap[key];
+            if (!binding || String(binding.column || '').toLowerCase() !== String(column || '').toLowerCase()) {
+                return false;
+            }
+            if (!tableHint) return true;
+            return key.toLowerCase().includes(`${tableHint}.`);
+        });
+
+        if (!fallbackKey) return null;
+        const fallback = semanticFieldMap[fallbackKey];
+        return {
+            tableId: fallback.tableId,
+            column: fallback.column,
+            hierarchyPart,
+        };
+    }, [dataSource]);
+
     useEffect(() => {
         let isMounted = true;
         const abortController = new AbortController();
@@ -321,6 +369,212 @@ export const useDirectQuery = (widget: BIWidget) => {
                     setError(`Data source "${name}" not found. Please restore the table in Data Warehouse.`);
                 }
                 setData([]);
+                return;
+            }
+
+            if (dataSource.type === 'semantic_model') {
+                setIsLoading(true);
+                setError(null);
+
+                try {
+                    if (dimensions.length === 0 && measures.length === 0) {
+                        setData([]);
+                        setIsLoading(false);
+                        return;
+                    }
+
+                    const semanticFilters: Filter[] = [];
+                    if (widget.filters) semanticFilters.push(...widget.filters);
+                    globalFilters.forEach(gf => {
+                        if (!gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)) {
+                            semanticFilters.push({ field: gf.field, operator: gf.operator, value: gf.value, enabled: true });
+                        }
+                    });
+                    const activeCrossFilters = getFiltersForWidget(widget.id);
+                    semanticFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
+
+                    const semanticSelect: Array<{ tableId: string; column: string; aggregation: any; alias: string }> = [];
+                    const semanticGroupBy: Array<{ tableId: string; column: string }> = [];
+                    const semanticOrderBy: Array<{ tableId: string; column: string; dir: 'ASC' | 'DESC' }> = [];
+                    const semanticTableIds = new Set<string>();
+                    const aliasToField = new Map<string, string>();
+                    const numericAliases = new Set<string>();
+
+                    const addGroupBy = (tableId: string, column: string) => {
+                        if (semanticGroupBy.some(item => item.tableId === tableId && item.column === column)) return;
+                        semanticGroupBy.push({ tableId, column });
+                    };
+
+                    dimensions.forEach((dimension, index) => {
+                        const binding = resolveSemanticFieldBinding(dimension);
+                        if (!binding) {
+                            throw new Error(`Field "${dimension}" is not mapped in semantic model`);
+                        }
+                        if (binding.hierarchyPart) {
+                            throw new Error(`Hierarchy field "${dimension}" is not supported in semantic mode yet`);
+                        }
+
+                        const alias = `d_${index}`;
+                        semanticTableIds.add(binding.tableId);
+                        semanticSelect.push({
+                            tableId: binding.tableId,
+                            column: binding.column,
+                            aggregation: 'none',
+                            alias,
+                        });
+                        addGroupBy(binding.tableId, binding.column);
+                        aliasToField.set(alias, dimension);
+                    });
+
+                    measures.forEach((measure, index) => {
+                        if ((measure as any).expression) {
+                            throw new Error(`Calculated field "${measure.field}" is not supported in semantic model direct query`);
+                        }
+
+                        const binding = resolveSemanticFieldBinding(measure.field);
+                        if (!binding) {
+                            throw new Error(`Field "${measure.field}" is not mapped in semantic model`);
+                        }
+                        if (binding.hierarchyPart) {
+                            throw new Error(`Hierarchy field "${measure.field}" is not supported in semantic mode yet`);
+                        }
+
+                        const alias = `m_${index}`;
+                        semanticTableIds.add(binding.tableId);
+                        semanticSelect.push({
+                            tableId: binding.tableId,
+                            column: binding.column,
+                            aggregation: normalizeSemanticAggregation(measure.aggregation),
+                            alias,
+                        });
+                        aliasToField.set(alias, measure.field);
+                        numericAliases.add(alias);
+                    });
+
+                    const semanticFiltersForPlanner = semanticFilters
+                        .filter(filter => filter?.enabled !== false)
+                        .map((filter) => {
+                            const binding = resolveSemanticFieldBinding(filter.field);
+                            if (!binding || binding.hierarchyPart) return null;
+                            semanticTableIds.add(binding.tableId);
+                            return {
+                                tableId: binding.tableId,
+                                column: binding.column,
+                                operator: filter.operator,
+                                value: filter.value,
+                                value2: filter.value2,
+                            };
+                        })
+                        .filter(Boolean) as Array<{
+                            tableId: string;
+                            column: string;
+                            operator: string;
+                            value?: any;
+                            value2?: any;
+                        }>;
+
+                    if (widget.sortBy && widget.sortBy !== 'none') {
+                        const [sortType, sortDir] = widget.sortBy.split('_');
+                        const dir = String(sortDir || '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+
+                        if (sortType === 'category') {
+                            dimensions.forEach((dimension) => {
+                                const binding = resolveSemanticFieldBinding(dimension);
+                                if (!binding || binding.hierarchyPart) return;
+                                semanticOrderBy.push({
+                                    tableId: binding.tableId,
+                                    column: binding.column,
+                                    dir,
+                                });
+                            });
+                        } else if (sortType === 'value') {
+                            const firstMeasure = measures[0];
+                            if (firstMeasure) {
+                                const binding = resolveSemanticFieldBinding(firstMeasure.field);
+                                if (binding && !binding.hierarchyPart) {
+                                    semanticOrderBy.push({
+                                        tableId: binding.tableId,
+                                        column: binding.column,
+                                        dir,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    if (semanticTableIds.size === 0 || semanticSelect.length === 0) {
+                        setData([]);
+                        setIsLoading(false);
+                        return;
+                    }
+
+                    const request: any = {
+                        dataModelId: dataSource.dataModelId,
+                        tableIds: Array.from(semanticTableIds),
+                        select: semanticSelect,
+                        filters: semanticFiltersForPlanner,
+                        groupBy: semanticGroupBy.length > 0 ? semanticGroupBy : undefined,
+                        orderBy: semanticOrderBy.length > 0 ? semanticOrderBy : undefined,
+                        limit: widget.type === 'table' ? (widget.pageSize || 100) : 1000,
+                    };
+
+                    const planned = await planSemanticQuery(request);
+                    let resultRows: any[] = [];
+
+                    if (planned.engine === 'postgres') {
+                        const executed = await executeSemanticQuery(request);
+                        resultRows = executed.rows || [];
+                    } else {
+                        const preferredConnection = dataSource.connectionId
+                            ? connections.find(c => c.id === dataSource.connectionId)
+                            : connections.find(c => c.type === 'BigQuery' && c.projectId);
+
+                        if (!preferredConnection?.projectId) {
+                            throw new Error('Missing BigQuery project for semantic execution');
+                        }
+
+                        const { getTokenForConnection, getGoogleClientId } = await import('../../../services/googleAuth');
+                        const clientId = getGoogleClientId();
+                        const token = await getTokenForConnection(preferredConnection, clientId);
+                        if (!token) {
+                            throw new Error('Relink your account to execute semantic query');
+                        }
+
+                        resultRows = await runQuery(token, preferredConnection.projectId, planned.sql, abortController.signal);
+                    }
+
+                    if (!isMounted) return;
+
+                    const normalizedData = (resultRows || []).map((row) => {
+                        const nextRow: Record<string, any> = {};
+                        aliasToField.forEach((fieldName, alias) => {
+                            const rawVal = row[alias];
+                            if (numericAliases.has(alias)) {
+                                if (rawVal === null || rawVal === undefined || rawVal === '') {
+                                    nextRow[fieldName] = 0;
+                                } else if (typeof rawVal === 'number') {
+                                    nextRow[fieldName] = rawVal;
+                                } else {
+                                    const parsed = parseFloat(String(rawVal));
+                                    nextRow[fieldName] = Number.isNaN(parsed) ? 0 : parsed;
+                                }
+                            } else {
+                                nextRow[fieldName] = rawVal;
+                            }
+                        });
+                        return nextRow;
+                    });
+
+                    setData(normalizedData);
+                } catch (err: any) {
+                    if (isMounted && err.name !== 'AbortError') {
+                        console.error('Semantic Direct Query Error:', err);
+                        setError(err.message || 'Failed to execute semantic query');
+                        setData([]);
+                    }
+                } finally {
+                    if (isMounted) setIsLoading(false);
+                }
                 return;
             }
 
@@ -574,8 +828,8 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                 if (!projectId) throw new Error("Missing Project ID");
 
-                const { getTokenForConnection } = await import('../../../services/googleAuth');
-                const clientId = process.env.GOOGLE_CLIENT_ID || '';
+                const { getTokenForConnection, getGoogleClientId } = await import('../../../services/googleAuth');
+                const clientId = getGoogleClientId();
                 const token = connection ? await getTokenForConnection(connection, clientId) : null;
 
                 if (!token) {
@@ -907,6 +1161,10 @@ export const useDirectQuery = (widget: BIWidget) => {
         };
     }, [
         dataSource?.id,
+        dataSource?.dataModelId,
+        dataSource?.semanticEngine,
+        JSON.stringify(dataSource?.semanticTableIds || []),
+        JSON.stringify(dataSource?.semanticFieldMap || {}),
         JSON.stringify(dimensions),
         JSON.stringify(measures),
         JSON.stringify(globalFilters),

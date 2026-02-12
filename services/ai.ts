@@ -246,16 +246,28 @@ export async function generateReportInsight(
   prompt: string,
   schemaInfo: string,
   tableNames: string[],
-  options?: { token?: string, projectId?: string, signal?: AbortSignal }
+  options?: {
+    token?: string;
+    projectId?: string;
+    signal?: AbortSignal;
+    semanticEngine?: 'bigquery' | 'postgres';
+    executeSql?: (sql: string) => Promise<any[]>;
+    semanticContext?: string;
+  }
 ): Promise<{ dashboard: DashboardConfig, sql: string, executionTime: number }> {
   const activeModel = model || { id: 'gemini-2.5-flash', provider: 'Google' };
   const provider = activeModel.provider || 'Google';
   const apiKey = getApiKey(provider);
   const startTime = Date.now();
 
+  const semanticGuidance = options?.semanticContext
+    ? `\n\nSEMANTIC MODEL CONTEXT (BẮT BUỘC TUÂN THỦ):\n${options.semanticContext}\n- Nếu có quan hệ đã định nghĩa thì chỉ JOIN theo các quan hệ đó.\n- Không tự đoán JOIN ngoài semantic model.\n- Nếu không có đường relationship hợp lệ, trả về SQL trên 1 bảng phù hợp nhất và nêu cảnh báo trong summary.\n`
+    : '';
+
   const systemInstruction = `
     Bạn là '360data Precision BI Architect' - Chuyên gia tư vấn chiến lược dữ liệu cấp cao.
     Dữ liệu tại BigQuery có các bảng và cột sau: ${schemaInfo}.
+    ${semanticGuidance}
     
     YÊU CẦU QUAN TRỌNG VỀ DỮ LIỆU & QUY MÔ:
     1. TUYỆT ĐỐI KHÔNG CHẾ DỮ LIỆU: Chỉ được dùng các bảng và cột thực tế đã liệt kê ở trên.
@@ -605,7 +617,41 @@ export async function generateReportInsight(
 
     // 2. Execute Dashboard-level SQL for KPIs if possible
     let kpiValues = result.kpis || [];
-    if (options?.token && options?.projectId && result.sql) {
+    if (options?.semanticEngine === 'postgres' && options?.executeSql && result.sql) {
+      try {
+        const kpiData = await options.executeSql(result.sql);
+        if (kpiData && kpiData.length > 0) {
+          const firstRow = kpiData[0];
+          const normalizeStr = (str: string) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\\s/g, '_');
+
+          kpiValues = (result.kpis || []).map((k: any) => {
+            const normalizedLabel = normalizeStr(k.label);
+            const matchingKey = Object.keys(firstRow).find(key => {
+              const normalizedKey = normalizeStr(key);
+              const cleanKey = normalizedKey.replace(/_/g, '');
+              const cleanLabel = normalizedLabel.replace(/_/g, '');
+              return normalizedKey === normalizedLabel || cleanKey === cleanLabel ||
+                (normalizedKey.length > 2 && normalizedLabel.includes(normalizedKey)) ||
+                (normalizedLabel.length > 2 && normalizedKey.includes(normalizedLabel));
+            });
+            return { ...k, value: matchingKey ? firstRow[matchingKey] : null };
+          });
+
+          const columns = Object.values(firstRow);
+          kpiValues = kpiValues.map((k: any, idx: number) => {
+            if (k.value !== null && k.value !== undefined) return k;
+            if (columns[idx] !== undefined) return { ...k, value: columns[idx] };
+            return { ...k, value: "0" };
+          });
+        } else {
+          kpiValues = (result.kpis || []).map((k: any) => ({ ...k, value: "0" }));
+        }
+      } catch (e: any) {
+        console.warn("Failed to fetch dashboard KPIs (postgres semantic)", e);
+        const errorMsg = e.message || "Query Error";
+        kpiValues = (result.kpis || []).map((k: any) => ({ ...k, value: errorMsg }));
+      }
+    } else if (options?.token && options?.projectId && result.sql) {
       try {
         const { runQuery } = await import('./bigquery');
         const kpiData = await runQuery(options.token, options.projectId, result.sql, options.signal);
@@ -666,7 +712,10 @@ export async function generateReportInsight(
     let finalStrategicInsights = result.insights;
     let finalChartInsights = (result.charts || []).map((c: any) => c.insight);
 
-    if (options?.token && options?.projectId) {
+    const canRegenerateWithRealData = (options?.semanticEngine === 'postgres' && !!options?.executeSql)
+      || (!!options?.token && !!options?.projectId);
+
+    if (canRegenerateWithRealData) {
       const validChartIndices = chartRawData.map((d, i) => d && d.length > 0 ? i : -1).filter(i => i !== -1);
       if (validChartIndices.length > 0) {
         const validCharts = validChartIndices.map(i => result.charts[i]);

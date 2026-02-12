@@ -43,6 +43,12 @@ const {
     quoteIdent,
     SNAPSHOT_SCHEMA,
 } = require('../services/postgres-ingestion.service');
+const {
+    materializeSyncedTableToSnapshot,
+    registerBigQueryRuntime,
+    registerPostgresSnapshotRuntime,
+    upsertModelRuntimeTable,
+} = require('../services/runtime-materialization.service');
 
 const router = express.Router();
 
@@ -296,6 +302,71 @@ const parsePostgresSchemasQuery = (rawSchemas) => {
             .filter(Boolean);
     }
     return [];
+};
+
+const registerRuntimeCatalogForTable = async ({
+    client,
+    workspaceId,
+    connectionRow,
+    syncedTableRow,
+}) => {
+    if (!connectionRow || !syncedTableRow) return;
+
+    if (connectionRow.type === 'BigQuery') {
+        await registerBigQueryRuntime(client, {
+            workspaceId,
+            syncedTableId: syncedTableRow.id,
+            connectionId: connectionRow.id,
+            sourceType: connectionRow.type,
+            projectId: connectionRow.project_id,
+            datasetName: syncedTableRow.dataset_name,
+            tableName: syncedTableRow.table_name,
+        });
+        return;
+    }
+
+    if (connectionRow.type === 'PostgreSQL') {
+        const snapshotState = await client.query(
+            `SELECT snapshot_table_name
+             FROM postgres_table_sync_state
+             WHERE connection_id = $1
+               AND schema_name = $2
+               AND table_name = $3
+             LIMIT 1`,
+            [connectionRow.id, syncedTableRow.dataset_name, syncedTableRow.table_name]
+        );
+        await registerPostgresSnapshotRuntime(client, {
+            workspaceId,
+            syncedTableId: syncedTableRow.id,
+            connectionId: connectionRow.id,
+            sourceType: connectionRow.type,
+            snapshotTableName: snapshotState.rows[0]?.snapshot_table_name || null,
+        });
+        return;
+    }
+
+    if (connectionRow.type === 'Excel' || connectionRow.type === 'GoogleSheets') {
+        await materializeSyncedTableToSnapshot(client, {
+            workspaceId,
+            connectionId: connectionRow.id,
+            sourceType: connectionRow.type,
+            syncedTable: syncedTableRow,
+        });
+        return;
+    }
+
+    await upsertModelRuntimeTable(client, {
+        workspaceId,
+        syncedTableId: syncedTableRow.id,
+        connectionId: connectionRow.id,
+        sourceType: connectionRow.type || 'Unknown',
+        runtimeEngine: 'postgres',
+        runtimeSchema: null,
+        runtimeTable: null,
+        runtimeRef: null,
+        isExecutable: false,
+        executableReason: `Source type ${connectionRow.type} is not executable yet`,
+    });
 };
 
 const normalizePostgresImportMode = (value) => {
@@ -740,7 +811,7 @@ router.get('/', async (req, res) => {
     try {
         const result = await query(
             `SELECT id, name, type, auth_type, email, status, project_id, 
-              table_count, created_at, config
+              service_account_key, table_count, created_at, config
        FROM connections WHERE workspace_id = $1 AND is_deleted = FALSE ORDER BY created_at DESC`,
             [req.user.workspace_id]
         );
@@ -1492,6 +1563,15 @@ router.post('/:id/google-sheets/import', async (req, res) => {
             strictHeader: true,
         });
 
+        for (const syncedTable of imported.tables || []) {
+            await registerRuntimeCatalogForTable({
+                client,
+                workspaceId: req.user.workspace_id,
+                connectionRow: connection,
+                syncedTableRow: syncedTable,
+            });
+        }
+
         const googleConfig = getGoogleSheetsConfig(connection.config);
         const withImportTarget = upsertGoogleSheetsImportConfig(googleConfig, {
             fileId,
@@ -1656,6 +1736,15 @@ router.post('/:id/google-sheets/manual-sync', async (req, res) => {
                 allowEmptySheets: target.allowEmptySheets === true,
                 strictHeader: true,
             });
+
+            for (const syncedTable of imported.tables || []) {
+                await registerRuntimeCatalogForTable({
+                    client,
+                    workspaceId: req.user.workspace_id,
+                    connectionRow: connection,
+                    syncedTableRow: syncedTable,
+                });
+            }
 
             syncedTables.push(...imported.tables);
             aggregatedWarnings.push(...(imported.warnings || []));
@@ -1898,6 +1987,13 @@ router.post('/:id/excel/import', async (req, res) => {
                 }
             }
 
+            await registerRuntimeCatalogForTable({
+                client,
+                workspaceId: req.user.workspace_id,
+                connectionRow: connCheck.rows[0],
+                syncedTableRow: syncedTable,
+            });
+
             upsertedTables.push(syncedTable);
         }
 
@@ -2011,6 +2107,21 @@ router.post('/:id/tables', async (req, res) => {
 
         await client.query('BEGIN');
 
+        const connectionResult = await client.query(
+            `SELECT *
+             FROM connections
+             WHERE id = $1
+               AND workspace_id = $2
+               AND is_deleted = FALSE
+             LIMIT 1`,
+            [connectionId, req.user.workspace_id]
+        );
+        if (connectionResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Connection not found' });
+        }
+        const connectionRow = connectionResult.rows[0];
+
         const results = [];
         const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         for (const t of tables) {
@@ -2032,7 +2143,14 @@ router.post('/:id/tables', async (req, res) => {
                     JSON.stringify(t.schema || []),
                 ]
             );
-            results.push(result.rows[0]);
+            const syncedTableRow = result.rows[0];
+            await registerRuntimeCatalogForTable({
+                client,
+                workspaceId: req.user.workspace_id,
+                connectionRow,
+                syncedTableRow,
+            });
+            results.push(syncedTableRow);
         }
 
         // Update table count on connection (active only)
@@ -2062,21 +2180,38 @@ router.post('/:id/tables', async (req, res) => {
 router.delete('/tables/:id', async (req, res) => {
     try {
         const result = await query(
-            'UPDATE synced_tables SET is_deleted = TRUE, updated_at = NOW() WHERE id = $1 RETURNING id',
-            [req.params.id]
+            `UPDATE synced_tables st
+             SET is_deleted = TRUE,
+                 updated_at = NOW()
+             FROM connections c
+             WHERE st.id = $1
+               AND st.connection_id = c.id
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             RETURNING st.id, st.connection_id`,
+            [req.params.id, req.user.workspace_id]
         );
 
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Table not found' });
         }
 
+        const connectionId = result.rows[0].connection_id;
+
         // Update connection table count
         await query(
-            `UPDATE connections 
-             SET table_count = (SELECT COUNT(*) FROM synced_tables WHERE connection_id = (SELECT connection_id FROM synced_tables WHERE id = $1) AND is_deleted = FALSE)
-             WHERE id = (SELECT connection_id FROM synced_tables WHERE id = $1)`,
-            [req.params.id]
+            `UPDATE connections
+             SET table_count = (
+                SELECT COUNT(*)
+                FROM synced_tables
+                WHERE connection_id = $1
+                  AND is_deleted = FALSE
+             )
+             WHERE id = $1`,
+            [connectionId]
         );
+
+        await query('DELETE FROM model_runtime_tables WHERE synced_table_id = $1', [req.params.id]);
 
         res.json({ success: true, message: 'Table deleted' });
     } catch (err) {
@@ -2174,8 +2309,15 @@ router.get('/tables/:id/data', async (req, res) => {
 router.get('/:id/tables', async (req, res) => {
     try {
         const result = await query(
-            'SELECT * FROM synced_tables WHERE connection_id = $1 AND is_deleted = FALSE ORDER BY dataset_name, table_name',
-            [req.params.id]
+            `SELECT st.*
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.connection_id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             ORDER BY st.dataset_name, st.table_name`,
+            [req.params.id, req.user.workspace_id]
         );
 
         res.json({ success: true, data: result.rows.map(formatTable) });
@@ -2186,6 +2328,7 @@ router.get('/:id/tables', async (req, res) => {
 });
 
 function formatConnection(row) {
+    const rootConfig = toObject(row.config);
     const formatted = {
         id: row.id,
         name: row.name,
@@ -2194,7 +2337,11 @@ function formatConnection(row) {
         email: row.email || undefined,
         status: row.status,
         projectId: row.project_id || undefined,
+        // NOTE: This value is sensitive. It is returned because the current frontend
+        // generates BigQuery access tokens client-side. If we later move BigQuery
+        // token minting to the backend, we should remove this from list responses.
         serviceAccountKey: row.service_account_key || undefined,
+        hasServiceAccountKey: Boolean(row.service_account_key),
         tableCount: row.table_count,
         createdAt: row.created_at,
     };
@@ -2203,6 +2350,30 @@ function formatConnection(row) {
         const postgresConfig = getPostgresConfig(row.config);
         formatted.config = {
             postgres: sanitizePostgresConfig(postgresConfig),
+        };
+    }
+
+    if (row.type === 'GoogleSheets') {
+        const googleConfig = getGoogleSheetsConfig(rootConfig);
+        const oauth = toObject(googleConfig.oauth);
+        formatted.config = {
+            ...(formatted.config || {}),
+            googleSheets: {
+                sync: googleConfig.sync,
+                imports: googleConfig.imports,
+                hasRefreshToken: Boolean(oauth.refreshTokenEncrypted),
+                expiresAt: oauth.expiresAt || null,
+            },
+        };
+    }
+
+    if (row.type === 'Excel') {
+        const excelConfig = toObject(rootConfig.excel);
+        formatted.config = {
+            ...(formatted.config || {}),
+            excel: {
+                ...excelConfig,
+            },
         };
     }
 

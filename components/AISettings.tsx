@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { AI_MODELS } from '../constants';
 import { testApiKey } from '../services/ai';
 import { API_BASE } from '../services/api';
+import { useLanguageStore } from '../store/languageStore';
 
 const AISettings: React.FC = () => {
+  const { t } = useLanguageStore();
   const [openaiKey, setOpenaiKey] = useState(localStorage.getItem('openai_api_key') || '');
   const [anthropicKey, setAnthropicKey] = useState(localStorage.getItem('anthropic_api_key') || '');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_api_key') || '');
@@ -31,7 +33,7 @@ const AISettings: React.FC = () => {
       }).catch(console.error);
     }
 
-    alert('Đã lưu cấu hình API Key!');
+    alert(t('ai.saved'));
   };
 
   const handleTestKey = async (provider: string, key: string) => {
@@ -50,7 +52,7 @@ const AISettings: React.FC = () => {
       setKey: setGeminiKey,
       storageKey: 'gemini_api_key',
       placeholder: 'AIzaSy...',
-      description: 'Tận hưởng sức mạnh của Gemini 2.5 Flash & Pro.',
+      description: t('ai.provider.google_desc'),
       getKeyUrl: 'https://aistudio.google.com/app/apikey',
       color: 'blue'
     },
@@ -62,7 +64,7 @@ const AISettings: React.FC = () => {
       setKey: setOpenaiKey,
       storageKey: 'openai_api_key',
       placeholder: 'sk-proj-...',
-      description: 'Dành cho các tác vụ cần độ chính xác cực cao với GPT-5.1.',
+      description: t('ai.provider.openai_desc'),
       getKeyUrl: 'https://platform.openai.com/api-keys',
       color: 'emerald'
     },
@@ -74,7 +76,7 @@ const AISettings: React.FC = () => {
       setKey: setAnthropicKey,
       storageKey: 'anthropic_api_key',
       placeholder: 'sk-ant-...',
-      description: 'Sử dụng Claude Sonnet 4 cho khả năng lập trình và suy luận đỉnh cao.',
+      description: t('ai.provider.anthropic_desc'),
       getKeyUrl: 'https://console.anthropic.com/settings/keys',
       color: 'amber'
     }
@@ -88,9 +90,9 @@ const AISettings: React.FC = () => {
     <div className="p-10 max-w-7xl mx-auto h-full overflow-y-auto custom-scrollbar">
       <div className="mb-16 flex justify-between items-end">
         <div>
-          <h2 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter mb-4 animate-in fade-in slide-in-from-left duration-700">Neural Hub</h2>
+          <h2 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter mb-4 animate-in fade-in slide-in-from-left duration-700">{t('ai.neural_hub')}</h2>
           <p className="text-slate-400 font-medium text-lg max-w-2xl">
-            Thiết lập chìa khóa kết nối với các "siêu trí tuệ" nhân tạo hàng đầu thế giới. Chỉ cần nhập Key và bắt đầu khám phá dữ liệu.
+            {t('ai.subtitle')}
           </p>
         </div>
         <button
@@ -99,7 +101,7 @@ const AISettings: React.FC = () => {
         >
           <span className="flex items-center gap-3">
             <i className="fas fa-save group-hover:animate-bounce"></i>
-            Lưu cấu hình Neural
+            {t('ai.save_neural')}
           </span>
         </button>
       </div>
@@ -126,7 +128,7 @@ const AISettings: React.FC = () => {
 
                   <div className="space-y-4">
                     <div className="flex justify-between items-center px-2">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">API Access Key</label>
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">{t('ai.access_key')}</label>
                       <div className="flex items-center gap-4">
                         {p.key && (
                           <button
@@ -135,13 +137,13 @@ const AISettings: React.FC = () => {
                             className="text-[9px] font-black text-indigo-400 uppercase tracking-widest hover:text-indigo-300 transition-colors bg-indigo-500/10 px-3 py-1 rounded-lg border border-indigo-500/20 disabled:opacity-50"
                           >
                             {testing[p.id] ? <i className="fas fa-circle-notch animate-spin mr-2"></i> : <i className="fas fa-vial mr-2"></i>}
-                            Test Connection
+                            {t('ai.test_connection')}
                           </button>
                         )}
                         {p.key && (
                           <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-2">
                             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                            Đã cấu hình
+                            {t('ai.configured')}
                           </span>
                         )}
                       </div>
@@ -180,9 +182,9 @@ const AISettings: React.FC = () => {
                             <i className="fas fa-key text-xs"></i>
                           </div>
                           <div className="flex flex-col">
-                            <span className="text-[9px] font-black uppercase tracking-[0.1em] opacity-60">Bạn chưa có mã?</span>
+                            <span className="text-[9px] font-black uppercase tracking-[0.1em] opacity-60">{t('ai.no_key')}</span>
                             <span className="text-xs font-black tracking-tight flex items-center gap-2">
-                              Nhận ngay API Key {p.name}
+                              {t('ai.get_key', { name: p.name })}
                               <i className="fas fa-arrow-right text-[10px] group-hover/link:translate-x-1 transition-transform"></i>
                             </span>
                           </div>
@@ -197,7 +199,7 @@ const AISettings: React.FC = () => {
 
                 {/* Models List */}
                 <div className="w-full lg:w-96">
-                  <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-6 px-2 text-center lg:text-left">Available Engines</h4>
+                  <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-6 px-2 text-center lg:text-left">{t('ai.available_engines')}</h4>
                   <div className="space-y-4">
                     {AI_MODELS.filter(m => m.provider === p.id).map(model => (
                       <div key={model.id} className="flex items-center gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 hover:bg-slate-100 dark:hover:bg-white/10 hover:border-slate-200 dark:hover:border-white/10 transition-all cursor-default">
@@ -209,7 +211,7 @@ const AISettings: React.FC = () => {
                           <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest truncate">{model.label}</div>
                         </div>
                         {model.isFree && (
-                          <div className="px-2 py-1 rounded bg-indigo-500/10 border border-indigo-500/20 text-[8px] font-black text-indigo-400 uppercase">Free</div>
+                          <div className="px-2 py-1 rounded bg-indigo-500/10 border border-indigo-500/20 text-[8px] font-black text-indigo-400 uppercase">{t('ai.free')}</div>
                         )}
                       </div>
                     ))}
@@ -222,7 +224,7 @@ const AISettings: React.FC = () => {
       </div>
 
       <div className="mt-20 text-center pb-20 opacity-50">
-        <p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.5em]">360DATA NEURAL FABRIC • VERSION 2.0</p>
+        <p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.5em]">{t('ai.footer')}</p>
       </div>
     </div>
   );

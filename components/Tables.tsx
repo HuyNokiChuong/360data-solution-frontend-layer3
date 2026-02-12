@@ -5,6 +5,7 @@ import { MOCK_DATA_MAP } from '../constants';
 import { fetchTableData } from '../services/bigquery';
 import { fetchExcelTableData } from '../services/excel';
 import { normalizeSchema } from '../utils/schema';
+import { useLanguageStore } from '../store/languageStore';
 
 interface TablesProps {
   tables: SyncedTable[];
@@ -79,6 +80,8 @@ const formatCellValue = (value: any, columnType: string, preserveRaw = false): s
 };
 
 const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, onDeleteTable, onDeleteTables, googleToken, setGoogleToken }) => {
+  const { language } = useLanguageStore();
+  const isVi = language === 'vi';
   const [filterConnId, setFilterConnId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedTableIds, setSelectedTableIds] = useState<Set<string>>(new Set());
@@ -185,8 +188,8 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
       if (conn?.type === 'BigQuery' && conn.projectId) {
         setIsLoadingPreview(true);
         try {
-          const clientId = process.env.GOOGLE_CLIENT_ID || '';
-          const { getTokenForConnection } = await import('../services/googleAuth');
+          const { getTokenForConnection, getGoogleClientId } = await import('../services/googleAuth');
+          const clientId = getGoogleClientId();
           const token = await getTokenForConnection(conn, clientId);
 
           if (!token) {
@@ -261,8 +264,8 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
     <div className="p-10 max-w-[1600px] mx-auto h-full overflow-y-auto custom-scrollbar relative">
       <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
-          <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight mb-2">Entity Registry</h2>
-          <p className="text-slate-500 font-medium">Quản lý và xem trước các thực thể dữ liệu đã kết nối</p>
+          <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight mb-2">{isVi ? 'Danh mục thực thể' : 'Entity Registry'}</h2>
+          <p className="text-slate-500 font-medium">{isVi ? 'Quản lý và xem trước các thực thể dữ liệu đã kết nối' : 'Manage and preview connected data entities'}</p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
           {/* Search Bar */}
@@ -270,7 +273,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
             <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400 transition-colors"></i>
             <input
               type="text"
-              placeholder="Tìm kiếm bảng hoặc dataset..."
+              placeholder={isVi ? 'Tìm kiếm bảng hoặc dataset...' : 'Search table or dataset...'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl py-2 pl-12 pr-4 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 min-w-[300px] placeholder:text-slate-400 dark:placeholder:text-slate-600 transition-all font-bold"
@@ -289,10 +292,10 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                 }}
                 className="bg-transparent text-slate-600 dark:text-slate-300 text-[10px] font-black uppercase tracking-widest focus:ring-0 border-none outline-none cursor-pointer"
               >
-                <option value="tableName-asc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">Sort by Name (A-Z)</option>
-                <option value="tableName-desc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">Sort by Name (Z-A)</option>
-                <option value="rowCount-desc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">Sort by Rows (High-Low)</option>
-                <option value="rowCount-asc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">Sort by Rows (Low-High)</option>
+                <option value="tableName-asc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{isVi ? 'Sắp xếp tên (A-Z)' : 'Sort by Name (A-Z)'}</option>
+                <option value="tableName-desc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{isVi ? 'Sắp xếp tên (Z-A)' : 'Sort by Name (Z-A)'}</option>
+                <option value="rowCount-desc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{isVi ? 'Sắp xếp dòng (cao-thấp)' : 'Sort by Rows (High-Low)'}</option>
+                <option value="rowCount-asc" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{isVi ? 'Sắp xếp dòng (thấp-cao)' : 'Sort by Rows (Low-High)'}</option>
               </select>
             </div>
 
@@ -301,14 +304,14 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
               onChange={(e) => setFilterConnId(e.target.value)}
               className="bg-transparent text-slate-600 dark:text-slate-300 text-xs font-bold focus:ring-0 border-none outline-none px-4 cursor-pointer"
             >
-              <option value="all" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">Tất cả kết nối</option>
+              <option value="all" className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{isVi ? 'Tất cả kết nối' : 'All connections'}</option>
               {connections.map(c => (
                 <option key={c.id} value={c.id} className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{c.name}</option>
               ))}
             </select>
             <div className="w-px h-6 bg-slate-100 dark:bg-white/10"></div>
             <button className="px-4 py-2 bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-indigo-600/20 transition-all">
-              Làm mới Schema
+              {isVi ? 'Làm mới schema' : 'Refresh schema'}
             </button>
           </div>
         </div>
@@ -329,11 +332,11 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                     />
                   </div>
                 </th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Source Entity</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Kết nối</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Dung lượng</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Trạng thái</th>
-                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Thao tác</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Thực thể nguồn' : 'Source Entity'}</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Kết nối' : 'Connection'}</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Dung lượng' : 'Volume'}</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">{isVi ? 'Trạng thái' : 'Status'}</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">{isVi ? 'Thao tác' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.03]">
@@ -369,7 +372,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                       </div>
                     </td>
                     <td className="px-8 py-6">
-                      <span className="text-slate-400 font-bold text-sm">{conn?.name || 'Unknown'}</span>
+                      <span className="text-slate-400 font-bold text-sm">{conn?.name || (isVi ? 'Không xác định' : 'Unknown')}</span>
                     </td>
                     <td className="px-8 py-6">
                       <div className="flex flex-col">
@@ -380,7 +383,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                               ? (table.rowCount / 1000).toFixed(1) + 'K'
                               : table.rowCount}
                         </span>
-                        <span className="text-[10px] text-slate-600 font-black uppercase">Dòng dữ liệu</span>
+                        <span className="text-[10px] text-slate-600 font-black uppercase">{isVi ? 'Dòng dữ liệu' : 'Rows'}</span>
                       </div>
                     </td>
                     <td className="px-8 py-6">
@@ -393,7 +396,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                             }`}
                         >
                           <div className={`w-1.5 h-1.5 rounded-full ${table.status === 'Active' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                          {table.status === 'Active' ? 'Active' : 'Paused'}
+                          {table.status === 'Active' ? (isVi ? 'Hoạt động' : 'Active') : (isVi ? 'Tạm dừng' : 'Paused')}
                         </button>
                       </div>
                     </td>
@@ -402,14 +405,14 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                         <button
                           onClick={() => handleOpenPreview(table)}
                           className="w-10 h-10 bg-indigo-600/10 rounded-xl text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center"
-                          title="Xem dữ liệu thực tế"
+                          title={isVi ? 'Xem dữ liệu thực tế' : 'Preview data'}
                         >
                           <i className="fas fa-eye text-xs"></i>
                         </button>
                         <button
                           onClick={() => onDeleteTable(table.id)}
                           className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
-                          title="Gỡ bỏ thực thể"
+                          title={isVi ? 'Gỡ bỏ thực thể' : 'Remove entity'}
                         >
                           <i className="fas fa-trash-alt text-xs"></i>
                         </button>
@@ -433,8 +436,8 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                   <i className="fas fa-check-double"></i>
                 </div>
                 <div>
-                  <span className="block text-slate-900 dark:text-white font-black text-sm uppercase italic">Selected {selectedTableIds.size} Entities</span>
-                  <span className="text-[10px] text-slate-500 font-bold">Manage multiple entities at once</span>
+                  <span className="block text-slate-900 dark:text-white font-black text-sm uppercase italic">{isVi ? `Đã chọn ${selectedTableIds.size} thực thể` : `Selected ${selectedTableIds.size} Entities`}</span>
+                  <span className="text-[10px] text-slate-500 font-bold">{isVi ? 'Quản lý nhiều thực thể cùng lúc' : 'Manage multiple entities at once'}</span>
                 </div>
               </div>
 
@@ -445,13 +448,13 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                   onClick={() => setSelectedTableIds(new Set())}
                   className="px-6 py-2.5 rounded-xl text-[10px] font-black uppercase text-slate-400 hover:text-white hover:bg-white/5 transition-all"
                 >
-                  Huỷ bỏ
+                  {isVi ? 'Huỷ bỏ' : 'Cancel'}
                 </button>
                 <button
                   onClick={handleBulkDelete}
                   className="px-8 py-2.5 rounded-xl bg-red-600 text-white text-[10px] font-black uppercase tracking-widest shadow-lg shadow-red-600/20 hover:bg-red-500 active:scale-95 transition-all"
                 >
-                  Xoá tất cả ({selectedTableIds.size})
+                  {isVi ? `Xoá tất cả (${selectedTableIds.size})` : `Delete all (${selectedTableIds.size})`}
                 </button>
               </div>
             </div>
@@ -471,12 +474,12 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                     <i className="fas fa-database"></i>
                   </div>
                   <div>
-                    <h3 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Data Preview: {previewTable.tableName}</h3>
+                    <h3 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">{isVi ? 'Xem trước dữ liệu' : 'Data Preview'}: {previewTable.tableName}</h3>
                     <div className="flex items-center gap-3 mt-1">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Dataset: {previewTable.datasetName}</span>
                       <div className="w-1 h-1 bg-slate-200 dark:bg-slate-700 rounded-full"></div>
                       <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">
-                        {isLoadingPreview ? 'Fetching Real Data...' : 'Real Data Preview'}
+                        {isLoadingPreview ? (isVi ? 'Đang lấy dữ liệu thực...' : 'Fetching Real Data...') : (isVi ? 'Dữ liệu thực tế' : 'Real Data Preview')}
                       </span>
                     </div>
                   </div>
@@ -493,7 +496,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
               <div className="px-10 py-4 border-b border-slate-100 dark:border-white/5 bg-white dark:bg-[#0f172a] flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-6">
                   <div className="flex items-center gap-3">
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Rows per page</label>
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Số dòng/trang' : 'Rows per page'}</label>
                     <select
                       value={rowsPerPage}
                       onChange={(e) => {
@@ -509,7 +512,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                   </div>
                   <div className="h-6 w-px bg-slate-100 dark:bg-white/10"></div>
                   <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                    Showing {previewData.length > 0 ? ((currentPage - 1) * rowsPerPage) + 1 : 0} - {Math.min(currentPage * rowsPerPage, previewData.length)} of {previewData.length} samples
+                    {isVi ? 'Hiển thị' : 'Showing'} {previewData.length > 0 ? ((currentPage - 1) * rowsPerPage) + 1 : 0} - {Math.min(currentPage * rowsPerPage, previewData.length)} {isVi ? 'trên' : 'of'} {previewData.length} {isVi ? 'mẫu' : 'samples'}
                   </div>
                 </div>
 
@@ -573,14 +576,14 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                         <tr>
                           <td colSpan={previewSchema.length} className="px-6 py-20 text-center">
                             <i className="fas fa-circle-notch fa-spin text-3xl text-indigo-500 mb-4"></i>
-                            <div className="text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest text-xs">Querying BigQuery Engine...</div>
+                            <div className="text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest text-xs">{isVi ? 'Đang truy vấn BigQuery...' : 'Querying BigQuery Engine...'}</div>
                           </td>
                         </tr>
                       ) : paginatedData.length === 0 ? (
                         <tr>
                           <td colSpan={previewSchema.length} className="px-6 py-20 text-center">
                             <i className="fas fa-database text-3xl text-slate-200 dark:text-slate-700 mb-4"></i>
-                            <div className="text-slate-400 dark:text-slate-600 font-bold uppercase tracking-widest text-xs">No records found for this entity</div>
+                            <div className="text-slate-400 dark:text-slate-600 font-bold uppercase tracking-widest text-xs">{isVi ? 'Không có dữ liệu cho thực thể này' : 'No records found for this entity'}</div>
                           </td>
                         </tr>
                       ) : (
@@ -609,7 +612,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                   onClick={() => setPreviewTable(null)}
                   className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 shadow-xl transition-all"
                 >
-                  Đóng Preview
+                  {isVi ? 'Đóng xem trước' : 'Close Preview'}
                 </button>
               </div>
             </div>

@@ -34,9 +34,10 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: 'connections', label: t('nav.connections'), icon: 'fa-link', restricted: false },
     { id: 'tables', label: t('nav.tables'), icon: 'fa-table', restricted: true },
     { id: 'reports', label: t('nav.reports'), icon: 'fa-chart-line', restricted: true },
+    { id: 'data-modeling', label: t('nav.data_modeling'), icon: 'fa-diagram-project', restricted: true },
     { id: 'bi', label: t('nav.bi'), icon: 'fa-chart-pie', restricted: true },
     { id: 'ai-config', label: t('nav.ai_config'), icon: 'fa-robot', restricted: false },
-    { id: 'logs', label: 'Logs', icon: 'fa-terminal', restricted: false, hasNotification: hasErrorLogs },
+    { id: 'logs', label: t('nav.logs'), icon: 'fa-terminal', restricted: false, hasNotification: hasErrorLogs },
     { id: 'users', label: t('nav.users'), icon: 'fa-user-group', restricted: false, adminOnly: true },
   ];
 
@@ -163,12 +164,12 @@ const Sidebar: React.FC<SidebarProps> = ({
           className="flex-1 py-2 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-white transition-all flex items-center justify-center gap-2"
         >
           <i className="fas fa-globe"></i>
-          {language === 'en' ? 'English' : 'Tiếng Việt'}
+          {language === 'en' ? t('lang.english') : t('lang.vietnamese')}
         </button>
         <button
           onClick={toggleTheme}
           className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-white/10 hover:text-indigo-600 dark:hover:text-yellow-400 transition-all"
-          title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
+          title={theme === 'dark' ? t('theme.switch_light') : t('theme.switch_dark')}
         >
           <i className={`fas ${theme === 'dark' ? 'fa-sun' : 'fa-moon'}`}></i>
         </button>
@@ -187,7 +188,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onToggleCollapse}
             className="ml-2 p-3 rounded-xl text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-all"
-            title="Hide Sidebar"
+            title={t('sidebar.hide')}
           >
             <i className="fas fa-angles-left"></i>
           </button>

@@ -16,8 +16,28 @@ export class WarehouseService {
         tableNames: string[],
         prompt: string,
         charts: any[],
-        options?: { token?: string; projectId?: string; limit?: number; signal?: AbortSignal }
+        options?: {
+            token?: string;
+            projectId?: string;
+            limit?: number;
+            signal?: AbortSignal;
+            semanticEngine?: 'bigquery' | 'postgres';
+            executeSql?: (sql: string) => Promise<any[]>;
+        }
     ): Promise<any[][]> {
+        if (options?.semanticEngine === 'postgres' && options?.executeSql) {
+            const promises = charts.map(async (chart, index) => {
+                if (!chart.sql) return [];
+                try {
+                    return await options.executeSql!(chart.sql);
+                } catch (error: any) {
+                    console.warn(`[WarehouseService] Postgres chart ${index} ("${chart.title}") query failed:`, error.message);
+                    return [{ _error: error.message || "Query execution failed" }];
+                }
+            });
+            return await Promise.all(promises);
+        }
+
         if (!options?.token || !options?.projectId) {
             // If no credentials, we cannot query BigQuery.
             // Return empty arrays so the caller falls back to mock data or empty state.
