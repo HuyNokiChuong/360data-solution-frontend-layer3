@@ -49,7 +49,7 @@ const AISettings: React.FC = () => {
       setKey: setGeminiKey,
       storageKey: 'gemini_api_key',
       placeholder: 'AIzaSy...',
-      description: 'Tận hưởng sức mạnh của Gemini 2.0 Flash & Pro.',
+      description: 'Tận hưởng sức mạnh của Gemini 2.5 Flash & Pro.',
       getKeyUrl: 'https://aistudio.google.com/app/apikey',
       color: 'blue'
     },
@@ -61,7 +61,7 @@ const AISettings: React.FC = () => {
       setKey: setOpenaiKey,
       storageKey: 'openai_api_key',
       placeholder: 'sk-proj-...',
-      description: 'Dành cho các tác vụ cần độ chính xác cực cao với GPT-4o.',
+      description: 'Dành cho các tác vụ cần độ chính xác cực cao với GPT-5.1.',
       getKeyUrl: 'https://platform.openai.com/api-keys',
       color: 'emerald'
     },
@@ -73,7 +73,7 @@ const AISettings: React.FC = () => {
       setKey: setAnthropicKey,
       storageKey: 'anthropic_api_key',
       placeholder: 'sk-ant-...',
-      description: 'Sử dụng Claude 3.5 Sonnet cho khả năng lập trình đỉnh cao.',
+      description: 'Sử dụng Claude Sonnet 4 cho khả năng lập trình và suy luận đỉnh cao.',
       getKeyUrl: 'https://console.anthropic.com/settings/keys',
       color: 'amber'
     }

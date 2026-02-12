@@ -20,20 +20,44 @@ interface PivotTableWidgetProps {
     onClick?: (e: React.MouseEvent) => void;
 }
 
-const checkCondition = (value: number, rule: ConditionalFormat) => {
-    const numValue = Number(value);
-    const target = Number(rule.value);
-    const target2 = rule.value2 ? Number(rule.value2) : 0;
-
-    if (isNaN(numValue)) return false;
+const checkCondition = (leftValue: any, rule: ConditionalFormat, rightValue?: any) => {
+    const leftNum = Number(leftValue);
+    const rhsValue = rightValue ?? rule.value;
+    const rightNum = Number(rhsValue);
+    const rightNum2 = rule.value2 !== undefined ? Number(rule.value2) : NaN;
 
     switch (rule.condition) {
-        case 'greater': return numValue > target;
-        case 'less': return numValue < target;
-        case 'equal': return numValue === target;
-        case 'between': return numValue >= target && numValue <= target2;
-        default: return false;
+        case 'contains':
+            return String(leftValue ?? '').toLowerCase().includes(String(rhsValue ?? '').toLowerCase());
+        case 'greater':
+            return !isNaN(leftNum) && !isNaN(rightNum) && leftNum > rightNum;
+        case 'less':
+            return !isNaN(leftNum) && !isNaN(rightNum) && leftNum < rightNum;
+        case 'equal':
+            if (!isNaN(leftNum) && !isNaN(rightNum)) return leftNum === rightNum;
+            return String(leftValue) === String(rhsValue);
+        case 'between':
+            return !isNaN(leftNum) && !isNaN(rightNum) && !isNaN(rightNum2) && leftNum >= rightNum && leftNum <= rightNum2;
+        default:
+            return false;
     }
+};
+
+const getConditionalFormatResult = (value: number | undefined, rules?: ConditionalFormat[], resolveCompareValue?: (rule: ConditionalFormat) => any) => {
+    const style: React.CSSProperties = {};
+    if (value === undefined || !rules || rules.length === 0) {
+        return { style, icon: null as string | null };
+    }
+
+    for (const rule of rules) {
+        const compareValue = resolveCompareValue ? resolveCompareValue(rule) : undefined;
+        if (!checkCondition(value, rule, compareValue)) continue;
+        if (rule.textColor) style.color = rule.textColor;
+        if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
+        return { style, icon: rule.icon || null };
+    }
+
+    return { style, icon: null as string | null };
 };
 
 const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
@@ -47,6 +71,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 }) => {
     const { isDark } = useChartColors();
     const { isWidgetFiltered } = useFilterStore();
+    const drillDownState = useFilterStore(state => state.drillDowns[widget.id]);
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     // Switch to useDirectQuery
@@ -175,6 +200,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
     const valueFields = widget.pivotValues || [];
     const showValueHeader = valueFields.length > 1;
+    const measureKeyOf = (field: string, aggregation: string) => `${field}_${aggregation}`;
 
     // Helper to extract display value
     const getDisplay = (str: string) => {
@@ -182,6 +208,49 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             return str.split('|||')[1];
         }
         return str;
+    };
+
+    const getNodeRowTotalByMeasureKey = (node: any, measureKey: string) => {
+        let total = 0;
+        if (!node?.values) return total;
+        Object.values(node.values).forEach((colVal: any) => {
+            if (!colVal) return;
+            total += Number(colVal[measureKey] || 0);
+        });
+        return total;
+    };
+
+    const resolveCompareValue = (
+        rule: ConditionalFormat,
+        currentValueCfg: PivotValue,
+        context: { node?: any; colKey?: string }
+    ) => {
+        if (!rule.compareMode || rule.compareMode === 'literal') {
+            return rule.value;
+        }
+
+        const targetField = rule.compareField || currentValueCfg.field;
+        const targetAgg = rule.compareAggregation || currentValueCfg.aggregation;
+        const targetMeasureKey = measureKeyOf(targetField, targetAgg);
+        const scope = rule.compareScope || 'cell';
+
+        if (scope === 'grandTotal') {
+            return grandTotal?.[targetMeasureKey];
+        }
+
+        if (scope === 'columnTotal') {
+            if (!context.colKey) return undefined;
+            return colTotals?.[context.colKey]?.[targetMeasureKey];
+        }
+
+        if (scope === 'rowTotal') {
+            if (!context.node) return undefined;
+            return getNodeRowTotalByMeasureKey(context.node, targetMeasureKey);
+        }
+
+        // default: 'cell'
+        if (!context.node || !context.colKey) return undefined;
+        return context.node?.values?.[context.colKey]?.[targetMeasureKey];
     };
 
     // Tree Builder Logic
@@ -279,6 +348,24 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         // Default collapsed tree. User expands specific nodes manually (+/-).
         setExpandedKeys(new Set());
     }, [flattenedRows.length]); // Depend on structure change
+
+    useEffect(() => {
+        if (!drillDownState) return;
+
+        const targetDepth = Math.max(0, drillDownState.currentLevel);
+        if (targetDepth === 0) {
+            setExpandedKeys(new Set());
+            return;
+        }
+
+        const autoExpanded = new Set<string>();
+        flattenedRows.forEach((node: any) => {
+            if (typeof node?.depth === 'number' && node.depth < targetDepth) {
+                autoExpanded.add(node.key);
+            }
+        });
+        setExpandedKeys(autoExpanded);
+    }, [drillDownState?.currentLevel, drillDownState?.mode, flattenedRows]);
 
     const toggleExpand = (key: string) => {
         const newSet = new Set(expandedKeys);
@@ -474,7 +561,8 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                                     {colKeys.map(c => (
                                         valueFields.map(v => {
-                                            const val = node.values?.[c]?.[`${v.field}_${v.aggregation}`];
+                                            const measureKey = measureKeyOf(v.field, v.aggregation);
+                                            const val = node.values?.[c]?.[measureKey];
                                             const isZero = val === 0;
                                             const key = !showValueHeader ? c : `${c}-${v.field}`;
                                             const width = getColWidth(key, 160);
@@ -487,17 +575,12 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                                             const formatted = val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-';
 
-                                            let style: React.CSSProperties = {};
-                                            // Apply conditional formatting
-                                            if (val !== undefined && v.conditionalFormatting) {
-                                                for (const rule of v.conditionalFormatting) {
-                                                    if (checkCondition(val, rule)) {
-                                                        if (rule.textColor) style.color = rule.textColor;
-                                                        if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
-                                                        break;
-                                                    }
-                                                }
-                                            }
+                                            const cf = getConditionalFormatResult(
+                                                val,
+                                                v.conditionalFormatting,
+                                                (rule) => resolveCompareValue(rule, v, { node, colKey: c })
+                                            );
+                                            const style: React.CSSProperties = { ...cf.style };
 
                                             return (
                                                 <td key={`${node.key}-${c}-${v.field}`}
@@ -511,7 +594,10 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                                         color: style.color || (!isLeafNode ? '#cbd5e1' : undefined)
                                                     }}
                                                 >
-                                                    {formatted}
+                                                    <span className="inline-flex items-center justify-end gap-1 w-full">
+                                                        {cf.icon && <i className={`${cf.icon} text-[10px]`} aria-hidden="true"></i>}
+                                                        <span>{formatted}</span>
+                                                    </span>
                                                 </td>
                                             );
                                         })
@@ -520,29 +606,19 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                     {/* Total Column for this Row */}
                                     {valueFields.map(v => {
                                         // Calculate total for this node across all columns
-                                        let rowTotal = 0;
-                                        if (node.values) {
-                                            Object.values(node.values).forEach((colVal: any) => {
-                                                if (colVal) {
-                                                    rowTotal += (colVal[`${v.field}_${v.aggregation}`] || 0);
-                                                }
-                                            });
-                                        }
+                                        const measureKey = measureKeyOf(v.field, v.aggregation);
+                                        const rowTotal = getNodeRowTotalByMeasureKey(node, measureKey);
 
                                         const val = rowTotal;
                                         const key = !showValueHeader ? 'GRAND_TOTAL' : `GRAND_TOTAL-${v.field}`;
 
                                         // Apply conditional formatting to Row Total
-                                        let style: React.CSSProperties = {};
-                                        if (val !== undefined && v.conditionalFormatting) {
-                                            for (const rule of v.conditionalFormatting) {
-                                                if (checkCondition(val, rule)) {
-                                                    if (rule.textColor) style.color = rule.textColor;
-                                                    if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
-                                                    break;
-                                                }
-                                            }
-                                        }
+                                        const cf = getConditionalFormatResult(
+                                            val,
+                                            v.conditionalFormatting,
+                                            (rule) => resolveCompareValue(rule, v, { node })
+                                        );
+                                        const style: React.CSSProperties = { ...cf.style };
 
                                         return (
                                             <td key={`total-${node.key}-${v.field}`}
@@ -552,7 +628,10 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                                     fontFamily: "'JetBrains Mono', monospace"
                                                 }}
                                             >
-                                                {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
+                                                <span className="inline-flex items-center justify-end gap-1 w-full">
+                                                    {cf.icon && <i className={`${cf.icon} text-[10px]`} aria-hidden="true"></i>}
+                                                    <span>{val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}</span>
+                                                </span>
                                             </td>
                                         );
                                     })}
@@ -567,19 +646,16 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                             </td>
                             {colKeys.map(c => (
                                 valueFields.map(v => {
-                                    const val = colTotals?.[c]?.[`${v.field}_${v.aggregation}`];
+                                    const measureKey = measureKeyOf(v.field, v.aggregation);
+                                    const val = colTotals?.[c]?.[measureKey];
 
                                     // Apply conditional formatting to Column Total
-                                    let style: React.CSSProperties = {};
-                                    if (val !== undefined && v.conditionalFormatting) {
-                                        for (const rule of v.conditionalFormatting) {
-                                            if (checkCondition(val, rule)) {
-                                                if (rule.textColor) style.color = rule.textColor;
-                                                if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
-                                                break;
-                                            }
-                                        }
-                                    }
+                                    const cf = getConditionalFormatResult(
+                                        val,
+                                        v.conditionalFormatting,
+                                        (rule) => resolveCompareValue(rule, v, { colKey: c })
+                                    );
+                                    const style: React.CSSProperties = { ...cf.style };
 
                                     return (
                                         <td key={`total-col-${c}-${v.field}`}
@@ -589,26 +665,26 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                                 fontFamily: "'JetBrains Mono', monospace"
                                             }}
                                         >
-                                            {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
+                                            <span className="inline-flex items-center justify-end gap-1 w-full">
+                                                {cf.icon && <i className={`${cf.icon} text-[10px]`} aria-hidden="true"></i>}
+                                                <span>{val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}</span>
+                                            </span>
                                         </td>
                                     );
                                 })
                             ))}
                             {/* Grand Grand Total */}
                             {valueFields.map(v => {
-                                const val = grandTotal?.[`${v.field}_${v.aggregation}`];
+                                const measureKey = measureKeyOf(v.field, v.aggregation);
+                                const val = grandTotal?.[measureKey];
 
                                 // Apply conditional formatting to Grand Grand Total
-                                let style: React.CSSProperties = {};
-                                if (val !== undefined && v.conditionalFormatting) {
-                                    for (const rule of v.conditionalFormatting) {
-                                        if (checkCondition(val, rule)) {
-                                            if (rule.textColor) style.color = rule.textColor;
-                                            if (rule.backgroundColor) style.backgroundColor = rule.backgroundColor;
-                                            break;
-                                        }
-                                    }
-                                }
+                                const cf = getConditionalFormatResult(
+                                    val,
+                                    v.conditionalFormatting,
+                                    (rule) => resolveCompareValue(rule, v, {})
+                                );
+                                const style: React.CSSProperties = { ...cf.style };
 
                                 return (
                                     <td key={`grand-total-${v.field}`}
@@ -618,7 +694,10 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                             fontFamily: "'JetBrains Mono', monospace"
                                         }}
                                     >
-                                        {val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}
+                                        <span className="inline-flex items-center justify-end gap-1 w-full">
+                                            {cf.icon && <i className={`${cf.icon} text-[10px]`} aria-hidden="true"></i>}
+                                            <span>{val !== undefined ? formatBIValue(val, (v.format && v.format !== 'standard' ? v.format : null) || widget.valueFormat || 'standard') : '-'}</span>
+                                        </span>
                                     </td>
                                 );
                             })}

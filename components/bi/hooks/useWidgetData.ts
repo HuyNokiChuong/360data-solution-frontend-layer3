@@ -40,7 +40,7 @@ export const useWidgetData = (widget: BIWidget) => {
             data = data.map(row => {
                 const newRow = { ...row };
                 compiledFields.forEach(cf => {
-                    newRow[cf.name] = cf.evaluate!(row);
+                    newRow[cf.name] = cf.evaluate!(newRow);
                 });
                 return newRow;
             });

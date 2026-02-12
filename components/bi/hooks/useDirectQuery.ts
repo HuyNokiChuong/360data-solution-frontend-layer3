@@ -28,6 +28,14 @@ export const useDirectQuery = (widget: BIWidget) => {
     const [data, setData] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const allCalculatedFields = useMemo(() => ([
+        ...(activeDashboard?.calculatedFields || []),
+        ...(widget.calculatedFields || [])
+    ]), [activeDashboard?.calculatedFields, widget.calculatedFields]);
+    const allQuickMeasures = useMemo(() => ([
+        ...(activeDashboard?.quickMeasures || []),
+        ...(widget.quickMeasures || [])
+    ]), [activeDashboard?.quickMeasures, widget.quickMeasures]);
 
     const dataSource = useMemo(() => {
         let ds = widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -217,9 +225,23 @@ export const useDirectQuery = (widget: BIWidget) => {
                 const pivotRows = widget.pivotRows || [];
                 dims.push(...pivotRows);
                 if (widget.pivotCols) dims.push(...widget.pivotCols);
+                const pivotMeasureSeen = new Set<string>();
+                const pushPivotMeasure = (field: string | undefined, aggregation: AggregationType | undefined) => {
+                    if (!field) return;
+                    const agg = normalizeAggregation(aggregation || 'sum');
+                    const key = `${field}::${agg}`;
+                    if (pivotMeasureSeen.has(key)) return;
+                    pivotMeasureSeen.add(key);
+                    meass.push({ field, aggregation: agg });
+                };
                 if (widget.pivotValues) {
                     widget.pivotValues.forEach(v => {
-                        meass.push({ field: v.field, aggregation: normalizeAggregation(v.aggregation || 'sum') });
+                        pushPivotMeasure(v.field, v.aggregation);
+                        (v.conditionalFormatting || []).forEach((rule: any) => {
+                            if (rule?.compareMode === 'field' && rule?.compareField) {
+                                pushPivotMeasure(rule.compareField, rule.compareAggregation || 'sum');
+                            }
+                        });
                     });
                 }
                 break;
@@ -261,7 +283,7 @@ export const useDirectQuery = (widget: BIWidget) => {
 
         // process calculated fields (SQL Injection)
         meass = meass.map(m => {
-            const calcField = activeDashboard?.calculatedFields?.find(c => c.name === m.field);
+            const calcField = allCalculatedFields.find(c => c.name === m.field);
             if (calcField) {
                 let expr = calcField.formula;
                 // Transpile [Field] to `Field`
@@ -270,7 +292,7 @@ export const useDirectQuery = (widget: BIWidget) => {
             }
 
             // process quick measures (Client-side Post-Processing mostly)
-            const quickMeasure = activeDashboard?.quickMeasures?.find(qm => qm.label === m.field);
+            const quickMeasure = allQuickMeasures.find(qm => qm.label === m.field);
             if (quickMeasure) {
                 // For BQ, we fetch the underlying field
                 // For Post-processing, we allow identifying it
@@ -287,7 +309,7 @@ export const useDirectQuery = (widget: BIWidget) => {
         });
 
         return { dimensions: [...new Set(dims)], measures: meass };
-    }, [widget, drillDowns, dataSource, activeDashboard?.calculatedFields, activeDashboard?.quickMeasures]);
+    }, [widget, drillDowns, dataSource, allCalculatedFields, allQuickMeasures]);
 
     useEffect(() => {
         let isMounted = true;
@@ -622,7 +644,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 }
 
                 const bqDimensions = dimensions.map(d => {
-                    const calcField = activeDashboard?.calculatedFields?.find(c => c.name === d);
+                    const calcField = allCalculatedFields.find(c => c.name === d);
                     if (calcField) {
                         let expr = calcField.formula;
                         expr = expr.replace(/\[(.*?)\]/g, (match, p1) => `\`${p1}\``);
@@ -632,7 +654,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 });
 
                 const finalFilters = bqFilters.map(f => {
-                    const calcField = activeDashboard?.calculatedFields?.find(c => c.name === f.field);
+                    const calcField = allCalculatedFields.find(c => c.name === f.field);
                     if (calcField) {
                         let expr = calcField.formula;
                         expr = expr.replace(/\[(.*?)\]/g, (match, p1) => `\`${p1}\``);

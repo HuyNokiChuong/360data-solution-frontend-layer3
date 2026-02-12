@@ -10,6 +10,7 @@ import { useThemeStore } from './store/themeStore';
 import { isCorporateDomain } from './utils/domain';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { normalizeSchema } from './utils/schema';
+import { generateUUID, isUUID } from './utils/id';
 
 const Sidebar = lazy(() => import('./components/Sidebar'));
 const Connections = lazy(() => import('./components/Connections'));
@@ -121,7 +122,7 @@ const App: React.FC = () => {
 
 
   const [reportSessions, setReportSessions] = useState<ReportSession[]>([]);
-  const [activeReportSessionId, setActiveReportSessionId] = useState<string>('s-1');
+  const [activeReportSessionId, setActiveReportSessionId] = useState<string>('');
   const [users, setUsers] = useState<User[]>(() => {
     const d = (currentUser?.email || pendingUser?.email)?.split('@')[1];
     if (d) {
@@ -141,6 +142,46 @@ const App: React.FC = () => {
     ...table,
     schema: normalizeSchema(table?.schema || []),
   });
+
+  const pruneDuplicateEmptySessions = (input: ReportSession[]): { kept: ReportSession[]; removed: ReportSession[] } => {
+    const groups = new Map<string, ReportSession[]>();
+    input.forEach((session) => {
+      const key = (session.title || '').trim().toLowerCase();
+      const arr = groups.get(key) || [];
+      arr.push(session);
+      groups.set(key, arr);
+    });
+
+    const kept: ReportSession[] = [];
+    const removed: ReportSession[] = [];
+    const parseTs = (ts: string) => {
+      const t = new Date(ts).getTime();
+      return Number.isNaN(t) ? 0 : t;
+    };
+
+    groups.forEach((sessions) => {
+      const sorted = [...sessions].sort((a, b) => parseTs(b.timestamp) - parseTs(a.timestamp));
+      let lastKeptTs = -1;
+      let lastKeptWasEmpty = false;
+
+      for (const s of sorted) {
+        const isEmpty = (s.messages || []).length === 0;
+        const ts = parseTs(s.timestamp);
+
+        if (isEmpty && lastKeptWasEmpty && Math.abs(lastKeptTs - ts) <= 5000) {
+          removed.push(s);
+          continue;
+        }
+
+        kept.push(s);
+        lastKeptTs = ts;
+        lastKeptWasEmpty = isEmpty;
+      }
+    });
+
+    kept.sort((a, b) => parseTs(b.timestamp) - parseTs(a.timestamp));
+    return { kept, removed };
+  };
 
   const syncConnectionsAndTables = async (tokenOverride?: string) => {
     const token = tokenOverride || localStorage.getItem('auth_token');
@@ -266,7 +307,21 @@ const App: React.FC = () => {
           })
           .then(resData => {
             if (resData.success && resData.data.length > 0) {
-              setReportSessions(resData.data);
+              const serverSessions = (resData.data as ReportSession[]).map((session) => ({
+                ...session,
+                id: isUUID(session.id) ? session.id : generateUUID(),
+              }));
+              const { kept, removed } = pruneDuplicateEmptySessions(serverSessions);
+              setReportSessions(kept);
+
+              if (removed.length > 0) {
+                removed.forEach((session) => {
+                  fetch(`http://localhost:3001/api/sessions/${session.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                  }).catch(console.error);
+                });
+              }
             }
           })
           .catch(console.error);
@@ -276,23 +331,37 @@ const App: React.FC = () => {
       const loadSessions = async () => {
         try {
           const loadedSessions = await PersistentStorage.get(`${d}_reportSessions`);
-          const loadedActiveId = await PersistentStorage.get(`${d}_activeReportSessionId`) || 's-1';
+          const loadedActiveId = await PersistentStorage.get(`${d}_activeReportSessionId`) || '';
+
+          const normalizeReportSessions = (input: ReportSession[]): ReportSession[] => {
+            return input.map((session) => ({
+              ...session,
+              id: isUUID(session.id) ? session.id : generateUUID(),
+            }));
+          };
 
           if (loadedSessions && Array.isArray(loadedSessions) && loadedSessions.length > 0) {
-            setReportSessions(loadedSessions);
-            if (loadedSessions.some((s: ReportSession) => s.id === loadedActiveId)) {
+            const normalizedSessions = normalizeReportSessions(loadedSessions as ReportSession[]);
+            setReportSessions(normalizedSessions);
+            if (normalizedSessions.some((s: ReportSession) => s.id === loadedActiveId)) {
               setActiveReportSessionId(loadedActiveId);
             } else {
-              setActiveReportSessionId(loadedSessions[0].id);
+              setActiveReportSessionId(normalizedSessions[0].id);
             }
           } else {
             // Fallback: Try localStorage for backward compatibility or initial state
             const legacySessions = load('reportSessions', null);
             if (legacySessions) {
-              setReportSessions(legacySessions);
-              setActiveReportSessionId(localStorage.getItem(`${d}_activeReportSessionId`) || legacySessions[0]?.id || 's-1');
+              const normalizedLegacy = normalizeReportSessions(legacySessions as ReportSession[]);
+              setReportSessions(normalizedLegacy);
+              const legacyActiveId = localStorage.getItem(`${d}_activeReportSessionId`) || '';
+              if (normalizedLegacy.some((s: ReportSession) => s.id === legacyActiveId)) {
+                setActiveReportSessionId(legacyActiveId);
+              } else {
+                setActiveReportSessionId(normalizedLegacy[0]?.id || generateUUID());
+              }
             } else {
-              const newId = `s-${Date.now()}`;
+              const newId = generateUUID();
               const defaultSession = { id: newId, title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] };
               setReportSessions([defaultSession]);
               setActiveReportSessionId(newId);
@@ -300,8 +369,9 @@ const App: React.FC = () => {
           }
         } catch (err) {
           console.error("Failed to load sessions from PersistentStorage:", err);
-          setReportSessions([{ id: 's-1', title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] }]);
-          setActiveReportSessionId('s-1');
+          const fallbackId = generateUUID();
+          setReportSessions([{ id: fallbackId, title: 'Data Exploration Hub', timestamp: new Date().toISOString().split('T')[0], messages: [] }]);
+          setActiveReportSessionId(fallbackId);
         } finally {
           setGoogleToken(localStorage.getItem(`${d}_googleToken`));
           setUsers(load('users', [currentUser]));

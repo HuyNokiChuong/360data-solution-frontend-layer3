@@ -6,28 +6,59 @@
 import { CalculatedField, QuickCalculation } from '../types';
 import { getFieldValue } from './utils';
 
+const formulaHelpers = {
+    IF: (condition: any, trueValue: any, falseValue: any = null) => (condition ? trueValue : falseValue),
+    AND: (...args: any[]) => args.every(Boolean),
+    OR: (...args: any[]) => args.some(Boolean),
+    NOT: (value: any) => !value,
+    ABS: Math.abs,
+    ROUND: (num: number, digits: number = 0) => {
+        const factor = Math.pow(10, digits);
+        return Math.round(num * factor) / factor;
+    },
+    CEILING: Math.ceil,
+    FLOOR: Math.floor,
+    MAX: Math.max,
+    MIN: Math.min,
+    UPPER: (s: string) => String(s).toUpperCase(),
+    LOWER: (s: string) => String(s).toLowerCase(),
+    CONCAT: (...args: any[]) => args.join(''),
+    LEN: (s: string) => String(s).length,
+};
+
 export const CalculationEngine = {
     // Pre-compile a formula into a reusable function for speed
     compile: (formula: string): ((row: any) => any) | null => {
         try {
             const fieldRegex = /\[(.*?)\]/g;
-            const fieldsNeeded: string[] = [];
-            let match;
-            while ((match = fieldRegex.exec(formula)) !== null) {
-                fieldsNeeded.push(match[1]);
-            }
-
-            // Create a formula that uses row['FieldName']
-            let sanitizedFormula = formula;
-            fieldsNeeded.forEach(field => {
-                const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp(`\\[${escapedField}\\]`, 'g');
-                // Use getFieldValue logic but simplified for speed
-                sanitizedFormula = sanitizedFormula.replace(regex, `(Number(row["${field}"]) || 0)`);
-            });
+            const sanitizedFormula = formula.replace(fieldRegex, (_match, fieldName) => `__value(row, ${JSON.stringify(fieldName)})`);
 
             // eslint-disable-next-line no-new-func
-            return new Function('row', `try { return ${sanitizedFormula}; } catch(e) { return 0; }`) as any;
+            const evaluator = new Function(
+                'row',
+                '__value',
+                ...Object.keys(formulaHelpers),
+                `return (${sanitizedFormula});`
+            );
+
+            const helperValues = Object.values(formulaHelpers);
+            return (row: any) => {
+                const valueResolver = (inputRow: any, fieldName: string) => {
+                    const value = getFieldValue(inputRow, fieldName);
+                    if (value === null || value === undefined || value === '') return 0;
+                    if (typeof value === 'string') {
+                        const parsed = Number(value);
+                        return Number.isNaN(parsed) ? value : parsed;
+                    }
+                    return value;
+                };
+
+                try {
+                    return evaluator(row, valueResolver, ...helperValues);
+                } catch {
+                    return null;
+                }
+            };
         } catch (error) {
             console.error('Failed to compile formula:', formula, error);
             return null;
@@ -39,14 +70,15 @@ export const CalculationEngine = {
         try {
             const fieldRegex = /\[(.*?)\]/g;
             let parsedFormula = formula;
-            parsedFormula = parsedFormula.replace(fieldRegex, (match, fieldName) => {
+            parsedFormula = parsedFormula.replace(fieldRegex, (_match, fieldName) => {
                 const value = getFieldValue(row, fieldName);
                 if (typeof value === 'string') return `"${value}"`;
                 if (value === null || value === undefined) return '0';
                 return String(value);
             });
             // eslint-disable-next-line no-new-func
-            return new Function(`return ${parsedFormula}`)();
+            const evaluator = new Function(...Object.keys(formulaHelpers), `return ${parsedFormula}`);
+            return evaluator(...Object.values(formulaHelpers));
         } catch (error) {
             console.warn('Calculation error:', error, formula, row);
             return null;
@@ -172,6 +204,8 @@ export const CalculationEngine = {
     },
 
     validateFormula: (formula: string, availableFields: string[]): { valid: boolean; error?: string } => {
+        if (!formula.trim()) return { valid: false, error: 'Formula is required' };
+
         // Check for balanced brackets
         let openBrackets = 0;
         for (const char of formula) {
@@ -189,6 +223,12 @@ export const CalculationEngine = {
             if (!availableFields.includes(fieldName)) {
                 return { valid: false, error: `Field [${fieldName}] not found` };
             }
+        }
+
+        // Check JS expression syntax
+        const compiled = CalculationEngine.compile(formula);
+        if (!compiled) {
+            return { valid: false, error: 'Invalid formula syntax' };
         }
 
         return { valid: true };

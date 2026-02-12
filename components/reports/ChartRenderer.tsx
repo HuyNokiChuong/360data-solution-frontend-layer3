@@ -8,7 +8,7 @@ import { ChartConfig } from '../../types';
 import { useThemeStore } from '../../store/themeStore';
 
 const DARK_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#4f46e5'];
-const LIGHT_COLORS = ['#4f46e5', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#0891b2', '#4338ca'];
+const LIGHT_COLORS = ['#1f4fd6', '#0f766e', '#0ea5e9', '#d97706', '#be123c', '#6d28d9', '#2563eb', '#059669'];
 
 interface ChartRendererProps {
     chart: ChartConfig;

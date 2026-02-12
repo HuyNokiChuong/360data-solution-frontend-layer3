@@ -341,7 +341,7 @@ const PivotValueSelector: React.FC<{
         data: { slot: slotId }
     });
 
-    const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+    const [rulesModalIndex, setRulesModalIndex] = useState<number | null>(null);
 
     const getDefaultAggregation = (fieldName: string): AggregationType => {
         const selectedField = fields.find((f) => f.name === fieldName);
@@ -379,7 +379,7 @@ const PivotValueSelector: React.FC<{
             ...newValues[index],
             conditionalFormatting: [
                 ...currentRules,
-                { condition: 'greater', value: 0, textColor: '#10b981' }
+                { condition: 'greater', value: 0, textColor: '#10b981', compareMode: 'literal', compareScope: 'cell' }
             ]
         };
         onChange(newValues);
@@ -434,6 +434,39 @@ const PivotValueSelector: React.FC<{
         onChange(newValues);
     };
 
+    const applyCompareTarget = (valIndex: number, ruleIndex: number, target: string) => {
+        const [compareField, compareAggregation] = target.split('::');
+        handleUpdateRule(valIndex, ruleIndex, {
+            compareField: compareField || undefined,
+            compareAggregation: (compareAggregation as AggregationType) || undefined
+        });
+    };
+
+    const activeRuleMetric = rulesModalIndex !== null ? values[rulesModalIndex] : null;
+    const compareMetricOptions = React.useMemo(() => {
+        const options: Array<{ field: string; aggregation: AggregationType; source: 'value' | 'calculated' }> = [];
+        const seen = new Set<string>();
+
+        values.forEach((v) => {
+            const key = `${v.field}::${v.aggregation}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            options.push({ field: v.field, aggregation: v.aggregation, source: 'value' });
+        });
+
+        fields
+            .filter((f) => f.type === 'number' && (f.isCalculated || f.isQuickMeasure))
+            .forEach((f) => {
+                const agg = getDefaultAggregationForFieldType(f.type);
+                const key = `${f.name}::${agg}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                options.push({ field: f.name, aggregation: agg, source: 'calculated' });
+            });
+
+        return options;
+    }, [values, fields]);
+
     return (
         <div ref={setNodeRef} className={`space-y-2 p-2 rounded-lg transition-all ${isOver ? 'bg-indigo-50 dark:bg-indigo-600/20 ring-2 ring-indigo-500/50' : ''}`}>
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">{label}</label>
@@ -443,10 +476,8 @@ const PivotValueSelector: React.FC<{
                         <div className="flex items-center gap-1.5 mb-1">
                             <span className="flex-1 text-[11px] text-slate-900 dark:text-white truncate font-bold">{v.field}</span>
                             <button
-                                onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] uppercase font-black transition-all border ${expandedIndex === idx
-                                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]'
-                                    : (v.conditionalFormatting?.length ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:text-indigo-600')
+                                onClick={() => setRulesModalIndex(idx)}
+                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] uppercase font-black transition-all border ${(v.conditionalFormatting?.length ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:text-indigo-600')
                                     }`}
                             >
                                 <i className={`fas fa-paint-brush ${v.conditionalFormatting?.length ? 'animate-pulse' : ''}`}></i>
@@ -499,80 +530,9 @@ const PivotValueSelector: React.FC<{
                             </select>
                         </div>
 
-                        {/* Conditional Formatting Rules UI */}
-                        {expandedIndex === idx && (
-                            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/5 space-y-2">
-                                <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[9px] text-slate-500 font-black uppercase tracking-tighter">Cond. Formatting</span>
-                                    <div className="flex items-center gap-1">
-                                        <select
-                                            onChange={(e) => e.target.value && handleApplyPreset(idx, e.target.value as any)}
-                                            className="bg-transparent text-[9px] text-indigo-400 hover:text-white outline-none cursor-pointer"
-                                            value=""
-                                        >
-                                            <option value="" disabled>Presets...</option>
-                                            <option value="traffic">Traffic (Text)</option>
-                                            <option value="stoplight">Stoplight (Bg)</option>
-                                            <option value="heatmap">Heatmap</option>
-                                        </select>
-                                        <button onClick={() => handleAddRule(idx)} className="text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-sm hover:bg-indigo-500 transition-colors font-bold">+ New Rule</button>
-                                    </div>
-                                </div>
-                                {v.conditionalFormatting?.map((rule, rIdx) => (
-                                    <div key={rIdx} className="flex items-center gap-1 bg-slate-950 p-1 rounded border border-white/5">
-                                        <select
-                                            value={rule.condition}
-                                            onChange={(e) => handleUpdateRule(idx, rIdx, { condition: e.target.value })}
-                                            className="w-[55px] bg-transparent text-[9px] text-slate-600 dark:text-slate-300 outline-none border-none py-0"
-                                        >
-                                            <option value="greater">&gt;</option>
-                                            <option value="less">&lt;</option>
-                                            <option value="equal">=</option>
-                                            <option value="between">btw</option>
-                                        </select>
-                                        <input
-                                            type="number"
-                                            value={rule.value}
-                                            onChange={(e) => handleUpdateRule(idx, rIdx, { value: e.target.value })}
-                                            className="w-[40px] bg-white/5 text-[9px] text-white rounded px-1 border-none focus:ring-1 focus:ring-indigo-500"
-                                            placeholder="Val"
-                                        />
-                                        {rule.condition === 'between' && (
-                                            <input
-                                                type="number"
-                                                value={rule.value2}
-                                                onChange={(e) => handleUpdateRule(idx, rIdx, { value2: e.target.value })}
-                                                className="w-[40px] bg-white/5 text-[9px] text-white rounded px-1 border-none focus:ring-1 focus:ring-indigo-500"
-                                                placeholder="Val2"
-                                            />
-                                        )}
-                                        <select
-                                            value={rule.textColor || rule.backgroundColor || ''}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                const updates: any = { textColor: undefined, backgroundColor: undefined };
-                                                if (val.startsWith('text:')) updates.textColor = val.split(':')[1];
-                                                else if (val.startsWith('bg:')) updates.backgroundColor = val.split(':')[1];
-                                                handleUpdateRule(idx, rIdx, updates);
-                                            }}
-                                            className="w-[60px] bg-transparent text-[9px] text-indigo-600 dark:text-indigo-400 outline-none border-none py-0"
-                                        >
-                                            <option value="text:#10b981">Green Txt</option>
-                                            <option value="text:#ef4444">Red Txt</option>
-                                            <option value="text:#f59e0b">Amber Txt</option>
-                                            <option value="text:#ffffff">White Txt</option>
-                                            <option value="bg:#064e3b">Green Bg</option>
-                                            <option value="bg:#7f1d1d">Red Bg</option>
-                                            <option value="bg:#78350f">Amber Bg</option>
-                                        </select>
-                                        <button onClick={() => handleRemoveRule(idx, rIdx)} className="text-slate-600 hover:text-red-400 px-1">
-                                            ×
-                                        </button>
-                                    </div>
-                                ))}
-                                {(!v.conditionalFormatting || v.conditionalFormatting.length === 0) && (
-                                    <div className="text-[8px] text-slate-600 text-center italic">No rules defined</div>
-                                )}
+                        {!!v.conditionalFormatting?.length && (
+                            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/5 text-[10px] text-slate-500 dark:text-slate-400">
+                                {v.conditionalFormatting.length} rule(s) configured
                             </div>
                         )}
                     </div>
@@ -585,6 +545,220 @@ const PivotValueSelector: React.FC<{
                 placeholder="+ Add value..."
                 className="mt-1"
             />
+
+            {rulesModalIndex !== null && activeRuleMetric && (
+                <div
+                    className="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-[2px] flex items-center justify-center p-4"
+                    onClick={() => setRulesModalIndex(null)}
+                >
+                    <div
+                        className="w-full max-w-4xl max-h-[85vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="sticky top-0 z-10 px-5 py-4 border-b border-slate-200 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between">
+                            <div>
+                                <div className="text-sm font-black text-slate-900 dark:text-white">Conditional Formatting Rules</div>
+                                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                    Metric: <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeRuleMetric.field}</span>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setRulesModalIndex(null)}
+                                className="w-8 h-8 rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                            >
+                                <i className="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <div className="p-5 space-y-4">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-bold text-slate-700 dark:text-slate-200">
+                                    Rules are evaluated top-down. First match wins.
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <select
+                                        onChange={(e) => e.target.value && handleApplyPreset(rulesModalIndex, e.target.value as any)}
+                                        className="bg-slate-100 dark:bg-slate-950 text-xs text-indigo-600 dark:text-indigo-300 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none"
+                                        value=""
+                                    >
+                                        <option value="" disabled>Apply preset...</option>
+                                        <option value="traffic">Traffic (Text)</option>
+                                        <option value="stoplight">Stoplight (Bg)</option>
+                                        <option value="heatmap">Heatmap</option>
+                                    </select>
+                                    <button
+                                        onClick={() => handleAddRule(rulesModalIndex)}
+                                        className="text-xs bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-black"
+                                    >
+                                        + Add Rule
+                                    </button>
+                                </div>
+                            </div>
+
+                            {activeRuleMetric.conditionalFormatting?.map((rule, rIdx) => {
+                                const compareTarget = `${rule.compareField || activeRuleMetric.field}::${rule.compareAggregation || activeRuleMetric.aggregation}`;
+                                const useLiteral = !rule.compareMode || rule.compareMode === 'literal' || rule.condition === 'between';
+                                return (
+                                    <div key={rIdx} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-xl p-4 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <div className="text-xs font-black uppercase tracking-wider text-slate-500">Rule #{rIdx + 1}</div>
+                                            <button
+                                                onClick={() => handleRemoveRule(rulesModalIndex, rIdx)}
+                                                className="text-xs text-red-500 hover:text-red-400 font-bold"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                            <div>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Operator</label>
+                                                <select
+                                                    value={rule.condition}
+                                                    onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { condition: e.target.value })}
+                                                    className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                >
+                                                    <option value="greater">&gt; Greater Than</option>
+                                                    <option value="less">&lt; Less Than</option>
+                                                    <option value="equal">= Equal</option>
+                                                    <option value="between">Between</option>
+                                                </select>
+                                            </div>
+
+                                            {rule.condition !== 'between' && (
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Compare Type</label>
+                                                    <select
+                                                        value={rule.compareMode || 'literal'}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareMode: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                    >
+                                                        <option value="literal">Fixed Number</option>
+                                                        <option value="field">Metric / Total</option>
+                                                    </select>
+                                                </div>
+                                            )}
+
+                                            {useLiteral ? (
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Value</label>
+                                                    <input
+                                                        type="number"
+                                                        value={rule.value}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { value: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                        placeholder="Enter threshold..."
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Target Metric</label>
+                                                    <select
+                                                        value={compareTarget}
+                                                        onChange={(e) => applyCompareTarget(rulesModalIndex, rIdx, e.target.value)}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                    >
+                                                        {compareMetricOptions.map((mv, mvIdx) => (
+                                                            <option key={`${mv.field}-${mv.aggregation}-${mvIdx}`} value={`${mv.field}::${mv.aggregation}`}>
+                                                                {mv.field} ({mv.aggregation.toUpperCase()}){mv.source === 'calculated' ? ' • Calc' : ''}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                            )}
+
+                                            {!useLiteral && (
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Target Scope</label>
+                                                    <select
+                                                        value={rule.compareScope || 'cell'}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareScope: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                    >
+                                                        <option value="cell">Same Cell</option>
+                                                        <option value="rowTotal">Same Row Total</option>
+                                                        <option value="columnTotal">Same Column Total</option>
+                                                        <option value="grandTotal">Grand Total</option>
+                                                    </select>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {rule.condition === 'between' && (
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Lower Bound</label>
+                                                    <input
+                                                        type="number"
+                                                        value={rule.value}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { value: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Upper Bound</label>
+                                                    <input
+                                                        type="number"
+                                                        value={rule.value2}
+                                                        onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { value2: e.target.value })}
+                                                        className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Color Style</label>
+                                                <select
+                                                    value={rule.textColor || rule.backgroundColor || ''}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        const updates: any = { textColor: undefined, backgroundColor: undefined };
+                                                        if (val.startsWith('text:')) updates.textColor = val.split(':')[1];
+                                                        else if (val.startsWith('bg:')) updates.backgroundColor = val.split(':')[1];
+                                                        handleUpdateRule(rulesModalIndex, rIdx, updates);
+                                                    }}
+                                                    className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                >
+                                                    <option value="text:#10b981">Green Text</option>
+                                                    <option value="text:#ef4444">Red Text</option>
+                                                    <option value="text:#f59e0b">Amber Text</option>
+                                                    <option value="text:#ffffff">White Text</option>
+                                                    <option value="bg:#064e3b">Green Background</option>
+                                                    <option value="bg:#7f1d1d">Red Background</option>
+                                                    <option value="bg:#78350f">Amber Background</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Icon</label>
+                                                <select
+                                                    value={rule.icon || ''}
+                                                    onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { icon: e.target.value || undefined })}
+                                                    className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                >
+                                                    <option value="">No Icon</option>
+                                                    <option value="fas fa-arrow-up">Up</option>
+                                                    <option value="fas fa-arrow-down">Down</option>
+                                                    <option value="fas fa-minus">Flat</option>
+                                                    <option value="fas fa-circle-exclamation">Alert</option>
+                                                    <option value="fas fa-star">Star</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+
+                            {(!activeRuleMetric.conditionalFormatting || activeRuleMetric.conditionalFormatting.length === 0) && (
+                                <div className="text-sm text-slate-500 dark:text-slate-400 italic border border-dashed border-slate-300 dark:border-white/10 rounded-xl p-4 text-center">
+                                    No rules yet. Click <span className="font-bold text-indigo-500">+ Add Rule</span> to start.
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -748,13 +922,16 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
     const handleSaveCalculation = (name: string, formula: string) => {
         if (!activeDashboard) return;
+        const normalizedName = name.trim();
+        const normalizedFormula = formula.trim();
+        if (!normalizedName || !normalizedFormula) return;
 
         const currentCalcs = activeDashboard.calculatedFields || [];
 
         if (editingCalcId) {
             // Update existing
             const updatedCalcs = currentCalcs.map(c =>
-                c.id === editingCalcId ? { ...c, name, formula } : c
+                c.id === editingCalcId ? { ...c, name: normalizedName, formula: normalizedFormula } : c
             );
             updateDashboard(activeDashboard.id, {
                 calculatedFields: updatedCalcs
@@ -764,8 +941,8 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
             // Create new
             const newField = {
                 id: `calc-${Date.now()}`,
-                name,
-                formula,
+                name: normalizedName,
+                formula: normalizedFormula,
                 type: 'number' as const
             };
             updateDashboard(activeDashboard.id, {
@@ -1766,6 +1943,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                                     fields={fields}
                                                     onChange={(v) => handleUpdateWidget({ pivotValues: v })}
                                                     slotId="pivot-values"
+                                                    hideAxisSelector={true}
                                                 />
                                             </div>
                                         );
@@ -2421,6 +2599,12 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                 onClose={() => setIsAddingCalc(false)}
                 onSave={handleSaveCalculation}
                 availableFields={fields}
+                existingFieldNames={fields.map(f => f.name)}
+                editingFieldName={
+                    editingCalcId
+                        ? [...(activeDashboard?.calculatedFields || []), ...(activeWidget?.calculatedFields || [])].find(c => c.id === editingCalcId)?.name || ''
+                        : ''
+                }
                 initialName={newCalcName}
                 initialFormula={newCalcFormula}
             />

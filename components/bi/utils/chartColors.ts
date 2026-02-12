@@ -20,16 +20,16 @@ export const CHART_COLORS_DARK = [
 
 // Light Mode Palette (Modern SaaS - Refined and Vibrant)
 export const CHART_COLORS_LIGHT = [
-    '#6366f1', // Indigo 500 (Clean indigo)
-    '#0ea5e9', // Sky 500 (Fresh blue)
-    '#10b981', // Emerald 500 (Vibrant green)
-    '#f43f5e', // Rose 500 (Modern pink/red)
-    '#f59e0b', // Amber 500 (Warm orange)
-    '#8b5cf6', // Violet 500 (Rich purple)
-    '#06b6d4', // Cyan 500 (Tech cyan)
-    '#ec4899', // Pink 500
-    '#84cc16', // Lime 500
-    '#64748b', // Slate 500
+    '#1f4fd6', // Cobalt blue
+    '#0f766e', // Deep teal
+    '#0ea5e9', // Sky blue
+    '#d97706', // Amber
+    '#be123c', // Ruby
+    '#6d28d9', // Royal violet
+    '#2563eb', // Sapphire
+    '#059669', // Emerald
+    '#9333ea', // Purple
+    '#475569', // Slate
 ];
 
 // Fallback for non-hook usage (defaulting to Dark to match original)
@@ -52,16 +52,16 @@ export const PIE_PALETTE_DARK = [
 
 // Light Mode Pie Palette (Vibrant and Professional)
 export const PIE_PALETTE_LIGHT = [
-    '#6366f1', // Indigo 500
-    '#10b981', // Emerald 500
-    '#0ea5e9', // Sky 500
-    '#f59e0b', // Amber 500
-    '#f43f5e', // Rose 500
-    '#8b5cf6', // Violet 500
-    '#ec4899', // Pink 500
-    '#06b6d4', // Cyan 500
-    '#84cc16', // Lime 500
-    '#f97316', // Orange 500
+    '#1f4fd6', // Cobalt blue
+    '#0f766e', // Deep teal
+    '#0ea5e9', // Sky blue
+    '#d97706', // Amber
+    '#be123c', // Ruby
+    '#6d28d9', // Royal violet
+    '#2563eb', // Sapphire
+    '#059669', // Emerald
+    '#9333ea', // Purple
+    '#475569', // Slate
 ];
 
 export const PIE_PALETTE = PIE_PALETTE_DARK;

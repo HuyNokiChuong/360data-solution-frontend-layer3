@@ -79,12 +79,12 @@ export const DISCOVERABLE_TABLES = [
 ];
 
 export const AI_MODELS = [
-  { id: 'gemini-2.0-flash', provider: 'Google', name: 'Gemini 2.0 Flash', label: 'Ultra Fast', description: 'Model thế hệ mới nhất, tốc độ phản hồi cực nhanh và phân tích thông minh.', icon: 'fa-solid fa-bolt-lightning', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
-  { id: 'gemini-1.5-pro', provider: 'Google', name: 'Gemini 1.5 Pro', label: 'Complex Analysis', description: 'Tối ưu cho các bài toán phân tích sâu, suy luận đa tầng lập luận.', icon: 'fa-solid fa-network-wired', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
-  { id: 'gpt-4o', provider: 'OpenAI', name: 'GPT-4o', label: 'Most Advanced', description: 'Model mạnh mẽ nhất của OpenAI, xuất sắc trong việc hiểu ngữ cảnh và tạo code.', icon: 'fa-solid fa-wand-magic-sparkles', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
-  { id: 'gpt-4o-mini', provider: 'OpenAI', name: 'GPT-4o Mini', label: 'Fast & Efficient', description: 'Phiên bản nhỏ gọn, nhanh chóng và tiết kiệm chi phí nhưng vẫn cực kỳ thông minh.', icon: 'fa-solid fa-bolt', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
-  { id: 'claude-3-5-sonnet-20240620', provider: 'Anthropic', name: 'Claude 3.5 Sonnet', label: 'Smartest Claude', description: 'Đạt điểm số cao nhất trong các bài test logic và lập trình hiện nay.', icon: 'fa-solid fa-microchip', brandIcon: 'fas fa-robot text-amber-500', isFree: false },
-  { id: 'claude-3-opus-20240229', provider: 'Anthropic', name: 'Claude 3 Opus', label: 'Deep Reasoning', description: 'Phù hợp cho các tác vụ suy luận cực kỳ phức tạp và đòi hỏi độ chính xác tuyệt đối.', icon: 'fa-solid fa-scroll', brandIcon: 'fas fa-robot text-amber-500', isFree: false }
+  { id: 'gemini-2.5-flash', provider: 'Google', name: 'Gemini 2.5 Flash', label: 'Ultra Fast', description: 'Model tốc độ cao thế hệ mới, cân bằng tốt giữa độ chính xác và chi phí.', icon: 'fa-solid fa-bolt-lightning', brandIcon: 'fa-brands fa-google text-blue-400', isFree: true },
+  { id: 'gemini-2.5-pro', provider: 'Google', name: 'Gemini 2.5 Pro', label: 'Complex Analysis', description: 'Model suy luận nâng cao cho các tác vụ phân tích dữ liệu và chiến lược phức tạp.', icon: 'fa-solid fa-network-wired', brandIcon: 'fa-brands fa-google text-blue-400', isFree: false },
+  { id: 'gpt-5.1', provider: 'OpenAI', name: 'GPT-5.1', label: 'Most Advanced', description: 'Model flagship mới của OpenAI cho phân tích, lập luận và tạo nội dung chất lượng cao.', icon: 'fa-solid fa-wand-magic-sparkles', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
+  { id: 'gpt-5-mini', provider: 'OpenAI', name: 'GPT-5 mini', label: 'Fast & Efficient', description: 'Phiên bản tối ưu chi phí của GPT-5, phù hợp cho tác vụ rõ ràng cần tốc độ.', icon: 'fa-solid fa-bolt', brandIcon: 'fa-solid fa-brain text-emerald-500', isFree: false },
+  { id: 'claude-sonnet-4-20250514', provider: 'Anthropic', name: 'Claude Sonnet 4', label: 'Smartest Claude', description: 'Model cân bằng hiệu năng cao của Anthropic cho phân tích và coding thực chiến.', icon: 'fa-solid fa-microchip', brandIcon: 'fas fa-robot text-amber-500', isFree: false },
+  { id: 'claude-opus-4-1-20250805', provider: 'Anthropic', name: 'Claude Opus 4.1', label: 'Deep Reasoning', description: 'Model mạnh nhất của dòng Claude, phù hợp cho bài toán suy luận đa bước phức tạp.', icon: 'fa-solid fa-scroll', brandIcon: 'fas fa-robot text-amber-500', isFree: false }
 ];
 
 export const WAREHOUSE_OPTIONS = [

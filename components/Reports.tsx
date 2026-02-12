@@ -4,6 +4,7 @@ import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
 import { generateReportInsight } from '../services/ai';
 import { useLanguageStore } from '../store/languageStore';
+import { generateUUID } from '../utils/id';
 
 interface ReportsProps {
   tables: SyncedTable[];
@@ -122,7 +123,7 @@ const Reports: React.FC<ReportsProps> = ({
             setActiveSessionId(targetSessionId);
           } else {
             // Create a new session if none exist
-            const newId = `s-${Date.now()}`;
+            const newId = generateUUID();
             targetSessionId = newId; // Update the tracking ID
             const newSession: ReportSession = {
               id: newId,
@@ -295,7 +296,7 @@ const Reports: React.FC<ReportsProps> = ({
 
     if (remaining.length === 0) {
       // If deleting the last session, reset to a fresh state
-      const newId = `s-${Date.now()}`;
+      const newId = generateUUID();
       setSessions([{
         id: newId,
         title: 'New Analysis',
@@ -517,7 +518,7 @@ const Reports: React.FC<ReportsProps> = ({
           onRenameSession={handleRenameSession}
           onDeleteSession={handleDeleteSession}
           onNewSession={() => {
-            const newId = `s-${Date.now()}`;
+            const newId = generateUUID();
             const newSession: ReportSession = {
               id: newId,
               title: 'New Analysis',

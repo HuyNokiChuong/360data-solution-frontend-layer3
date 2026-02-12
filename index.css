@@ -1,8 +1,133 @@
-/* Custom styles for 360data-solutions BI */
+/* Core typography */
 body {
     font-family: 'Outfit', 'Inter', sans-serif;
 }
 
+/* Light theme palette: cleaner contrast + premium blue accent */
+:root {
+    --light-bg: #f3f6fc;
+    --light-surface: #ffffff;
+    --light-surface-soft: #eef3fb;
+    --light-surface-strong: #e3ebf8;
+    --light-border: #d5dfef;
+    --light-border-soft: #e5ecf7;
+    --light-text-primary: #0f172a;
+    --light-text-secondary: #334155;
+    --light-text-muted: #5f6f89;
+    --light-text-soft: #8392ab;
+    --accent-600: #1f4fd6;
+    --accent-500: #2f63e8;
+    --accent-100: #dce7ff;
+    --accent-50: #ecf2ff;
+}
+
+html:not(.dark) body {
+    background-color: var(--light-bg);
+    background-image: radial-gradient(circle at 8% 0%, rgba(47, 99, 232, 0.08), transparent 38%),
+        radial-gradient(circle at 100% 100%, rgba(15, 23, 42, 0.04), transparent 34%);
+    color: var(--light-text-primary);
+}
+
+/* High-frequency utility overrides for light mode */
+html:not(.dark) .bg-white {
+    background-color: var(--light-surface);
+}
+
+html:not(.dark) .bg-white\/80 {
+    background-color: rgba(255, 255, 255, 0.88);
+}
+
+html:not(.dark) .bg-slate-50 {
+    background-color: var(--light-surface-soft);
+}
+
+html:not(.dark) .bg-slate-100 {
+    background-color: var(--light-surface-strong);
+}
+
+html:not(.dark) .bg-slate-200 {
+    background-color: #d7e1ef;
+}
+
+html:not(.dark) .text-slate-900 {
+    color: var(--light-text-primary);
+}
+
+html:not(.dark) .text-slate-700 {
+    color: var(--light-text-secondary);
+}
+
+html:not(.dark) .text-slate-600 {
+    color: var(--light-text-muted);
+}
+
+html:not(.dark) .text-slate-500,
+html:not(.dark) .text-slate-400 {
+    color: var(--light-text-soft);
+}
+
+html:not(.dark) .border-slate-100 {
+    border-color: var(--light-border-soft);
+}
+
+html:not(.dark) .border-slate-200 {
+    border-color: var(--light-border);
+}
+
+html:not(.dark) .border-slate-300 {
+    border-color: #bfccdf;
+}
+
+html:not(.dark) .bg-indigo-50 {
+    background-color: var(--accent-50);
+}
+
+html:not(.dark) .border-indigo-100 {
+    border-color: var(--accent-100);
+}
+
+html:not(.dark) .border-indigo-200 {
+    border-color: #c5d8ff;
+}
+
+html:not(.dark) .border-indigo-600 {
+    border-color: var(--accent-600);
+}
+
+html:not(.dark) .bg-indigo-600 {
+    background-color: var(--accent-600);
+}
+
+html:not(.dark) .hover\:bg-indigo-500:hover {
+    background-color: var(--accent-500);
+}
+
+html:not(.dark) .text-indigo-600,
+html:not(.dark) .text-indigo-500 {
+    color: var(--accent-600);
+}
+
+html:not(.dark) .text-indigo-400 {
+    color: #4c73e6;
+}
+
+html:not(.dark) .focus\:border-indigo-600:focus {
+    border-color: var(--accent-600);
+}
+
+html:not(.dark) .focus\:ring-indigo-600\/50:focus {
+    --tw-ring-color: rgba(31, 79, 214, 0.35);
+}
+
+html:not(.dark) .hover\:bg-slate-50:hover {
+    background-color: #eaf0fa;
+}
+
+html:not(.dark) .hover\:bg-slate-100:hover {
+    background-color: #dde7f6;
+}
+
+/* Scrollbars */
 .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -13,8 +138,21 @@ body {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.1);
+    background: rgba(15, 23, 42, 0.18);
     border-radius: 10px;
+}
+
+html:not(.dark) ::-webkit-scrollbar-track {
+    background: #e9f0fa;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb {
+    background: #b8c8df;
+    border-radius: 10px;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+    background: #9cb1cc;
 }
 
 .dark .custom-scrollbar::-webkit-scrollbar-thumb {

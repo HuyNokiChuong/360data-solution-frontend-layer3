@@ -71,7 +71,7 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
             ? widget.pivotRows
             : [];
 
-    const hasHierarchy = widget.type !== 'pivot' && hierarchy.length > 0;
+    const hasHierarchy = hierarchy.length > 0;
 
     const handleDrillUp = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -158,7 +158,7 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
                             FILTERED
                         </span>
                     )}
-                    {widget.type !== 'pivot' && drillDownState && drillDownState.breadcrumbs.length > 0 && (
+                    {drillDownState && drillDownState.breadcrumbs.length > 0 && (
                         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/5 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 max-w-[200px] truncate shrink-0">
                             <i className="fas fa-sitemap text-[8px] text-indigo-500 dark:text-indigo-400"></i>
                             <span className="text-[9px] font-black text-indigo-600 dark:text-indigo-300 uppercase tracking-tighter">

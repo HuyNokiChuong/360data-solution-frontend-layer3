@@ -23,13 +23,13 @@ const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
     onReAnalyze
 }) => {
     const [selectedProvider, setSelectedProvider] = React.useState('Google');
-    const [selectedModel, setSelectedModel] = React.useState('gemini-2.0-flash');
+    const [selectedModel, setSelectedModel] = React.useState('gemini-2.5-flash');
     const hasInitialized = React.useRef(false);
 
     React.useEffect(() => {
         if (isOpen && !analysisResult && !isLoading && !error && !hasInitialized.current && onReAnalyze) {
             hasInitialized.current = true;
-            onReAnalyze('Google', 'gemini-2.0-flash');
+            onReAnalyze('Google', 'gemini-2.5-flash');
         }
     }, [isOpen, analysisResult, isLoading, error, onReAnalyze]);
 
@@ -61,15 +61,15 @@ const AIAnalysisModal: React.FC<AIAnalysisModalProps> = ({
                                     onChange={(e) => {
                                         const p = e.target.value;
                                         setSelectedProvider(p);
-                                        if (p === 'Google') setSelectedModel('gemini-2.0-flash');
-                                        if (p === 'OpenAI') setSelectedModel('gpt-4o');
-                                        if (p === 'Anthropic') setSelectedModel('claude-3-5-sonnet-20240620');
+                                        if (p === 'Google') setSelectedModel('gemini-2.5-flash');
+                                        if (p === 'OpenAI') setSelectedModel('gpt-5.1');
+                                        if (p === 'Anthropic') setSelectedModel('claude-sonnet-4-20250514');
                                     }}
                                     className="ml-2 bg-slate-800 border border-slate-600 text-xs text-white rounded px-2 py-0.5 focus:outline-none focus:border-indigo-500"
                                 >
-                                    <option value="Google">Google (Gemini 2.0 Flash)</option>
-                                    <option value="OpenAI">OpenAI (GPT-4o)</option>
-                                    <option value="Anthropic">Anthropic (Claude 3.5)</option>
+                                    <option value="Google">Google (Gemini 2.5 Flash)</option>
+                                    <option value="OpenAI">OpenAI (GPT-5.1)</option>
+                                    <option value="Anthropic">Anthropic (Claude Sonnet 4)</option>
                                 </select>
                                 <button
                                     onClick={handleReAnalyze}

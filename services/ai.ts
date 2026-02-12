@@ -248,7 +248,7 @@ export async function generateReportInsight(
   tableNames: string[],
   options?: { token?: string, projectId?: string, signal?: AbortSignal }
 ): Promise<{ dashboard: DashboardConfig, sql: string, executionTime: number }> {
-  const activeModel = model || { id: 'gemini-2.0-flash', provider: 'Google' };
+  const activeModel = model || { id: 'gemini-2.5-flash', provider: 'Google' };
   const provider = activeModel.provider || 'Google';
   const apiKey = getApiKey(provider);
   const startTime = Date.now();
@@ -763,21 +763,21 @@ export async function analyzeDashboardContent(
   const anthropicKey = getApiKey('Anthropic');
 
   let provider = 'Google';
-  let modelId = 'gemini-2.0-flash';
+  let modelId = 'gemini-2.5-flash';
   let apiKey = geminiKey;
 
   // Prefer what's available
   if (geminiKey) {
     provider = 'Google';
-    modelId = 'gemini-2.0-flash';
+    modelId = 'gemini-2.5-flash';
     apiKey = geminiKey;
   } else if (openaiKey) {
     provider = 'OpenAI';
-    modelId = 'gpt-4o';
+    modelId = 'gpt-5.1';
     apiKey = openaiKey;
   } else if (anthropicKey) {
     provider = 'Anthropic';
-    modelId = 'claude-3-5-sonnet-20240620';
+    modelId = 'claude-sonnet-4-20250514';
     apiKey = anthropicKey;
   }
 
@@ -865,7 +865,7 @@ export async function testApiKey(provider: string, key: string): Promise<{ succe
   try {
     if (provider === 'Google') {
       const genAI = new GoogleGenerativeAI(key);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       await model.generateContent("Hi");
       return { success: true, message: "Kết nối Google Gemini thành công!" };
     } else if (provider === 'OpenAI') {
@@ -876,19 +876,13 @@ export async function testApiKey(provider: string, key: string): Promise<{ succe
       if (data.error) throw new Error(data.error.message);
       return { success: true, message: "Kết nối OpenAI thành công!" };
     } else if (provider === 'Anthropic') {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
+      const response = await fetch("https://api.anthropic.com/v1/models", {
+        method: "GET",
         headers: {
-          "Content-Type": "application/json",
           "x-api-key": key,
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 1,
-          messages: [{ role: "user", content: "Hi" }]
-        })
+        }
       });
       const data = await response.json();
       if (data.error) throw new Error(data.error.message);
@@ -914,7 +908,7 @@ export async function analyzeChartTrend(
   options?: { provider?: string, modelId?: string, signal?: AbortSignal }
 ): Promise<string> {
   const activeModel = {
-    id: options?.modelId || 'gemini-2.0-flash',
+    id: options?.modelId || 'gemini-2.5-flash',
     provider: options?.provider || 'Google'
   };
 
@@ -961,14 +955,14 @@ export async function analyzeChartTrend(
 
   try {
     if (activeModel.provider === 'OpenAI') {
-      return await callOpenAI('gpt-4o', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      return await callOpenAI(activeModel.id || 'gpt-5.1', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
     } else if (activeModel.provider === 'Anthropic') {
-      return await callAnthropic('claude-3-5-sonnet-20240620', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      return await callAnthropic(activeModel.id || 'claude-sonnet-4-20250514', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
     } else {
       const apiKey = getApiKey('Google');
       if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const model = genAI.getGenerativeModel({ model: activeModel.id || 'gemini-2.5-flash' });
 
       // Retry logic for 429 errors
       let attempts = 0;

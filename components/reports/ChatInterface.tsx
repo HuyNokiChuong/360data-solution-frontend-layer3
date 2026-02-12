@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChatMessage as ChatMessageType, SyncedTable } from '../../types';
 import { ChatMessage } from './ChatMessage';
@@ -42,13 +42,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const [input, setInput] = useState('');
     const [activeTab, setActiveTab] = useState<'analysis' | 'data'>('analysis');
     const [isSaving, setIsSaving] = useState(false);
-    const [selectedModelId, setSelectedModelId] = useState(localStorage.getItem('preferred_ai_model') || 'gemini-2.0-flash');
+    const [selectedModelId, setSelectedModelId] = useState(localStorage.getItem('preferred_ai_model') || 'gemini-2.5-flash');
     const [showModelSelector, setShowModelSelector] = useState(false);
+    const [assetSearch, setAssetSearch] = useState('');
 
     const endRef = useRef<HTMLDivElement>(null);
     const modelSelectorRef = useRef<HTMLDivElement>(null);
 
     const selectedModel = AI_MODELS.find(m => m.id === selectedModelId) || AI_MODELS[0];
+    const filteredTables = useMemo(() => {
+        const keyword = assetSearch.trim().toLowerCase();
+        if (!keyword) return availableTables;
+
+        return availableTables.filter((table) =>
+            table.tableName.toLowerCase().includes(keyword) ||
+            table.datasetName.toLowerCase().includes(keyword)
+        );
+    }, [availableTables, assetSearch]);
 
     useEffect(() => {
         if (activeTab === 'analysis') {
@@ -308,8 +318,33 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 )}
                             </div>
 
+                            <div className="mb-8">
+                                <div className="relative max-w-md">
+                                    <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                                    <input
+                                        type="text"
+                                        value={assetSearch}
+                                        onChange={(e) => setAssetSearch(e.target.value)}
+                                        placeholder="Search pipeline or table name..."
+                                        className="w-full bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-white/10 rounded-xl pl-10 pr-10 py-3 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all"
+                                    />
+                                    {assetSearch && (
+                                        <button
+                                            onClick={() => setAssetSearch('')}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
+                                            title="Clear search"
+                                        >
+                                            <i className="fas fa-times text-xs"></i>
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                                    Showing {filteredTables.length}/{availableTables.length} tables
+                                </div>
+                            </div>
+
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                {availableTables.map((table) => {
+                                {filteredTables.map((table) => {
                                     const isSelected = selectedTableIds.includes(table.id);
                                     return (
                                         <div
@@ -356,6 +391,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                     <div className="text-slate-700 text-4xl mb-4"><i className="fas fa-database"></i></div>
                                     <h5 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em]">No Data Assets Synced Yet</h5>
                                     <p className="text-[9px] text-slate-500 dark:text-slate-600 mt-2 font-bold uppercase">Please connect to a source in the Data Pipeline section.</p>
+                                </div>
+                            )}
+
+                            {availableTables.length > 0 && filteredTables.length === 0 && (
+                                <div className="text-center py-16 bg-slate-900/20 rounded-3xl border border-dashed border-slate-300 dark:border-white/10 mt-4">
+                                    <div className="text-slate-500 text-3xl mb-3"><i className="fas fa-search"></i></div>
+                                    <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">No Matching Table</h5>
+                                    <p className="text-[9px] text-slate-500 mt-2 font-bold uppercase">Try pipeline (dataset) or table name keywords.</p>
                                 </div>
                             )}
                         </div>

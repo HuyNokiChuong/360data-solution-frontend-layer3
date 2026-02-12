@@ -203,6 +203,10 @@ export interface ConditionalFormat {
     condition: 'greater' | 'less' | 'equal' | 'between' | 'contains';
     value: any;
     value2?: any; // For 'between'
+    compareMode?: 'literal' | 'field';
+    compareField?: string;
+    compareAggregation?: AggregationType;
+    compareScope?: 'cell' | 'rowTotal' | 'columnTotal' | 'grandTotal';
     backgroundColor?: string;
     textColor?: string;
     icon?: string;
