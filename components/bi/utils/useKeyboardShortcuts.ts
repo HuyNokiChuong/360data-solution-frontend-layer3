@@ -12,6 +12,7 @@ interface KeyboardShortcutsProps {
     onDuplicate?: () => void;
     onCopy?: () => void;
     onPaste?: () => void;
+    onCut?: () => void;
     onDeselect?: () => void;
 }
 
@@ -26,6 +27,7 @@ export const useKeyboardShortcuts = ({
     onDuplicate,
     onCopy,
     onPaste,
+    onCut,
     onDeselect
 }: KeyboardShortcutsProps) => {
     const { activeDashboardId, editingWidgetId, selectedWidgetIds, undo, redo, canUndo, canRedo } = useDashboardStore();
@@ -72,6 +74,17 @@ export const useKeyboardShortcuts = ({
             return;
         }
 
+        // Redo (Windows style): Ctrl/Cmd + Y
+        if (isCtrlOrCmd && event.key.toLowerCase() === 'y') {
+            event.preventDefault();
+            if (onRedo) {
+                onRedo();
+            } else if (canRedo()) {
+                redo();
+            }
+            return;
+        }
+
         // Copy: Ctrl/Cmd + C
         if (isCtrlOrCmd && event.key.toLowerCase() === 'c') {
             // Only copy if something is selected
@@ -88,6 +101,15 @@ export const useKeyboardShortcuts = ({
             if (onPaste) {
                 event.preventDefault();
                 onPaste();
+            }
+            return;
+        }
+
+        // Cut: Ctrl/Cmd + X
+        if (isCtrlOrCmd && event.key.toLowerCase() === 'x') {
+            if (selectedWidgetIds.length > 0 || editingWidgetId) {
+                event.preventDefault();
+                if (onCut) onCut();
             }
             return;
         }
@@ -149,6 +171,7 @@ export const useKeyboardShortcuts = ({
         onDuplicate,
         onCopy,
         onPaste,
+        onCut,
         onDeselect,
         undo,
         redo,

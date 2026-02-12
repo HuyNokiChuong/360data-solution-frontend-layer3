@@ -425,6 +425,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         const pageId = `pg-${Date.now()}`;
         const newDashboard: BIDashboard = {
             ...dashboard,
+            enableCrossFilter: dashboard.enableCrossFilter ?? true,
             id: `d-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -563,6 +564,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
     addWidget: (dashboardId, widget) => {
         const newWidget: BIWidget = {
+            enableCrossFilter: true,
             showLegend: true,
             legendPosition: 'bottom',
             showGrid: true,

@@ -64,7 +64,7 @@ router.post('/', async (req, res) => {
                 description,
                 dataSourceId,
                 dataSourceName,
-                enableCrossFilter || false,
+                enableCrossFilter ?? true,
                 JSON.stringify(defaultPages),
                 JSON.stringify(widgets || []),
                 activePageId || defaultPages[0]?.id || pageId,

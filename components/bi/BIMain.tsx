@@ -745,6 +745,14 @@ const BIMain: React.FC<BIMainProps> = ({
         onUngroup: ungroupWidgets,
         onCopy: () => useDashboardStore.getState().copySelectedWidgets(),
         onPaste: () => useDashboardStore.getState().pasteWidgets(),
+        onCut: () => {
+            if (!activeDashboard) return;
+            const idsToCut = [...new Set([...selectedWidgetIds, ...(editingWidgetId ? [editingWidgetId] : [])])];
+            if (idsToCut.length === 0) return;
+            useDashboardStore.getState().copySelectedWidgets();
+            idsToCut.forEach(id => deleteWidget(activeDashboard.id, id));
+            clearSelection();
+        },
     });
 
     useEffect(() => {
@@ -1156,7 +1164,7 @@ const BIMain: React.FC<BIMainProps> = ({
         } else if (type === 'table') {
             newWidget = { type: 'table', title: 'New Table', x: 0, y: Infinity, w: 6, h: 4, enableCrossFilter: true };
         } else if (type === 'gauge') {
-            newWidget = { type: 'gauge', title: 'New Gauge', x: 0, y: Infinity, w: 3, h: 3, enableCrossFilter: false };
+            newWidget = { type: 'gauge', title: 'New Gauge', x: 0, y: Infinity, w: 3, h: 3, enableCrossFilter: true };
         } else if (type === 'slicer') {
             newWidget = { type: 'slicer', title: 'Filter', x: 0, y: Infinity, w: 3, h: 4, slicerMode: 'list', multiSelect: true, enableCrossFilter: false };
         } else if (type === 'date-range') {
@@ -1164,7 +1172,7 @@ const BIMain: React.FC<BIMainProps> = ({
         } else if (type === 'search') {
             newWidget = { type: 'search', title: 'Search', x: 0, y: Infinity, w: 4, h: 2, enableCrossFilter: false };
         } else if (type === 'pivot') {
-            newWidget = { type: 'pivot', title: 'Pivot Table', x: 0, y: Infinity, w: 12, h: 6, pivotRows: [], pivotCols: [], pivotValues: [] };
+            newWidget = { type: 'pivot', title: 'Pivot Table', x: 0, y: Infinity, w: 12, h: 6, pivotRows: [], pivotCols: [], pivotValues: [], enableCrossFilter: true };
         } else {
             newWidget = {
                 type: 'chart',
