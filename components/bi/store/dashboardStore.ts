@@ -86,6 +86,47 @@ interface DashboardState {
 
 const getStorageKey = (domain: string | null) => domain ? `${domain}_bi_dashboard_data` : 'bi_dashboard_data';
 
+const normalizeSharePermission = (value: unknown): SharePermission['permission'] => {
+    const raw = String(value || '').trim().toLowerCase();
+    if (raw === 'admin' || raw === 'owner') return 'admin';
+    if (raw === 'edit' || raw === 'editor' || raw === 'write') return 'edit';
+    return 'view';
+};
+
+const sanitizeSharePermissions = (permissions: any): SharePermission[] => {
+    if (!Array.isArray(permissions)) return [];
+    const dedup = new Map<string, SharePermission>();
+
+    permissions.forEach((item) => {
+        const userId = String(item?.userId || '').trim();
+        if (!userId) return;
+        const key = userId.toLowerCase();
+        const allowedPageIds = Array.isArray(item?.allowedPageIds)
+            ? Array.from(new Set(item.allowedPageIds.map((id: any) => String(id || '').trim()).filter(Boolean)))
+            : undefined;
+        const rls = item?.rls && typeof item.rls === 'object' ? item.rls : undefined;
+        dedup.set(key, {
+            userId,
+            permission: normalizeSharePermission(item?.permission),
+            sharedAt: item?.sharedAt || new Date().toISOString(),
+            allowedPageIds,
+            rls,
+        });
+    });
+
+    return Array.from(dedup.values());
+};
+
+const sanitizeFolder = (folder: BIFolder): BIFolder => ({
+    ...folder,
+    sharedWith: sanitizeSharePermissions(folder?.sharedWith),
+});
+
+const sanitizeDashboard = (dashboard: BIDashboard): BIDashboard => ({
+    ...dashboard,
+    sharedWith: sanitizeSharePermissions(dashboard?.sharedWith),
+});
+
 const saveToStorage = (state: DashboardState) => {
     if (!state.isHydrated || !state.domain) {
         // console.warn('Sync skipped: Store not hydrated or domain missing');
@@ -406,8 +447,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     shareFolder: (id, permissions) => {
+        const normalizedPermissions = sanitizeSharePermissions(permissions);
+        const prevFolders = get().folders;
         set((state) => ({
-            folders: state.folders.map(f => f.id === id ? { ...f, sharedWith: permissions } : f)
+            folders: state.folders.map(f => f.id === id ? { ...f, sharedWith: normalizedPermissions } : f)
         }));
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
@@ -415,8 +458,19 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             fetch(`${API_BASE}/folders/${id}/share`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ permissions })
-            }).catch(console.error);
+                body: JSON.stringify({ permissions: normalizedPermissions })
+            })
+                .then(async (res) => {
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data?.success === false) {
+                        throw new Error(data?.message || 'Failed to share folder');
+                    }
+                })
+                .catch((err) => {
+                    console.error(err);
+                    set({ folders: prevFolders });
+                    alert(err?.message || 'Failed to share folder');
+                });
         }
         saveToStorage(get());
     },
@@ -510,9 +564,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     shareDashboard: (id, permissions) => {
+        const normalizedPermissions = sanitizeSharePermissions(permissions);
+        const prevDashboards = get().dashboards;
         set((state) => ({
             dashboards: state.dashboards.map(d =>
-                d.id === id ? { ...d, sharedWith: permissions, updatedAt: new Date().toISOString() } : d
+                d.id === id ? { ...d, sharedWith: normalizedPermissions, updatedAt: new Date().toISOString() } : d
             )
         }));
         // Sync to Backend
@@ -521,8 +577,19 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             fetch(`${API_BASE}/dashboards/${id}/share`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ permissions })
-            }).catch(console.error);
+                body: JSON.stringify({ permissions: normalizedPermissions })
+            })
+                .then(async (res) => {
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data?.success === false) {
+                        throw new Error(data?.message || 'Failed to share dashboard');
+                    }
+                })
+                .catch((err) => {
+                    console.error(err);
+                    set({ dashboards: prevDashboards });
+                    alert(err?.message || 'Failed to share dashboard');
+                });
         }
         saveToStorage(get());
     },
@@ -928,6 +995,36 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         try {
             const storageKey = getStorageKey(domain);
             const data = localStorage.getItem(storageKey);
+            const token = localStorage.getItem('auth_token');
+
+            const syncFromBackend = (preferredActiveDashboardId: string | null) => {
+                if (!token) return;
+                Promise.all([
+                    fetch(`${API_BASE}/folders`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()),
+                    fetch(`${API_BASE}/dashboards`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json())
+                ]).then(([folderRes, dashboardRes]) => {
+                    if (folderRes.success && dashboardRes.success) {
+                        const nextFolders = (folderRes.data || []).map(sanitizeFolder);
+                        const nextDashboards = (dashboardRes.data || []).map(sanitizeDashboard);
+                        set((state) => {
+                            const activeFromState = state.activeDashboardId;
+                            const activeDashboardId = nextDashboards.some((d) => d.id === activeFromState)
+                                ? activeFromState
+                                : (nextDashboards.some((d) => d.id === preferredActiveDashboardId)
+                                    ? preferredActiveDashboardId
+                                    : (nextDashboards[0]?.id || null));
+                            return {
+                                folders: nextFolders,
+                                dashboards: nextDashboards,
+                                activeDashboardId,
+                                history: [nextDashboards],
+                                historyIndex: 0,
+                                isHydrated: true
+                            };
+                        });
+                    }
+                }).catch(console.error);
+            };
 
             if (data) {
                 const parsed = JSON.parse(data);
@@ -945,7 +1042,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                         };
                     }
                     return d;
-                });
+                }).map(sanitizeDashboard);
+                const migratedFolders = (parsed.folders || []).map(sanitizeFolder);
 
                 // Ensure activeDashboardId is valid, or pick the first one if one exists
                 const activeDashboardId = migratedDashboards.some(d => d.id === savedActiveDashboardId)
@@ -953,7 +1051,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     : (migratedDashboards.length > 0 ? migratedDashboards[0].id : null);
 
                 set({
-                    folders: parsed.folders || [],
+                    folders: migratedFolders,
                     dashboards: migratedDashboards,
                     activeDashboardId,
                     history: [migratedDashboards],
@@ -965,22 +1063,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     isHydrated: true
                 });
 
-                // Sync from Backend
-                const token = localStorage.getItem('auth_token');
-                if (token) {
-                    Promise.all([
-                        fetch(`${API_BASE}/folders`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()),
-                        fetch(`${API_BASE}/dashboards`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json())
-                    ]).then(([folderRes, dashboardRes]) => {
-                        if (folderRes.success && dashboardRes.success) {
-                            set({
-                                folders: folderRes.data,
-                                dashboards: dashboardRes.data,
-                                isHydrated: true
-                            });
-                        }
-                    }).catch(console.error);
-                }
+                syncFromBackend(activeDashboardId);
                 // console.log(`✅ Loaded ${migratedDashboards.length} dashboards for domain ${domain}`);
             } else {
                 set({
@@ -992,6 +1075,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                     history: [[]],
                     historyIndex: 0
                 });
+                syncFromBackend(null);
                 // console.log(`ℹ️ No dashboards found for domain ${domain}`);
             }
         } catch (e) {

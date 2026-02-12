@@ -17,6 +17,7 @@ interface BISidebarProps {
     folders: BIFolder[];
     dashboards: BIDashboard[];
     currentUserId: string;
+    currentUserEmail?: string;
     activeDashboardId: string | null;
     onSelectDashboard: (id: string) => void;
     onCreateFolder: (name: string, parentId?: string) => void;
@@ -274,6 +275,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
     folders,
     dashboards,
     currentUserId,
+    currentUserEmail,
     activeDashboardId,
     onSelectDashboard,
     onCreateFolder,
@@ -296,12 +298,23 @@ const BISidebar: React.FC<BISidebarProps> = ({
     const [shareModalData, setShareModalData] = useState<{ isOpen: boolean; type: 'folder' | 'dashboard'; id: string; name: string; permissions: SharePermission[]; dashboard?: BIDashboard; folderDashboards?: BIDashboard[] } | null>(null);
     const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
 
+    const normalizeIdentity = (value?: string) => String(value || '').trim().toLowerCase();
+    const isCurrentUser = (value?: string) => {
+        const candidate = normalizeIdentity(value);
+        if (!candidate) return false;
+        return candidate === normalizeIdentity(currentUserId) || candidate === normalizeIdentity(currentUserEmail);
+    };
+    const getPermissionForCurrentUser = (sharedWith?: SharePermission[]) => {
+        if (!Array.isArray(sharedWith)) return undefined;
+        return sharedWith.find((p) => isCurrentUser(p.userId))?.permission;
+    };
+
 
     const renderFolderContent = (folder: BIFolder, depth = 0) => {
         const folderDashboards = dashboards.filter(d => d.folderId === folder.id);
         const subFolders = folders.filter(f => f.parentId === folder.id);
         const isOpen = expandedFolders.has(folder.id);
-        const folderPermission = folder.sharedWith?.find(p => p.userId === currentUserId)?.permission || ((folder.createdBy === currentUserId || !folder.createdBy) ? 'admin' : 'view');
+        const folderPermission = getPermissionForCurrentUser(folder.sharedWith) || ((isCurrentUser(folder.createdBy) || !folder.createdBy) ? 'admin' : 'view');
         const canEditFolder = folderPermission === 'admin' || folderPermission === 'edit';
         const canShareFolder = folderPermission === 'admin';
 
@@ -371,8 +384,8 @@ const BISidebar: React.FC<BISidebarProps> = ({
                 onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [], dashboard: d })}
                         onStartRename={() => { setEditingDashboardId(d.id); setEditValue(d.title); }}
                         onCancelRename={() => setEditingDashboardId(null)}
-                        canEdit={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || d.createdBy === currentUserId}
-                        canShare={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.createdBy === currentUserId}
+                        canEdit={getPermissionForCurrentUser(d.sharedWith) === 'admin' || getPermissionForCurrentUser(d.sharedWith) === 'edit' || isCurrentUser(d.createdBy)}
+                        canShare={getPermissionForCurrentUser(d.sharedWith) === 'admin' || isCurrentUser(d.createdBy)}
                     />
                 ))}
                 {isCreatingFolder === folder.id && (
@@ -494,8 +507,8 @@ const BISidebar: React.FC<BISidebarProps> = ({
                                                 onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [], dashboard: d })}
                                                 onStartRename={() => { setEditingDashboardId(d.id); setEditValue(d.title); }}
                                                 onCancelRename={() => setEditingDashboardId(null)}
-                                                canEdit={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || d.createdBy === currentUserId}
-                                                canShare={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.createdBy === currentUserId}
+                                                canEdit={getPermissionForCurrentUser(d.sharedWith) === 'admin' || getPermissionForCurrentUser(d.sharedWith) === 'edit' || isCurrentUser(d.createdBy)}
+                                                canShare={getPermissionForCurrentUser(d.sharedWith) === 'admin' || isCurrentUser(d.createdBy)}
                                             />
                                         ))}
                                     </div>

@@ -25,6 +25,7 @@ interface DashboardToolbarProps {
     onStopAllJobs?: () => void;
     isSyncing?: boolean;
     currentUserId?: string;
+    currentUserEmail?: string;
 }
 
 const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
@@ -45,7 +46,8 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     onAlign,
     onStopAllJobs,
     isSyncing = false,
-    currentUserId
+    currentUserId,
+    currentUserEmail
 }) => {
     const { t } = useLanguageStore();
     const {
@@ -76,6 +78,13 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     const [reloadMode, setReloadMode] = useState<'interval' | 'cron'>(typeof autoReloadInterval === 'string' && autoReloadInterval.includes(' ') ? 'cron' : 'interval');
     const [nextReloadIn, setNextReloadIn] = useState<number | null>(null);
     const settingsRef = useRef<HTMLDivElement>(null);
+    const normalizeIdentity = (value?: string) => String(value || '').trim().toLowerCase();
+    const isCurrentUser = (value?: string) => {
+        const candidate = normalizeIdentity(value);
+        if (!candidate) return false;
+        return candidate === normalizeIdentity(currentUserId) || candidate === normalizeIdentity(currentUserEmail);
+    };
+    const currentPermission = dashboard?.sharedWith?.find((p) => isCurrentUser(p.userId))?.permission;
 
     // Click outside to close settings
     useEffect(() => {
@@ -199,10 +208,10 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                                     (e.target as HTMLInputElement).blur();
                                 }
                             }}
-                            disabled={dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission !== 'admin' && dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission !== 'edit' && dashboard.createdBy !== currentUserId}
+                            disabled={currentPermission !== 'admin' && currentPermission !== 'edit' && !isCurrentUser(dashboard.createdBy)}
                             className="bg-transparent border-none text-lg font-bold text-slate-900 dark:text-white outline-none focus:ring-0 min-w-[200px] hover:bg-slate-50 dark:hover:bg-white/5 disabled:hover:bg-transparent rounded px-2 -ml-2 transition-colors focus:bg-slate-100 dark:focus:bg-white/10"
                         />
-                        {(dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || dashboard.createdBy === currentUserId) && (
+                        {(currentPermission === 'admin' || currentPermission === 'edit' || isCurrentUser(dashboard.createdBy)) && (
                             <button
                                 className="ml-2 text-slate-500 hover:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Edit Title"
@@ -355,7 +364,7 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                 <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
 
                 <div className="flex items-center gap-2">
-                    {(dashboard.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || dashboard.createdBy === currentUserId) && (
+                    {(currentPermission === 'admin' || isCurrentUser(dashboard.createdBy)) && (
                         <button
                             onClick={() => setIsShareModalOpen(true)}
                             className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"

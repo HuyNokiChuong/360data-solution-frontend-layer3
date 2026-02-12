@@ -1254,6 +1254,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                 folders={folders}
                                 dashboards={dashboards}
                                 currentUserId={currentUser.id}
+                                currentUserEmail={currentUser.email}
                                 activeDashboardId={activeDashboardId}
                                 onSelectDashboard={setActiveDashboard}
                                 onCreateFolder={handleCreateFolder}
@@ -1298,6 +1299,7 @@ const BIMain: React.FC<BIMainProps> = ({
                             <DashboardToolbar
                                 dashboardId={activeDashboard.id}
                                 currentUserId={currentUser.id}
+                                currentUserEmail={currentUser.email}
                                 onExport={handleExport}
                                 onToggleVisualBuilder={() => setRightPanelOpen(!rightPanelOpen)}
                                 isVisualBuilderOpen={rightPanelOpen}

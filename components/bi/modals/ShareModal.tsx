@@ -106,6 +106,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     onClose,
     title,
     itemType,
+    permissions,
     dashboard,
     folderDashboards,
     onSave,
@@ -119,9 +120,57 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     const [dashboardRLS, setDashboardRLS] = useState<Record<string, DashboardRLSConfig>>({});
     const [confirmedDashboardIds, setConfirmedDashboardIds] = useState<Set<string>>(new Set());
     const [activeDashboardId, setActiveDashboardId] = useState<string>('');
+    const [viewMode, setViewMode] = useState<'manage' | 'overview'>('manage');
 
     const dashboards = useMemo(() => (itemType === 'dashboard' ? (dashboard ? [dashboard] : []) : (folderDashboards || [])), [itemType, dashboard, folderDashboards]);
     const dashboardById = useMemo(() => new Map(dashboards.map((d) => [d.id, d])), [dashboards]);
+    const sharedResources = useMemo(() => {
+        const dedupeShares = (shares: SharePermission[] = []) => {
+            const byEmail = new Map<string, SharePermission>();
+            shares.forEach((share) => {
+                const email = String(share?.userId || '').trim();
+                if (!email) return;
+                byEmail.set(email.toLowerCase(), { ...share, userId: email });
+            });
+            return Array.from(byEmail.values()).sort((a, b) => String(a.userId).localeCompare(String(b.userId)));
+        };
+
+        if (itemType === 'dashboard') {
+            return [{
+                resourceType: 'dashboard' as const,
+                resourceId: dashboard?.id || 'dashboard-root',
+                resourceLabel: dashboard?.title || title,
+                shares: dedupeShares(permissions || []),
+            }];
+        }
+
+        return [
+            {
+                resourceType: 'folder' as const,
+                resourceId: 'folder-root',
+                resourceLabel: title,
+                shares: dedupeShares(permissions || []),
+            },
+            ...dashboards.map((d) => ({
+                resourceType: 'dashboard' as const,
+                resourceId: d.id,
+                resourceLabel: d.title,
+                shares: dedupeShares(d.sharedWith || []),
+            })),
+        ];
+    }, [itemType, permissions, dashboards, dashboard?.id, dashboard?.title, title]);
+
+    const permissionBadgeClass = (permission: SharePermission['permission']) => {
+        if (permission === 'admin') return 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+        if (permission === 'edit') return 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+        return 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30';
+    };
+
+    const permissionLabel = (permission: SharePermission['permission']) => {
+        if (permission === 'admin') return t('share.admin');
+        if (permission === 'edit') return t('share.editor');
+        return t('share.viewer');
+    };
 
     useEffect(() => {
         if (!isOpen) return;
@@ -142,6 +191,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         setGranularRoles(roles);
         setDashboardRLS(rlsMap);
         setConfirmedDashboardIds(new Set());
+        setViewMode('manage');
         if (!dashboards.length) setActiveDashboardId('');
     }, [isOpen, itemType, dashboards]);
 
@@ -237,157 +287,223 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                     </button>
                 </div>
 
-                <div className="px-8 pt-6">
-                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] pb-2">{t('share.user_email')}</label>
-                    <div className="relative">
-                        <input
-                            autoFocus
-                            type="email"
-                            value={email}
-                            onChange={(e) => {
-                                setEmail(e.target.value);
-                                setIsEmailSuggestionOpen(true);
-                            }}
-                            onFocus={() => setIsEmailSuggestionOpen(true)}
-                            onBlur={() => {
-                                setTimeout(() => setIsEmailSuggestionOpen(false), 120);
-                            }}
-                            placeholder={t('share.email_placeholder')}
-                            className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-base font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600"
-                        />
+                <div className="px-8 pt-4">
+                    <div className="inline-flex rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 p-1">
+                        <button
+                            type="button"
+                            onClick={() => setViewMode('manage')}
+                            className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${viewMode === 'manage' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'}`}
+                        >
+                            Manage Access
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setViewMode('overview')}
+                            className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${viewMode === 'overview' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'}`}
+                        >
+                            Shared List
+                        </button>
+                    </div>
+                </div>
 
-                        {isEmailSuggestionOpen && filteredSuggestions.length > 0 && (
-                            <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
-                                {filteredSuggestions.map((suggestion) => (
-                                    <button
-                                        key={suggestion}
-                                        type="button"
-                                        onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            setEmail(suggestion);
-                                            setIsEmailSuggestionOpen(false);
-                                        }}
-                                        className="w-full text-left px-4 py-3 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5"
-                                    >
-                                        {suggestion}
-                                    </button>
+                {viewMode === 'manage' ? (
+                    <>
+                        <div className="px-8 pt-6">
+                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] pb-2">{t('share.user_email')}</label>
+                            <div className="relative">
+                                <input
+                                    autoFocus
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => {
+                                        setEmail(e.target.value);
+                                        setIsEmailSuggestionOpen(true);
+                                    }}
+                                    onFocus={() => setIsEmailSuggestionOpen(true)}
+                                    onBlur={() => {
+                                        setTimeout(() => setIsEmailSuggestionOpen(false), 120);
+                                    }}
+                                    placeholder={t('share.email_placeholder')}
+                                    className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-base font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600"
+                                />
+
+                                {isEmailSuggestionOpen && filteredSuggestions.length > 0 && (
+                                    <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
+                                        {filteredSuggestions.map((suggestion) => (
+                                            <button
+                                                key={suggestion}
+                                                type="button"
+                                                onMouseDown={(e) => {
+                                                    e.preventDefault();
+                                                    setEmail(suggestion);
+                                                    setIsEmailSuggestionOpen(false);
+                                                }}
+                                                className="w-full text-left px-4 py-3 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5"
+                                            >
+                                                {suggestion}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="p-8 grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0 overflow-hidden">
+                            <div className="min-h-0 flex flex-col bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden">
+                                <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500">{t('share.resource_name_purpose')}</div>
+                                <div className="overflow-y-auto divide-y divide-slate-200 dark:divide-white/5">
+                                    {itemType === 'folder' && (
+                                        <div className="px-5 py-4 flex items-center justify-between gap-3 bg-amber-50/80 dark:bg-amber-500/10 border-y border-amber-200/80 dark:border-amber-500/20">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-300 flex items-center justify-center">
+                                                    <i className="fas fa-folder text-xs"></i>
+                                                </div>
+                                                <div>
+                                                    <div className="text-sm font-black text-slate-900 dark:text-white">
+                                                        {title}
+                                                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/20 text-[9px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-200">
+                                                            {t('share.folder')}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-[10px] text-amber-700/90 dark:text-amber-200/80 uppercase font-bold">{t('share.container_access')}</div>
+                                                </div>
+                                            </div>
+                                            <select value={granularRoles.folder || 'none'} onChange={(e) => handleRoleChange('folder', e.target.value as any)} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold">
+                                                <option value="none">{t('share.dont_share')}</option>
+                                                <option value="view">{t('share.viewer')}</option>
+                                                <option value="edit">{t('share.editor')}</option>
+                                                <option value="admin">{t('share.admin')}</option>
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    {(itemType === 'dashboard' ? dashboards : dashboards).map((d) => {
+                                        const rowKey = itemType === 'dashboard' ? 'dashboard' : d.id;
+                                        const isActive = selectedDashboard?.id === d.id;
+                                        const configured = confirmedDashboardIds.has(d.id);
+
+                                        return (
+                                            <button
+                                                key={d.id}
+                                                type="button"
+                                                onClick={() => setActiveDashboardId(d.id)}
+                                                className={`w-full text-left px-5 py-4 flex items-center justify-between gap-3 ${isActive ? 'bg-indigo-50 dark:bg-indigo-600/10' : 'hover:bg-slate-100 dark:hover:bg-white/5'}`}
+                                            >
+                                                <div>
+                                                    <div className="text-sm font-bold text-slate-900 dark:text-white">{d.title}</div>
+                                                    <div className="text-[10px] text-slate-500 uppercase font-bold">{t('share.dashboard')}</div>
+                                                    {itemType === 'folder' && granularRoles[d.id] !== 'none' && (
+                                                        <div className={`text-[10px] mt-1 font-bold uppercase ${configured ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                                            {configured ? t('share.configured') : t('share.not_configured')}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <select
+                                                    value={granularRoles[rowKey] || 'none'}
+                                                    onChange={(e) => {
+                                                        e.stopPropagation();
+                                                        handleRoleChange(rowKey, e.target.value as any);
+                                                    }}
+                                                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold"
+                                                >
+                                                    <option value="none">{t('share.dont_share')}</option>
+                                                    <option value="view">{t('share.viewer')}</option>
+                                                    <option value="edit">{t('share.editor')}</option>
+                                                    <option value="admin">{t('share.admin')}</option>
+                                                </select>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {selectedDashboard ? (
+                                <RLSConfigPanel
+                                    dashboard={selectedDashboard}
+                                    role={(granularRoles[selectedRoleKey] || 'none') as any}
+                                    config={dashboardRLS[selectedDashboard.id] || createDefaultConfig(selectedDashboard)}
+                                    fields={getDashboardFields(
+                                        selectedDashboard,
+                                        dataSources,
+                                        dashboardRLS[selectedDashboard.id]?.allowedPageIds
+                                    )}
+                                    isConfirmed={confirmedDashboardIds.has(selectedDashboard.id)}
+                                    onChange={(nextConfig) => {
+                                        setDashboardRLS((prev) => ({ ...prev, [selectedDashboard.id]: nextConfig }));
+                                        setConfirmedDashboardIds((prev) => {
+                                            const next = new Set(prev);
+                                            next.delete(selectedDashboard.id);
+                                            return next;
+                                        });
+                                    }}
+                                    onConfirm={() => {
+                                        setConfirmedDashboardIds((prev) => {
+                                            const next = new Set(prev);
+                                            next.add(selectedDashboard.id);
+                                            return next;
+                                        });
+                                    }}
+                                />
+                            ) : (
+                                <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-sm text-slate-500">{t('share.no_dashboard_available')}</div>
+                            )}
+                        </div>
+                    </>
+                ) : (
+                    <div className="p-8 flex-1 min-h-0 overflow-hidden">
+                        <div className="h-full rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/20 overflow-hidden flex flex-col">
+                            <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                                Current Shares For This Resource
+                            </div>
+                            <div className="flex-1 overflow-y-auto divide-y divide-slate-200 dark:divide-white/5">
+                                {sharedResources.every((resource) => resource.shares.length === 0) ? (
+                                    <div className="h-full flex items-center justify-center text-sm text-slate-500">
+                                        This resource is not shared with anyone yet.
+                                    </div>
+                                ) : sharedResources.map((resource) => (
+                                    <div key={`${resource.resourceType}-${resource.resourceId}`} className="px-5 py-4">
+                                        <div className="flex items-center gap-2">
+                                            <div className="text-sm font-black text-slate-900 dark:text-white">{resource.resourceLabel}</div>
+                                            <span className="px-2 py-0.5 rounded-md bg-slate-200/70 dark:bg-white/10 text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">
+                                                {resource.resourceType === 'folder' ? t('share.folder') : t('share.dashboard')}
+                                            </span>
+                                        </div>
+
+                                        {resource.shares.length === 0 ? (
+                                            <div className="mt-2 text-xs text-slate-500">No shared users.</div>
+                                        ) : (
+                                            <div className="mt-3 space-y-2">
+                                                {resource.shares.map((share) => (
+                                                    <div key={`${resource.resourceId}-${share.userId}`} className="rounded-xl border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-slate-900/60 px-3 py-2 flex items-center justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-sm font-bold text-slate-900 dark:text-white truncate">{share.userId}</div>
+                                                        </div>
+                                                        <span className={`px-3 py-1 rounded-full text-[10px] uppercase tracking-widest font-black ${permissionBadgeClass(share.permission)}`}>
+                                                            {permissionLabel(share.permission)}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
                                 ))}
                             </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="p-8 grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0 overflow-hidden">
-                    <div className="min-h-0 flex flex-col bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden">
-                        <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500">{t('share.resource_name_purpose')}</div>
-                        <div className="overflow-y-auto divide-y divide-slate-200 dark:divide-white/5">
-                            {itemType === 'folder' && (
-                                <div className="px-5 py-4 flex items-center justify-between gap-3 bg-amber-50/80 dark:bg-amber-500/10 border-y border-amber-200/80 dark:border-amber-500/20">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-300 flex items-center justify-center">
-                                            <i className="fas fa-folder text-xs"></i>
-                                        </div>
-                                        <div>
-                                            <div className="text-sm font-black text-slate-900 dark:text-white">
-                                                {title}
-                                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/20 text-[9px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-200">
-                                                    {t('share.folder')}
-                                                </span>
-                                            </div>
-                                            <div className="text-[10px] text-amber-700/90 dark:text-amber-200/80 uppercase font-bold">{t('share.container_access')}</div>
-                                        </div>
-                                    </div>
-                                    <select value={granularRoles.folder || 'none'} onChange={(e) => handleRoleChange('folder', e.target.value as any)} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold">
-                                        <option value="none">{t('share.dont_share')}</option>
-                                        <option value="view">{t('share.viewer')}</option>
-                                        <option value="edit">{t('share.editor')}</option>
-                                        <option value="admin">{t('share.admin')}</option>
-                                    </select>
-                                </div>
-                            )}
-
-                            {(itemType === 'dashboard' ? dashboards : dashboards).map((d) => {
-                                const rowKey = itemType === 'dashboard' ? 'dashboard' : d.id;
-                                const isActive = selectedDashboard?.id === d.id;
-                                const configured = confirmedDashboardIds.has(d.id);
-
-                                return (
-                                    <button
-                                        key={d.id}
-                                        type="button"
-                                        onClick={() => setActiveDashboardId(d.id)}
-                                        className={`w-full text-left px-5 py-4 flex items-center justify-between gap-3 ${isActive ? 'bg-indigo-50 dark:bg-indigo-600/10' : 'hover:bg-slate-100 dark:hover:bg-white/5'}`}
-                                    >
-                                        <div>
-                                            <div className="text-sm font-bold text-slate-900 dark:text-white">{d.title}</div>
-                                            <div className="text-[10px] text-slate-500 uppercase font-bold">{t('share.dashboard')}</div>
-                                            {itemType === 'folder' && granularRoles[d.id] !== 'none' && (
-                                                <div className={`text-[10px] mt-1 font-bold uppercase ${configured ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                                    {configured ? t('share.configured') : t('share.not_configured')}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <select
-                                            value={granularRoles[rowKey] || 'none'}
-                                            onChange={(e) => {
-                                                e.stopPropagation();
-                                                handleRoleChange(rowKey, e.target.value as any);
-                                            }}
-                                            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold"
-                                        >
-                                            <option value="none">{t('share.dont_share')}</option>
-                                            <option value="view">{t('share.viewer')}</option>
-                                            <option value="edit">{t('share.editor')}</option>
-                                            <option value="admin">{t('share.admin')}</option>
-                                        </select>
-                                    </button>
-                                );
-                            })}
                         </div>
                     </div>
-
-                    {selectedDashboard ? (
-                        <RLSConfigPanel
-                            dashboard={selectedDashboard}
-                            role={(granularRoles[selectedRoleKey] || 'none') as any}
-                            config={dashboardRLS[selectedDashboard.id] || createDefaultConfig(selectedDashboard)}
-                            fields={getDashboardFields(
-                                selectedDashboard,
-                                dataSources,
-                                dashboardRLS[selectedDashboard.id]?.allowedPageIds
-                            )}
-                            isConfirmed={confirmedDashboardIds.has(selectedDashboard.id)}
-                            onChange={(nextConfig) => {
-                                setDashboardRLS((prev) => ({ ...prev, [selectedDashboard.id]: nextConfig }));
-                                setConfirmedDashboardIds((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(selectedDashboard.id);
-                                    return next;
-                                });
-                            }}
-                            onConfirm={() => {
-                                setConfirmedDashboardIds((prev) => {
-                                    const next = new Set(prev);
-                                    next.add(selectedDashboard.id);
-                                    return next;
-                                });
-                            }}
-                        />
-                    ) : (
-                        <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-sm text-slate-500">{t('share.no_dashboard_available')}</div>
-                    )}
-                </div>
+                )}
 
                 <div className="p-8 border-t border-white/5 bg-slate-50/50 dark:bg-white/[0.01] shrink-0 flex justify-end gap-4">
                     <button onClick={onClose} className="px-7 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors">{t('share.cancel')}</button>
-                    <button
-                        onClick={handleSave}
-                        disabled={saveDisabled}
-                        className="px-9 py-4 rounded-xl bg-indigo-600 disabled:bg-slate-400 disabled:cursor-not-allowed hover:bg-indigo-500 text-white transition-all font-black text-xs uppercase tracking-widest flex items-center gap-2"
-                    >
-                        <span>{t('share.confirm_save')}</span>
-                        <i className="fas fa-paper-plane text-[10px] opacity-70"></i>
-                    </button>
+                    {viewMode === 'manage' && (
+                        <button
+                            onClick={handleSave}
+                            disabled={saveDisabled}
+                            className="px-9 py-4 rounded-xl bg-indigo-600 disabled:bg-slate-400 disabled:cursor-not-allowed hover:bg-indigo-500 text-white transition-all font-black text-xs uppercase tracking-widest flex items-center gap-2"
+                        >
+                            <span>{t('share.confirm_save')}</span>
+                            <i className="fas fa-paper-plane text-[10px] opacity-70"></i>
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

@@ -1,4 +1,5 @@
 const { query } = require('../config/db');
+const { normalizeSharePermission } = require('../utils/share-permissions');
 
 const POSTGRES_ENGINE = 'postgres';
 const BIGQUERY_ENGINE = 'bigquery';
@@ -513,7 +514,7 @@ const loadDashboardShareRlsContext = async ({ workspaceId, userEmail, dashboardI
          FROM dashboard_shares ds
          JOIN dashboards d ON d.id = ds.dashboard_id
          WHERE ds.dashboard_id = $1
-           AND ds.user_id = $2
+           AND LOWER(ds.user_id) = LOWER($2)
            AND d.workspace_id = $3
          LIMIT 1`,
         [dashboardId, userEmail, workspaceId]
@@ -623,7 +624,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
         userEmail,
         dashboardId: payload.dashboardId,
     });
-    if (shareContext && shareContext.permission !== 'admin') {
+    if (shareContext && normalizeSharePermission(shareContext.permission) !== 'admin') {
         const allowedPageIdsRaw = parseJsonArray(shareContext.allowed_page_ids);
         const allowedPageIds = allowedPageIdsRaw.length > 0
             ? allowedPageIdsRaw.map((id) => String(id))

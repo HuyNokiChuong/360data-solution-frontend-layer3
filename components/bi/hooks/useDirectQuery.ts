@@ -359,6 +359,30 @@ export const useDirectQuery = (widget: BIWidget) => {
         };
     }, [dataSource]);
 
+    const normalizeFieldToken = useCallback((value: string) => {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    }, []);
+
+    const resolveLegendLabel = useCallback((row: Record<string, any>, legendField: string): string => {
+        let rawLegend = getFieldValue(row, legendField);
+
+        // Extra fallback: tolerate key-style mismatches such as snake_case vs camelCase.
+        if (rawLegend === undefined) {
+            const target = normalizeFieldToken(legendField);
+            const looseKey = Object.keys(row || {}).find((key) => normalizeFieldToken(key) === target);
+            if (looseKey) {
+                rawLegend = row[looseKey];
+            }
+        }
+
+        if (rawLegend === null || rawLegend === undefined) return '(Blank)';
+        if (typeof rawLegend === 'string') {
+            const trimmed = rawLegend.trim();
+            return trimmed.length > 0 ? trimmed : '(Blank)';
+        }
+        return String(rawLegend);
+    }, [normalizeFieldToken]);
+
     useEffect(() => {
         let isMounted = true;
         const abortController = new AbortController();
@@ -707,22 +731,24 @@ export const useDirectQuery = (widget: BIWidget) => {
                     if (widget.legend && dimensions.includes(widget.legend)) {
                         const xFieldKey = axisKey;
                         const legendField = widget.legend;
-                        const measureFields = measures.map(m => m.field);
+                        const legendMeasureField = measures[0]?.field;
                         const pivotMap = new Map<string, any>();
 
-                        processedData.forEach(row => {
-                            const xValue = row[xFieldKey];
-                            const legendValue = String(row[legendField] || 'Other');
-                            legendFields.add(legendValue);
+                        if (legendMeasureField) {
+                            processedData.forEach(row => {
+                                const xValue = row[xFieldKey] ?? '(Blank)';
+                                const legendValue = resolveLegendLabel(row, legendField);
+                                legendFields.add(legendValue);
 
-                            if (!pivotMap.has(xValue)) {
-                                pivotMap.set(xValue, { ...row });
-                            }
-                            const pivotRow = pivotMap.get(xValue);
-                            measureFields.forEach(mf => {
-                                pivotRow[legendValue] = row[mf];
+                                if (!pivotMap.has(xValue)) {
+                                    pivotMap.set(xValue, { ...row });
+                                }
+                                const pivotRow = pivotMap.get(xValue);
+                                const prevVal = Number(pivotRow[legendValue]) || 0;
+                                const incomingVal = Number(row[legendMeasureField]) || 0;
+                                pivotRow[legendValue] = prevVal + incomingVal;
                             });
-                        });
+                        }
                         processedData = Array.from(pivotMap.values());
                     }
 
@@ -1052,22 +1078,24 @@ export const useDirectQuery = (widget: BIWidget) => {
                     if (widget.legend && dimensions.includes(widget.legend)) {
                         const xFieldKey = axisKey;
                         const legendField = widget.legend;
-                        const measureFields = measures.map(m => m.field);
+                        const legendMeasureField = measures[0]?.field;
                         const pivotMap = new Map<string, any>();
 
-                        processedData.forEach(row => {
-                            const xValue = row[xFieldKey];
-                            const legendValue = String(row[legendField] || 'Other');
-                            legendFields.add(legendValue);
+                        if (legendMeasureField) {
+                            processedData.forEach(row => {
+                                const xValue = row[xFieldKey] ?? '(Blank)';
+                                const legendValue = resolveLegendLabel(row, legendField);
+                                legendFields.add(legendValue);
 
-                            if (!pivotMap.has(xValue)) {
-                                pivotMap.set(xValue, { ...row });
-                            }
-                            const pivotRow = pivotMap.get(xValue);
-                            measureFields.forEach(mf => {
-                                pivotRow[legendValue] = row[mf];
+                                if (!pivotMap.has(xValue)) {
+                                    pivotMap.set(xValue, { ...row });
+                                }
+                                const pivotRow = pivotMap.get(xValue);
+                                const prevVal = Number(pivotRow[legendValue]) || 0;
+                                const incomingVal = Number(row[legendMeasureField]) || 0;
+                                pivotRow[legendValue] = prevVal + incomingVal;
                             });
-                        });
+                        }
                         processedData = Array.from(pivotMap.values());
                     }
 

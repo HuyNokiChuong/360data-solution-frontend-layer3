@@ -27,6 +27,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const { t, language, setLanguage } = useLanguageStore();
   const { theme, toggleTheme } = useThemeStore();
   const { systemLogs } = useDataStore();
+  const displayName = String(currentUser?.name || currentUser?.email || 'Unknown User').trim();
 
   const hasErrorLogs = systemLogs.some(l => l.type === 'error');
 
@@ -93,14 +94,18 @@ const Sidebar: React.FC<SidebarProps> = ({
       {/* Visual Separator Line - Always Visible on Hover */}
       <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
       <div className="p-8 pb-4">
-        <div className="flex items-center justify-between mb-6">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <i className="fas fa-bolt text-white"></i>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 shrink-0 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
+            <i className="fas fa-bolt text-white text-sm"></i>
           </div>
+          <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tighter uppercase italic opacity-80 truncate">
+            360data-solutions
+          </h1>
         </div>
-        <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tighter uppercase italic opacity-80">
-          360data-solutions
-        </h1>
+        <div className="px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1">Current User</div>
+          <div className="text-sm font-extrabold text-slate-800 dark:text-slate-200 truncate" title={displayName}>{displayName}</div>
+        </div>
       </div>
 
       <nav className="flex-1 mt-4 px-4">

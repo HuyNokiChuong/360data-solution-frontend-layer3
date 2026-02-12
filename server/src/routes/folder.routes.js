@@ -4,6 +4,7 @@
 const express = require('express');
 const { query, getClient, isValidUUID } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { normalizeIdentity, normalizeSharePermission, normalizeSharePermissions } = require('../utils/share-permissions');
 
 const router = express.Router();
 
@@ -162,12 +163,44 @@ router.post('/:id/share', async (req, res) => {
     try {
         const { permissions } = req.body;
         const folderId = req.params.id;
+        const normalizedPermissions = normalizeSharePermissions(permissions, { includeRls: true });
+        const targetUsers = normalizedPermissions.map((p) => normalizeIdentity(p.userId));
 
         await client.query('BEGIN');
 
+        const folderCheck = await client.query(
+            'SELECT id FROM folders WHERE id = $1 AND workspace_id = $2 AND is_deleted = FALSE',
+            [folderId, req.user.workspace_id]
+        );
+        if (folderCheck.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Folder not found' });
+        }
+
+        if (targetUsers.length > 0) {
+            const usersInWorkspace = await client.query(
+                `SELECT LOWER(email) AS email
+                 FROM users
+                 WHERE workspace_id = $1
+                   AND LOWER(email) = ANY($2::text[])`,
+                [req.user.workspace_id, targetUsers]
+            );
+            const allowedSet = new Set(usersInWorkspace.rows.map((r) => r.email));
+            const unknown = normalizedPermissions
+                .map((p) => p.userId)
+                .filter((email) => !allowedSet.has(normalizeIdentity(email)));
+            if (unknown.length > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    success: false,
+                    message: `Users not found in this workspace: ${unknown.join(', ')}`,
+                });
+            }
+        }
+
         await client.query('DELETE FROM folder_shares WHERE folder_id = $1', [folderId]);
 
-        for (const perm of (permissions || [])) {
+        for (const perm of normalizedPermissions) {
             const rlsConfig = perm?.rls && typeof perm.rls === 'object' ? perm.rls : {};
             try {
                 await client.query(
@@ -176,6 +209,7 @@ router.post('/:id/share', async (req, res) => {
                     [folderId, perm.userId, perm.permission, JSON.stringify(rlsConfig)]
                 );
             } catch (err) {
+                if (err.code !== '42703') throw err;
                 await client.query(
                     `INSERT INTO folder_shares (folder_id, user_id, permission) VALUES ($1, $2, $3)
              ON CONFLICT (folder_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, shared_at = NOW()`,
@@ -189,13 +223,14 @@ router.post('/:id/share', async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error('Share folder error:', err);
-        res.status(500).json({ success: false, message: 'Failed to share folder' });
+        res.status(err.status || 500).json({ success: false, message: err.status ? err.message : 'Failed to share folder' });
     } finally {
         client.release();
     }
 });
 
 function formatFolder(row) {
+    const shares = Array.isArray(row.shared_with) ? row.shared_with : [];
     return {
         id: row.id,
         name: row.name,
@@ -204,7 +239,10 @@ function formatFolder(row) {
         color: row.color || undefined,
         createdAt: row.created_at,
         createdBy: row.created_by,
-        sharedWith: row.shared_with || [],
+        sharedWith: shares.map((share) => ({
+            ...share,
+            permission: normalizeSharePermission(share?.permission) || share?.permission,
+        })),
     };
 }
 

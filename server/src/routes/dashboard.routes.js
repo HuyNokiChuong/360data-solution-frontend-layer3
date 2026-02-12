@@ -4,6 +4,7 @@
 const express = require('express');
 const { query, getClient, isValidUUID } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { normalizeIdentity, normalizeSharePermission, normalizeSharePermissions } = require('../utils/share-permissions');
 
 const router = express.Router();
 
@@ -227,8 +228,43 @@ router.post('/:id/share', async (req, res) => {
     try {
         const { permissions } = req.body; // Array of { userId, permission }
         const dashboardId = req.params.id;
+        const normalizedPermissions = normalizeSharePermissions(permissions, {
+            includeAllowedPages: true,
+            includeRls: true,
+        });
+        const targetUsers = normalizedPermissions.map((p) => normalizeIdentity(p.userId));
 
         await client.query('BEGIN');
+
+        const dashboardCheck = await client.query(
+            'SELECT id FROM dashboards WHERE id = $1 AND workspace_id = $2 AND COALESCE(is_deleted, FALSE) = FALSE',
+            [dashboardId, req.user.workspace_id]
+        );
+        if (dashboardCheck.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Dashboard not found' });
+        }
+
+        if (targetUsers.length > 0) {
+            const usersInWorkspace = await client.query(
+                `SELECT LOWER(email) AS email
+                 FROM users
+                 WHERE workspace_id = $1
+                   AND LOWER(email) = ANY($2::text[])`,
+                [req.user.workspace_id, targetUsers]
+            );
+            const allowedSet = new Set(usersInWorkspace.rows.map((r) => r.email));
+            const unknown = normalizedPermissions
+                .map((p) => p.userId)
+                .filter((email) => !allowedSet.has(normalizeIdentity(email)));
+            if (unknown.length > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    success: false,
+                    message: `Users not found in this workspace: ${unknown.join(', ')}`,
+                });
+            }
+        }
 
         // Remove existing shares (except self)
         await client.query(
@@ -237,7 +273,7 @@ router.post('/:id/share', async (req, res) => {
         );
 
         // Insert new shares
-        for (const perm of (permissions || [])) {
+        for (const perm of normalizedPermissions) {
             const allowedPageIds = Array.isArray(perm?.allowedPageIds) ? perm.allowedPageIds : [];
             const rlsConfig = perm?.rls && typeof perm.rls === 'object' ? perm.rls : {};
             try {
@@ -251,6 +287,7 @@ router.post('/:id/share', async (req, res) => {
                     [dashboardId, perm.userId, perm.permission, JSON.stringify(allowedPageIds), JSON.stringify(rlsConfig)]
                 );
             } catch (err) {
+                if (err.code !== '42703') throw err;
                 // Backward-compatible fallback when RLS columns are not migrated yet.
                 await client.query(
                     `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, $3)
@@ -268,13 +305,14 @@ router.post('/:id/share', async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error('Share dashboard error:', err);
-        res.status(500).json({ success: false, message: 'Failed to share dashboard' });
+        res.status(err.status || 500).json({ success: false, message: err.status ? err.message : 'Failed to share dashboard' });
     } finally {
         client.release();
     }
 });
 
 function formatDashboard(row) {
+    const shares = Array.isArray(row.shared_with) ? row.shared_with : [];
     return {
         id: row.id,
         title: row.title,
@@ -283,24 +321,28 @@ function formatDashboard(row) {
         dataSourceId: row.data_source_id || undefined,
         dataSourceName: row.data_source_name || undefined,
         enableCrossFilter: row.enable_cross_filter,
-        pages: typeof row.pages === 'string' ? JSON.parse(row.pages) : (row.pages || []),
-        widgets: typeof row.widgets === 'string' ? JSON.parse(row.widgets) : (row.widgets || []),
+        pages: parseJsonArrayValue(row.pages),
+        widgets: parseJsonArrayValue(row.widgets),
         activePageId: row.active_page_id || '',
-        globalFilters: typeof row.global_filters === 'string' ? JSON.parse(row.global_filters) : (row.global_filters || []),
-        calculatedFields: typeof row.calculated_fields === 'string' ? JSON.parse(row.calculated_fields) : (row.calculated_fields || []),
-        quickMeasures: typeof row.quick_measures === 'string' ? JSON.parse(row.quick_measures) : (row.quick_measures || []),
-        layout: typeof row.layout === 'string' ? JSON.parse(row.layout) : (row.layout || {}),
-        theme: typeof row.theme === 'string' ? JSON.parse(row.theme) : (row.theme || {}),
+        globalFilters: parseJsonArrayValue(row.global_filters),
+        calculatedFields: parseJsonArrayValue(row.calculated_fields),
+        quickMeasures: parseJsonArrayValue(row.quick_measures),
+        layout: parseJsonObjectValue(row.layout),
+        theme: parseJsonObjectValue(row.theme),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         createdBy: row.created_by,
-        sharedWith: row.shared_with || [],
+        sharedWith: shares.map((share) => ({
+            ...share,
+            permission: normalizeSharePermission(share?.permission) || share?.permission,
+        })),
     };
 }
 
 function applyPageAccessConstraint(dashboard, email) {
     const shares = Array.isArray(dashboard.sharedWith) ? dashboard.sharedWith : [];
-    const currentShare = shares.find((s) => s.userId === email);
+    const currentUser = normalizeIdentity(email);
+    const currentShare = shares.find((s) => normalizeIdentity(s?.userId) === currentUser);
     if (!currentShare || currentShare.permission === 'admin') return dashboard;
 
     const allowed = Array.isArray(currentShare.allowedPageIds) ? currentShare.allowedPageIds : [];
@@ -314,6 +356,34 @@ function applyPageAccessConstraint(dashboard, email) {
             ? dashboard.activePageId
             : (filteredPages[0]?.id || ''),
     };
+}
+
+function parseJsonArrayValue(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (err) {
+            return [];
+        }
+    }
+    return [];
+}
+
+function parseJsonObjectValue(value) {
+    if (!value) return {};
+    if (typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch (err) {
+            return {};
+        }
+    }
+    return {};
 }
 
 module.exports = router;
