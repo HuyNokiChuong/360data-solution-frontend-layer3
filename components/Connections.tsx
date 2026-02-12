@@ -87,18 +87,27 @@ const Connections: React.FC<ConnectionsProps> = ({
   setGoogleToken
 }) => {
   const { t } = useLanguageStore();
+  const googleClientId =
+    (import.meta as any)?.env?.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+    (import.meta as any)?.env?.VITE_GOOGLE_CLIENT_ID ||
+    process.env.GOOGLE_CLIENT_ID ||
+    '';
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [editingConnId, setEditingConnId] = useState<string | null>(null);
   const [step, setStep] = useState(1); // 1: Type/Name, 2: Auth, 3: Context (Project/DB), 4: Tables
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authSuccess, setAuthSuccess] = useState(false);
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
+  const [isUpdatingBigQueryServiceKey, setIsUpdatingBigQueryServiceKey] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [excelSheets, setExcelSheets] = useState<{ sheetName: string; rowCount: number; columnCount: number; isEmpty: boolean; warnings?: string[] }[]>([]);
   const [selectedExcelSheets, setSelectedExcelSheets] = useState<string[]>([]);
   const [excelDatasets, setExcelDatasets] = useState<string[]>([]);
   const [selectedExcelDataset, setSelectedExcelDataset] = useState('');
+  const [storedExcelFileName, setStoredExcelFileName] = useState<string>('');
+  const [storedExcelSheets, setStoredExcelSheets] = useState<{ sheetName: string; rowCount: number; columnCount: number; isEmpty: boolean; warnings?: string[] }[]>([]);
+  const [isUpdatingExcelFile, setIsUpdatingExcelFile] = useState(false);
   const [importStage, setImportStage] = useState<'idle' | 'uploading' | 'parsing' | 'importing' | 'completed'>('idle');
   const [googleSheetsConnectionId, setGoogleSheetsConnectionId] = useState<string>('');
   const [googleSheetsAuthCode, setGoogleSheetsAuthCode] = useState<string>('');
@@ -108,6 +117,9 @@ const Connections: React.FC<ConnectionsProps> = ({
   const [selectedGoogleFile, setSelectedGoogleFile] = useState<{ id: string; name: string } | null>(null);
   const [googleTabs, setGoogleTabs] = useState<{ sheetId: number; title: string; index: number; gridProperties?: { rowCount?: number; columnCount?: number } }[]>([]);
   const [selectedGoogleSheets, setSelectedGoogleSheets] = useState<SelectedGoogleSheet[]>([]);
+  const [storedGoogleFile, setStoredGoogleFile] = useState<{ id: string; name: string } | null>(null);
+  const [storedGoogleSheets, setStoredGoogleSheets] = useState<SelectedGoogleSheet[]>([]);
+  const [isUpdatingGoogleSheetsSource, setIsUpdatingGoogleSheetsSource] = useState(false);
   const [googleSyncMode, setGoogleSyncMode] = useState<'manual' | 'interval'>('manual');
   const [googleSyncIntervalMinutes, setGoogleSyncIntervalMinutes] = useState<number>(15);
   const [googleFlowStage, setGoogleFlowStage] = useState<'idle' | 'connecting' | 'fetching_files' | 'reading_sheet' | 'importing' | 'completed'>('idle');
@@ -166,8 +178,8 @@ const Connections: React.FC<ConnectionsProps> = ({
 
   // Add useEffect to init Google Auth
   React.useEffect(() => {
-    initGoogleAuth(process.env.GOOGLE_CLIENT_ID || '').catch(console.error);
-  }, []);
+    initGoogleAuth(googleClientId).catch(console.error);
+  }, [googleClientId]);
 
   // Excel flow skips stage 3 (dataset screen) and jumps directly to stage 4.
   React.useEffect(() => {
@@ -283,18 +295,68 @@ const Connections: React.FC<ConnectionsProps> = ({
       setAuthSuccess(conn.type !== 'PostgreSQL');
       setSelectedContext(conn.type === 'BigQuery' ? (MOCK_CONTEXTS[conn.type][0] || '') : '');
       setExcelFile(null);
-      setExcelSheets([]);
-      setSelectedExcelSheets([]);
-      setSelectedExcelDataset('');
+      const existingExcelTables = conn.type === 'Excel' ? tables.filter(t => t.connectionId === conn.id) : [];
+      const existingExcelSheetMap = new Map<string, { sheetName: string; rowCount: number; columnCount: number; isEmpty: boolean; warnings?: string[] }>();
+      existingExcelTables.forEach((table) => {
+        const sheetName = table.sheetName || table.tableName;
+        if (!sheetName || existingExcelSheetMap.has(sheetName)) return;
+        existingExcelSheetMap.set(sheetName, {
+          sheetName,
+          rowCount: table.rowCount || 0,
+          columnCount: table.columnCount || 0,
+          isEmpty: (table.rowCount || 0) === 0,
+        });
+      });
+      const existingExcelSheets = Array.from(existingExcelSheetMap.values());
+      const existingExcelFileName = existingExcelTables.find((table) => table.sourceFileName || table.fileName)?.sourceFileName
+        || existingExcelTables.find((table) => table.sourceFileName || table.fileName)?.fileName
+        || '';
+      setStoredExcelFileName(existingExcelFileName);
+      setStoredExcelSheets(existingExcelSheets);
+      setExcelSheets(conn.type === 'Excel' ? existingExcelSheets : []);
+      setSelectedExcelSheets(conn.type === 'Excel' ? existingExcelSheets.map((sheet) => sheet.sheetName) : []);
+      setSelectedExcelDataset(conn.type === 'Excel' ? (existingExcelTables[0]?.datasetName || '') : '');
+      setIsUpdatingExcelFile(false);
       setImportStage('idle');
       setGoogleSheetsConnectionId(conn.type === 'GoogleSheets' ? conn.id : '');
       setGoogleSheetsAuthCode('');
       setGoogleFiles([]);
       setGoogleFileSearch('');
       setGoogleFileUrl('');
-      setSelectedGoogleFile(null);
-      setGoogleTabs([]);
-      setSelectedGoogleSheets([]);
+      const existingGoogleTables = conn.type === 'GoogleSheets' ? tables.filter(t => t.connectionId === conn.id) : [];
+      const existingGoogleFileId = existingGoogleTables.find((table) => table.sourceFileId || table.sourceFileName)?.sourceFileId || '';
+      const existingGoogleFileName = existingGoogleTables.find((table) => table.sourceFileName || table.fileName)?.sourceFileName
+        || existingGoogleTables.find((table) => table.sourceFileName || table.fileName)?.fileName
+        || '';
+      const existingGoogleSheetMap = new Map<string, SelectedGoogleSheet>();
+      existingGoogleTables.forEach((table, index) => {
+        const rawSheetId = table.sourceSheetId || '';
+        const parsedId = Number(rawSheetId);
+        const sheetId = Number.isFinite(parsedId) && parsedId > 0 ? parsedId : (index + 1);
+        const sheetName = table.sheetName || table.tableName;
+        const mapKey = rawSheetId || sheetName;
+        if (!sheetName || existingGoogleSheetMap.has(mapKey)) return;
+        existingGoogleSheetMap.set(mapKey, {
+          sheetId,
+          sheetName,
+          headerMode: 'first_row',
+        });
+      });
+      const existingGoogleSheets = Array.from(existingGoogleSheetMap.values());
+      const existingGoogleFile = existingGoogleFileName ? { id: existingGoogleFileId, name: existingGoogleFileName } : null;
+      setStoredGoogleFile(existingGoogleFile);
+      setStoredGoogleSheets(existingGoogleSheets);
+      setSelectedGoogleFile(conn.type === 'GoogleSheets' ? existingGoogleFile : null);
+      setGoogleTabs(conn.type === 'GoogleSheets'
+        ? existingGoogleSheets.map((sheet, idx) => ({
+          sheetId: sheet.sheetId,
+          title: sheet.sheetName,
+          index: idx,
+          gridProperties: {},
+        }))
+        : []);
+      setSelectedGoogleSheets(conn.type === 'GoogleSheets' ? existingGoogleSheets : []);
+      setIsUpdatingGoogleSheetsSource(false);
       setGoogleSyncMode('manual');
       setGoogleSyncIntervalMinutes(15);
       setGoogleFlowStage('idle');
@@ -330,6 +392,7 @@ const Connections: React.FC<ConnectionsProps> = ({
       setStep(1);
       setAuthSuccess(false);
       setSelectedTables([]);
+      setIsUpdatingBigQueryServiceKey(false);
       setUploadedFile(null);
       setSheetUrl('');
       setSelectedContext('');
@@ -344,6 +407,9 @@ const Connections: React.FC<ConnectionsProps> = ({
       setSelectedExcelSheets([]);
       setExcelDatasets([]);
       setSelectedExcelDataset('');
+      setStoredExcelFileName('');
+      setStoredExcelSheets([]);
+      setIsUpdatingExcelFile(false);
       setImportStage('idle');
       setGoogleSheetsConnectionId('');
       setGoogleSheetsAuthCode('');
@@ -353,6 +419,9 @@ const Connections: React.FC<ConnectionsProps> = ({
       setSelectedGoogleFile(null);
       setGoogleTabs([]);
       setSelectedGoogleSheets([]);
+      setStoredGoogleFile(null);
+      setStoredGoogleSheets([]);
+      setIsUpdatingGoogleSheetsSource(false);
       setGoogleSyncMode('manual');
       setGoogleSyncIntervalMinutes(15);
       setGoogleFlowStage('idle');
@@ -390,8 +459,7 @@ const Connections: React.FC<ConnectionsProps> = ({
     setIsAuthenticating(true);
     try {
       // In a real app, use the Client ID from env
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const token = await getGoogleToken(clientId);
+      const token = await getGoogleToken(googleClientId);
       setGoogleToken(token);
       setAuthSuccess(true);
 
@@ -470,6 +538,7 @@ const Connections: React.FC<ConnectionsProps> = ({
     }
 
     setExcelFile(file);
+    setIsUpdatingExcelFile(true);
     setSelectedExcelSheets([]);
     setImportStage('uploading');
 
@@ -556,8 +625,7 @@ const Connections: React.FC<ConnectionsProps> = ({
     try {
       setIsAuthenticating(true);
       setGoogleFlowStage('connecting');
-      const clientId = process.env.GOOGLE_CLIENT_ID || '';
-      const authCode = await getGoogleAuthCode(clientId);
+      const authCode = await getGoogleAuthCode(googleClientId);
       setGoogleSheetsAuthCode(authCode);
 
       const connected = await connectGoogleSheetsOAuth({
@@ -806,27 +874,48 @@ const Connections: React.FC<ConnectionsProps> = ({
   }, [step, tempConn.type, postgresConnectionId, selectedPostgresSchemas, includePostgresViews]);
 
   const handleSave = async () => {
+    const isUsingStoredExcelSelection = tempConn.type === 'Excel'
+      && !!editingConnId
+      && !isUpdatingExcelFile
+      && !excelFile
+      && storedExcelSheets.length > 0;
+    const isUsingStoredGoogleSheetsSelection = tempConn.type === 'GoogleSheets'
+      && !!editingConnId
+      && !isUpdatingGoogleSheetsSource
+      && !!storedGoogleFile
+      && storedGoogleSheets.length > 0;
+
     if (tempConn.type === 'Excel') {
-      if (!excelFile) {
-        alert('Please upload an Excel file first.');
-        return;
-      }
-      if (selectedExcelSheets.length === 0) {
-        alert('Please select at least one sheet to import.');
+      if (isUpdatingExcelFile || !editingConnId) {
+        if (!excelFile) {
+          alert('Please upload an Excel file first.');
+          return;
+        }
+        if (selectedExcelSheets.length === 0) {
+          alert('Please select at least one sheet to import.');
+          return;
+        }
+      } else if (selectedExcelSheets.length === 0) {
+        alert('No saved Excel sheets found for this connection. Please upload a file.');
         return;
       }
     }
     if (tempConn.type === 'GoogleSheets') {
-      if (!googleSheetsConnectionId) {
-        alert('Please connect Google account first.');
-        return;
-      }
-      if (!selectedGoogleFile) {
-        alert('Please select a Google Sheets file.');
-        return;
-      }
-      if (selectedGoogleSheets.length === 0) {
-        alert('Please select at least one sheet.');
+      if (!isUsingStoredGoogleSheetsSelection) {
+        if (!googleSheetsConnectionId) {
+          alert('Please connect Google account first.');
+          return;
+        }
+        if (!selectedGoogleFile) {
+          alert('Please select a Google Sheets file.');
+          return;
+        }
+        if (selectedGoogleSheets.length === 0) {
+          alert('Please select at least one sheet.');
+          return;
+        }
+      } else if (selectedGoogleSheets.length === 0) {
+        alert('No saved Google Sheets selection found. Please update source.');
         return;
       }
     }
@@ -957,78 +1046,86 @@ const Connections: React.FC<ConnectionsProps> = ({
         await onRefreshData();
         await new Promise((resolve) => setTimeout(resolve, 350));
       } else if (tempConn.type === 'Excel') {
-        setIsAuthenticating(true);
-        setImportStage('importing');
-        await onCreateExcelConnection(
-          finalConn,
-          excelFile as File,
-          selectedExcelDataset || 'excel_default',
-          selectedExcelSheets
-        );
-        setImportStage('completed');
-        await new Promise(resolve => setTimeout(resolve, 400));
+        if (isUsingStoredExcelSelection && editingConnId) {
+          onUpdateConnection(finalConn);
+        } else {
+          setIsAuthenticating(true);
+          setImportStage('importing');
+          await onCreateExcelConnection(
+            finalConn,
+            excelFile as File,
+            selectedExcelDataset || 'excel_default',
+            selectedExcelSheets
+          );
+          setImportStage('completed');
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
       } else if (tempConn.type === 'GoogleSheets') {
-        setIsAuthenticating(true);
-        setGoogleFlowStage('reading_sheet');
-        let finalSelections: SelectedGoogleSheet[] = [...selectedGoogleSheets];
+        if (isUsingStoredGoogleSheetsSelection && editingConnId) {
+          onUpdateConnection(finalConn);
+        } else {
+          setIsAuthenticating(true);
+          setGoogleFlowStage('reading_sheet');
+          let finalSelections: SelectedGoogleSheet[] = [...selectedGoogleSheets];
 
-        const preflight = await preflightGoogleSheetsImport(googleSheetsConnectionId, {
-          fileId: selectedGoogleFile?.id || '',
-          sheets: finalSelections.map((item) => ({
-            sheetId: item.sheetId,
-            sheetName: item.sheetName,
-            headerMode: item.headerMode
-          }))
-        });
+          const preflight = await preflightGoogleSheetsImport(googleSheetsConnectionId, {
+            fileId: selectedGoogleFile?.id || '',
+            sheets: finalSelections.map((item) => ({
+              sheetId: item.sheetId,
+              sheetName: item.sheetName,
+              headerMode: item.headerMode
+            }))
+          });
 
-        const requiresHeaderDecision = (preflight?.sheets || []).filter((sheet: any) => {
-          const selected = finalSelections.find(item => item.sheetId === Number(sheet.sheetId));
-          return sheet.requiresHeaderDecision && selected?.headerMode !== 'auto_columns';
-        });
+          const requiresHeaderDecision = (preflight?.sheets || []).filter((sheet: any) => {
+            const selected = finalSelections.find(item => item.sheetId === Number(sheet.sheetId));
+            return sheet.requiresHeaderDecision && selected?.headerMode !== 'auto_columns';
+          });
 
-        if (requiresHeaderDecision.length > 0) {
-          const ok = window.confirm(
-            `${requiresHeaderDecision.length} sheet(s) do not have valid header. Switch them to auto Column_1..N and continue?`
+          if (requiresHeaderDecision.length > 0) {
+            const ok = window.confirm(
+              `${requiresHeaderDecision.length} sheet(s) do not have valid header. Switch them to auto Column_1..N and continue?`
+            );
+            if (!ok) return;
+            finalSelections = finalSelections.map((sheet) =>
+              requiresHeaderDecision.some((r: any) => Number(r.sheetId) === sheet.sheetId)
+                ? { ...sheet, headerMode: 'auto_columns' }
+                : sheet
+            );
+            setSelectedGoogleSheets(finalSelections);
+          }
+
+          const emptySheets = (preflight?.sheets || []).filter((sheet: any) => sheet.isEmpty);
+          if (emptySheets.length > 0) {
+            const ok = window.confirm(`${emptySheets.length} selected sheet(s) are empty. Continue importing anyway?`);
+            if (!ok) return;
+          }
+
+          const overwriteConfirmed = window.confirm(
+            'Import may overwrite existing synced tables for the selected sheets. Continue?'
           );
-          if (!ok) return;
-          finalSelections = finalSelections.map((sheet) =>
-            requiresHeaderDecision.some((r: any) => Number(r.sheetId) === sheet.sheetId)
-              ? { ...sheet, headerMode: 'auto_columns' }
-              : sheet
-          );
-          setSelectedGoogleSheets(finalSelections);
+          if (!overwriteConfirmed) return;
+
+          setGoogleFlowStage('importing');
+          await onCreateGoogleSheetsConnection({
+            connectionId: googleSheetsConnectionId,
+            connectionName: finalConn.name,
+            authCode: '',
+            fileId: selectedGoogleFile?.id || '',
+            fileName: selectedGoogleFile?.name,
+            sheets: finalSelections.map((sheet) => ({
+              sheetId: sheet.sheetId,
+              sheetName: sheet.sheetName,
+              headerMode: sheet.headerMode
+            })),
+            allowEmptySheets: emptySheets.length > 0,
+            confirmOverwrite: true,
+            syncMode: googleSyncMode,
+            syncIntervalMinutes: googleSyncIntervalMinutes
+          });
+          setGoogleFlowStage('completed');
+          await new Promise(resolve => setTimeout(resolve, 400));
         }
-
-        const emptySheets = (preflight?.sheets || []).filter((sheet: any) => sheet.isEmpty);
-        if (emptySheets.length > 0) {
-          const ok = window.confirm(`${emptySheets.length} selected sheet(s) are empty. Continue importing anyway?`);
-          if (!ok) return;
-        }
-
-        const overwriteConfirmed = window.confirm(
-          'Import may overwrite existing synced tables for the selected sheets. Continue?'
-        );
-        if (!overwriteConfirmed) return;
-
-        setGoogleFlowStage('importing');
-        await onCreateGoogleSheetsConnection({
-          connectionId: googleSheetsConnectionId,
-          connectionName: finalConn.name,
-          authCode: '',
-          fileId: selectedGoogleFile?.id || '',
-          fileName: selectedGoogleFile?.name,
-          sheets: finalSelections.map((sheet) => ({
-            sheetId: sheet.sheetId,
-            sheetName: sheet.sheetName,
-            headerMode: sheet.headerMode
-          })),
-          allowEmptySheets: emptySheets.length > 0,
-          confirmOverwrite: true,
-          syncMode: googleSyncMode,
-          syncIntervalMinutes: googleSyncIntervalMinutes
-        });
-        setGoogleFlowStage('completed');
-        await new Promise(resolve => setTimeout(resolve, 400));
       } else if (editingConnId) {
         onUpdateConnection(finalConn, tablesToSync);
       } else {
@@ -1054,10 +1151,14 @@ const Connections: React.FC<ConnectionsProps> = ({
     setEditingConnId(null);
     setStep(1);
     setAuthSuccess(false);
+    setIsUpdatingBigQueryServiceKey(false);
     setExcelFile(null);
     setExcelSheets([]);
     setSelectedExcelSheets([]);
     setSelectedExcelDataset('');
+    setStoredExcelFileName('');
+    setStoredExcelSheets([]);
+    setIsUpdatingExcelFile(false);
     setImportStage('idle');
     setGoogleSheetsConnectionId('');
     setGoogleSheetsAuthCode('');
@@ -1067,6 +1168,9 @@ const Connections: React.FC<ConnectionsProps> = ({
     setSelectedGoogleFile(null);
     setGoogleTabs([]);
     setSelectedGoogleSheets([]);
+    setStoredGoogleFile(null);
+    setStoredGoogleSheets([]);
+    setIsUpdatingGoogleSheetsSource(false);
     setGoogleSyncMode('manual');
     setGoogleSyncIntervalMinutes(15);
     setGoogleFlowStage('idle');
@@ -1103,7 +1207,12 @@ const Connections: React.FC<ConnectionsProps> = ({
   const renderConnectionForm = () => {
     const inputClass = "w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all placeholder-slate-400 dark:placeholder-slate-700 text-sm";
     const labelClass = "block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 px-1";
-    const hasStoredBigQueryServiceKey = !!editingConnId && tempConn.authType === 'ServiceAccount' && !!tempConn.serviceAccountKey && !uploadedFile;
+    const hasStoredBigQueryServiceKey = !!editingConnId && tempConn.authType === 'ServiceAccount' && !!tempConn.serviceAccountKey;
+    const isUsingStoredBigQueryServiceKey = hasStoredBigQueryServiceKey && !isUpdatingBigQueryServiceKey;
+    const hasStoredExcelFile = !!editingConnId && tempConn.type === 'Excel' && !!storedExcelFileName && storedExcelSheets.length > 0;
+    const isUsingStoredExcelFile = hasStoredExcelFile && !isUpdatingExcelFile && !excelFile;
+    const hasStoredGoogleSheetsSource = !!editingConnId && tempConn.type === 'GoogleSheets' && !!storedGoogleFile && storedGoogleSheets.length > 0;
+    const isUsingStoredGoogleSheetsSource = hasStoredGoogleSheetsSource && !isUpdatingGoogleSheetsSource;
 
     const renderBigQueryForm = () => (
       <div className="space-y-6 animate-in fade-in">
@@ -1111,7 +1220,12 @@ const Connections: React.FC<ConnectionsProps> = ({
           {['ServiceAccount', 'GoogleMail'].map(mode => (
             <button
               key={mode}
-              onClick={() => { setTempConn({ ...tempConn, authType: mode as any }); setAuthSuccess(false); setUploadedFile(null); }}
+              onClick={() => {
+                setTempConn({ ...tempConn, authType: mode as any });
+                setAuthSuccess(false);
+                setUploadedFile(null);
+                setIsUpdatingBigQueryServiceKey(false);
+              }}
               className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${tempConn.authType === mode ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'
                 }`}
             >
@@ -1154,75 +1268,67 @@ const Connections: React.FC<ConnectionsProps> = ({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="p-5 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl mb-4 space-y-3">
-              <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
-                <i className="fas fa-shield-alt"></i> Service Account Authentication
-              </h4>
-              <ul className="text-[10px] text-slate-500 space-y-2 list-disc pl-4 leading-relaxed">
-                <li>Best for <strong>Automation & Stability</strong>: No expiry, no re-login required.</li>
-                <li>Requires <strong>BigQuery Data Viewer</strong> and <strong>BigQuery Job User</strong> roles.</li>
-                <li>Data is fetched using the service account's identity.</li>
-              </ul>
-            </div>
+            {!isUsingStoredBigQueryServiceKey && (
+              <>
+                <div className="p-4 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl space-y-2">
+                  <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
+                    <i className="fas fa-shield-alt"></i> Service Account Authentication
+                  </h4>
+                  <ul className="text-[10px] text-slate-500 space-y-1.5 list-disc pl-4 leading-relaxed">
+                    <li>No expiry, suitable for persistent production sync.</li>
+                    <li>Needs <strong>BigQuery Data Viewer</strong> + <strong>BigQuery Job User</strong>.</li>
+                  </ul>
+                </div>
 
-            <div className="mb-6 bg-slate-50 dark:bg-white/[0.02] rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden transition-all hover:border-indigo-500/20">
-              <div className="px-5 py-3 border-b border-slate-100 dark:border-white/5 flex justify-between items-center bg-slate-100/50 dark:bg-white/[0.02]">
-                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                  <i className="fas fa-info-circle text-indigo-500"></i> Quick Setup Guide
+                <div className="px-4 py-3 bg-slate-50 dark:bg-white/[0.02] rounded-2xl border border-slate-100 dark:border-white/5 flex justify-between items-center">
+                  <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <i className="fas fa-info-circle text-indigo-500"></i> Need to create key?
+                  </div>
+                  <a
+                    href="https://console.cloud.google.com/iam-admin/serviceaccounts"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] font-black text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 uppercase tracking-widest flex items-center gap-1 transition-colors"
+                  >
+                    Create Key <i className="fas fa-external-link-alt text-[9px]"></i>
+                  </a>
                 </div>
-                <a
-                  href="https://console.cloud.google.com/iam-admin/serviceaccounts"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[10px] font-black text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 uppercase tracking-widest flex items-center gap-1 transition-colors"
-                >
-                  Create Key <i className="fas fa-external-link-alt text-[9px]"></i>
-                </a>
-              </div>
-              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
-                <div className="space-y-1.5">
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">1.</span>
-                    <span>Go to <strong>Google Cloud Console (IAM)</strong>.</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">2.</span>
-                    <span>Create <strong>Service Account</strong>.</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">3.</span>
-                    <span>Roles: <strong>BigQuery Data Viewer</strong> & <strong>Job User</strong>.</span>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">4.</span>
-                    <span>Select account &rarr; <strong>Keys</strong> tab.</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">5.</span>
-                    <span>Add Key &rarr; Create new key &rarr; <strong>JSON</strong>.</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="text-indigo-500 font-bold">6.</span>
-                    <span>Upload the downloaded file below.</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+              </>
+            )}
 
-            <label className={labelClass}>Google Service Account Key (JSON)</label>
-            <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-indigo-500/50 bg-white/[0.02]">
-              <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
-              {uploadedFile ? (
-                <div className="text-emerald-500 font-bold">{uploadedFile.name}</div>
-              ) : (
-                <div className="text-slate-500 text-sm">
-                  {editingConnId && tempConn.serviceAccountKey ? 'Account Key Uploaded (Click to change)' : 'Upload JSON Key File'}
+            {isUsingStoredBigQueryServiceKey ? (
+              <div className="p-4 bg-sky-500/5 border border-sky-500/20 rounded-2xl">
+                <p className="text-[10px] font-black text-sky-400 uppercase tracking-widest">
+                  <i className="fas fa-lock mr-2"></i>Stored Service Key
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">Credentials are locked and active for this connection.</p>
+                {tempConn.projectId && (
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    <strong>Project:</strong> {tempConn.projectId}
+                  </p>
+                )}
+                {tempConn.email && (
+                  <p className="text-[11px] text-slate-500 mt-1 truncate">
+                    <strong>Email:</strong> {tempConn.email}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <>
+                <label className={labelClass}>Google Service Account Key (JSON)</label>
+                <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-indigo-500/50 bg-white/[0.02]">
+                  <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".json" />
+                  {uploadedFile ? (
+                    <div className="text-emerald-500 font-bold">{uploadedFile.name}</div>
+                  ) : (
+                    <div className="text-slate-500 text-sm">
+                      {editingConnId && tempConn.serviceAccountKey ? 'Upload new JSON key to replace current credentials' : 'Upload JSON Key File'}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            {tempConn.serviceAccountKey && (
+              </>
+            )}
+            {!isUsingStoredBigQueryServiceKey && tempConn.serviceAccountKey && (
               <div className="p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-xl animate-in slide-in-from-top-2">
                 <p className="text-[10px] font-bold text-emerald-400">
                   <i className="fas fa-check-circle mr-2"></i> Project: {tempConn.projectId}
@@ -1231,26 +1337,25 @@ const Connections: React.FC<ConnectionsProps> = ({
               </div>
             )}
             {hasStoredBigQueryServiceKey && (
-              <div className="p-4 bg-sky-500/5 border border-sky-500/20 rounded-xl">
-                <p className="text-[10px] font-bold text-sky-400">
-                  <i className="fas fa-lock mr-2"></i> Saved credentials are active.
-                </p>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  No re-verification needed. Use <strong>Update Credentials</strong> only when you want to replace the key.
-                </p>
-              </div>
-            )}
-            {hasStoredBigQueryServiceKey && (
               <button
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  if (isUpdatingBigQueryServiceKey) {
+                    setIsUpdatingBigQueryServiceKey(false);
+                    setUploadedFile(null);
+                    return;
+                  }
+                  setIsUpdatingBigQueryServiceKey(true);
+                  setAuthSuccess(false);
+                  setUploadedFile(null);
+                }}
                 className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
               >
-                Update Credentials
+                {isUpdatingBigQueryServiceKey ? 'Cancel Update' : 'Update Credentials'}
               </button>
             )}
             <button
               onClick={async () => {
-                if (hasStoredBigQueryServiceKey) {
+                if (isUsingStoredBigQueryServiceKey) {
                   setAuthSuccess(true);
                   if (tempConn.projectId) {
                     setSelectedContext(tempConn.projectId);
@@ -1297,12 +1402,12 @@ const Connections: React.FC<ConnectionsProps> = ({
                   setIsAuthenticating(false);
                 }
               }}
-              disabled={(!tempConn.serviceAccountKey && !editingConnId) || isAuthenticating}
+              disabled={(isUpdatingBigQueryServiceKey && !uploadedFile) || (!tempConn.serviceAccountKey && !editingConnId) || isAuthenticating}
               className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-xl shadow-indigo-600/20 active:scale-95"
             >
               {isAuthenticating
                 ? <i className="fas fa-circle-notch animate-spin"></i>
-                : hasStoredBigQueryServiceKey
+                : isUsingStoredBigQueryServiceKey
                   ? 'Continue with Saved Credentials'
                   : (editingConnId ? 'Update & Verify' : 'Verify Credentials')}
             </button>
@@ -1546,11 +1651,57 @@ const Connections: React.FC<ConnectionsProps> = ({
 
     const renderExcelForm = () => (
       <div className="space-y-6 animate-in fade-in">
-        <label className={labelClass}>Upload Excel File (.xlsx, .xls)</label>
-        <div onClick={() => excelFileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-green-500/50 bg-white/[0.02]">
-          <input type="file" ref={excelFileInputRef} onChange={handleExcelFileUpload} className="hidden" accept=".xlsx,.xls" />
-          {excelFile ? <div className="text-emerald-500 font-bold">{excelFile.name}</div> : <div className="text-slate-500 text-sm">Click to Upload</div>}
-        </div>
+        {isUsingStoredExcelFile ? (
+          <div className="space-y-4">
+            <div className="p-5 bg-sky-500/5 border border-sky-500/20 rounded-2xl">
+              <p className="text-[10px] font-black text-sky-400 uppercase tracking-widest">
+                <i className="fas fa-lock mr-2"></i>Saved Excel file is active
+              </p>
+              <p className="text-[11px] text-slate-500 mt-2">
+                <strong>File:</strong> {storedExcelFileName}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                <strong>Sheets:</strong> {storedExcelSheets.length}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setIsUpdatingExcelFile(true);
+                setExcelFile(null);
+                setExcelSheets([]);
+                setSelectedExcelSheets([]);
+                setImportStage('idle');
+                if (excelFileInputRef.current) excelFileInputRef.current.value = '';
+              }}
+              className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+            >
+              Update File
+            </button>
+          </div>
+        ) : (
+          <>
+            <label className={labelClass}>Upload Excel File (.xlsx, .xls)</label>
+            <div onClick={() => excelFileInputRef.current?.click()} className="border-2 border-dashed rounded-[2rem] p-10 text-center cursor-pointer border-white/10 hover:border-green-500/50 bg-white/[0.02]">
+              <input type="file" ref={excelFileInputRef} onChange={handleExcelFileUpload} className="hidden" accept=".xlsx,.xls" />
+              {excelFile ? <div className="text-emerald-500 font-bold">{excelFile.name}</div> : <div className="text-slate-500 text-sm">Click to Upload</div>}
+            </div>
+            {hasStoredExcelFile && (
+              <button
+                onClick={() => {
+                  setIsUpdatingExcelFile(false);
+                  setExcelFile(null);
+                  setExcelSheets(storedExcelSheets);
+                  setSelectedExcelSheets(storedExcelSheets.map((sheet) => sheet.sheetName));
+                  setImportStage('idle');
+                  if (excelFileInputRef.current) excelFileInputRef.current.value = '';
+                }}
+                className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+              >
+                Cancel Update
+              </button>
+            )}
+          </>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
@@ -1575,7 +1726,7 @@ const Connections: React.FC<ConnectionsProps> = ({
         {excelSheets.length > 0 && (
           <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
             <div className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-1">
-              {excelSheets.length} sheets parsed successfully
+              {excelSheets.length} sheets {isUsingStoredExcelFile ? 'loaded from saved file' : 'parsed successfully'}
             </div>
             <p className="text-[11px] text-slate-500">Click OK to continue sheet selection.</p>
           </div>
@@ -1583,10 +1734,16 @@ const Connections: React.FC<ConnectionsProps> = ({
 
         <button
           onClick={() => {
+            if (isUsingStoredExcelFile) {
+              setExcelSheets(storedExcelSheets);
+              setSelectedExcelSheets(storedExcelSheets.map((sheet) => sheet.sheetName));
+              setStep(4);
+              return;
+            }
             if (!excelFile || excelSheets.length === 0) return;
             setStep(4);
           }}
-          disabled={!excelFile || excelSheets.length === 0}
+          disabled={isUsingStoredExcelFile ? storedExcelSheets.length === 0 : (!excelFile || excelSheets.length === 0)}
           className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           OK
@@ -1616,33 +1773,86 @@ const Connections: React.FC<ConnectionsProps> = ({
           ))}
         </div>
 
-        <div className="p-5 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
-          <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2">Google Sheets OAuth</h4>
-          <p className="text-[11px] text-slate-500 mb-4">
-            This connection requests read-only access to Google Sheets and Drive metadata.
-          </p>
-          <button
-            onClick={handleGoogleSheetsConnect}
-            disabled={isAuthenticating}
-            className="w-full py-4 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-100 transition-all border border-slate-200"
-          >
-            {isAuthenticating ? <i className="fas fa-circle-notch animate-spin mr-2"></i> : <i className="fab fa-google mr-2 text-blue-500"></i>}
-            {authSuccess ? 'Google Account Connected' : 'Connect Google Account'}
-          </button>
-        </div>
-
-        {authSuccess && googleSheetsConnectionId && (
-          <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl text-[11px] text-slate-500">
-            Connection ID: <span className="font-mono">{googleSheetsConnectionId}</span>
+        {isUsingStoredGoogleSheetsSource ? (
+          <div className="space-y-4">
+            <div className="p-5 bg-sky-500/5 border border-sky-500/20 rounded-2xl">
+              <h4 className="text-[10px] font-black text-sky-400 uppercase tracking-widest mb-2">
+                <i className="fas fa-lock mr-2"></i>Saved Google Sheets source is active
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                <strong>File:</strong> {storedGoogleFile?.name || 'Unknown'}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                <strong>Sheets:</strong> {storedGoogleSheets.length}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setIsUpdatingGoogleSheetsSource(true);
+                setAuthSuccess(false);
+                setGoogleFiles([]);
+                setGoogleTabs([]);
+                setSelectedGoogleFile(null);
+                setSelectedGoogleSheets([]);
+                setGoogleFileUrl('');
+                setGoogleFileSearch('');
+              }}
+              className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+            >
+              Update Source
+            </button>
           </div>
+        ) : (
+          <>
+            <div className="p-5 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
+              <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2">Google Sheets OAuth</h4>
+              <p className="text-[11px] text-slate-500 mb-4">
+                This connection requests read-only access to Google Sheets and Drive metadata.
+              </p>
+              <button
+                onClick={handleGoogleSheetsConnect}
+                disabled={isAuthenticating}
+                className="w-full py-4 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-100 transition-all border border-slate-200"
+              >
+                {isAuthenticating ? <i className="fas fa-circle-notch animate-spin mr-2"></i> : <i className="fab fa-google mr-2 text-blue-500"></i>}
+                {authSuccess ? 'Google Account Connected' : 'Connect Google Account'}
+              </button>
+            </div>
+
+            {hasStoredGoogleSheetsSource && (
+              <button
+                onClick={() => {
+                  setIsUpdatingGoogleSheetsSource(false);
+                  setSelectedGoogleFile(storedGoogleFile);
+                  setSelectedGoogleSheets(storedGoogleSheets);
+                  setGoogleTabs(storedGoogleSheets.map((sheet, idx) => ({
+                    sheetId: sheet.sheetId,
+                    title: sheet.sheetName,
+                    index: idx,
+                    gridProperties: {},
+                  })));
+                  setAuthSuccess(true);
+                }}
+                className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+              >
+                Cancel Update
+              </button>
+            )}
+
+            {authSuccess && googleSheetsConnectionId && (
+              <div className="p-4 bg-indigo-500/5 border border-indigo-500/20 rounded-2xl text-[11px] text-slate-500">
+                Connection ID: <span className="font-mono">{googleSheetsConnectionId}</span>
+              </div>
+            )}
+          </>
         )}
 
         <button
           onClick={() => {
-            if (!authSuccess) return;
+            if (!authSuccess && !isUsingStoredGoogleSheetsSource) return;
             setStep(3);
           }}
-          disabled={!authSuccess}
+          disabled={!authSuccess && !isUsingStoredGoogleSheetsSource}
           className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Continue to File Selection
@@ -1880,73 +2090,93 @@ const Connections: React.FC<ConnectionsProps> = ({
                     </div>
                   ) : tempConn.type === 'GoogleSheets' ? (
                     <div className="space-y-5 animate-in slide-in-from-right-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="relative">
-                          <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
-                          <input
-                            type="text"
-                            value={googleFileSearch}
-                            onChange={(e) => setGoogleFileSearch(e.target.value)}
-                            placeholder="Search Google Sheets file..."
-                            className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
-                          />
-                        </div>
-                        <button
-                          onClick={() => loadGoogleFiles(googleFileSearch)}
-                          disabled={!googleSheetsConnectionId || isAuthenticating}
-                          className="py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40"
-                        >
-                          <i className="fas fa-rotate mr-2"></i>
-                          Fetch Files
-                        </button>
-                      </div>
-
-                      <div className="flex gap-3">
-                        <input
-                          type="text"
-                          value={googleFileUrl}
-                          onChange={(e) => setGoogleFileUrl(e.target.value)}
-                          placeholder="Paste Google Sheets URL..."
-                          className="flex-1 bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 px-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
-                        />
-                        <button
-                          onClick={handleResolveGoogleFileUrl}
-                          disabled={!googleSheetsConnectionId || !googleFileUrl.trim()}
-                          className="px-6 py-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
-                        >
-                          Resolve URL
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 max-h-[430px] overflow-y-auto pr-1 custom-scrollbar">
-                        {googleFiles.length === 0 ? (
-                          <div className="text-center py-16 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
-                            <i className="fas fa-file-spreadsheet text-slate-300 dark:text-slate-700 text-3xl mb-4"></i>
-                            <p className="text-slate-400 dark:text-slate-500 text-sm">No files loaded yet</p>
+                      {!!editingConnId && !isUpdatingGoogleSheetsSource && storedGoogleFile && storedGoogleSheets.length > 0 ? (
+                        <div className="space-y-4">
+                          <div className="p-5 bg-sky-500/5 border border-sky-500/20 rounded-2xl text-[11px] text-slate-500">
+                            <p><strong>Saved file:</strong> {storedGoogleFile.name}</p>
+                            <p className="mt-1"><strong>Saved sheets:</strong> {storedGoogleSheets.length}</p>
                           </div>
-                        ) : (
-                          googleFiles.map((file) => (
-                            <button
-                              key={file.id}
-                              onClick={() => loadGoogleTabs(file.id, file.name)}
-                              className={`w-full text-left p-4 rounded-2xl border transition-all ${selectedGoogleFile?.id === file.id
-                                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
-                                : 'border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-400'
-                                }`}
-                            >
-                              <div className="font-bold text-sm text-slate-800 dark:text-slate-100">{file.name}</div>
-                              <div className="text-[10px] font-mono text-slate-400 mt-1">{file.id}</div>
-                            </button>
-                          ))
-                        )}
-                      </div>
-
-                      {selectedGoogleFile && (
-                        <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl text-[11px] text-slate-500">
-                          Selected file: <span className="font-bold text-slate-700 dark:text-slate-200">{selectedGoogleFile.name}</span>
-                          <br />
-                          Tabs loaded: <span className="font-bold">{googleTabs.length}</span>
+                          <button
+                            onClick={() => {
+                              setIsUpdatingGoogleSheetsSource(true);
+                              setStep(2);
+                            }}
+                            className="w-full py-3 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-white/10 transition-all"
+                          >
+                            Update Source
+                          </button>
                         </div>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="relative">
+                              <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                              <input
+                                type="text"
+                                value={googleFileSearch}
+                                onChange={(e) => setGoogleFileSearch(e.target.value)}
+                                placeholder="Search Google Sheets file..."
+                                className="w-full bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-11 pr-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
+                              />
+                            </div>
+                            <button
+                              onClick={() => loadGoogleFiles(googleFileSearch)}
+                              disabled={!googleSheetsConnectionId || isAuthenticating}
+                              className="py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-500 transition-all disabled:opacity-40"
+                            >
+                              <i className="fas fa-rotate mr-2"></i>
+                              Fetch Files
+                            </button>
+                          </div>
+
+                          <div className="flex gap-3">
+                            <input
+                              type="text"
+                              value={googleFileUrl}
+                              onChange={(e) => setGoogleFileUrl(e.target.value)}
+                              placeholder="Paste Google Sheets URL..."
+                              className="flex-1 bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 rounded-2xl py-4 px-4 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-600 outline-none transition-all text-sm"
+                            />
+                            <button
+                              onClick={handleResolveGoogleFileUrl}
+                              disabled={!googleSheetsConnectionId || !googleFileUrl.trim()}
+                              className="px-6 py-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
+                            >
+                              Resolve URL
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 max-h-[430px] overflow-y-auto pr-1 custom-scrollbar">
+                            {googleFiles.length === 0 ? (
+                              <div className="text-center py-16 border-2 border-dashed border-slate-100 dark:border-white/5 rounded-2xl">
+                                <i className="fas fa-file-spreadsheet text-slate-300 dark:text-slate-700 text-3xl mb-4"></i>
+                                <p className="text-slate-400 dark:text-slate-500 text-sm">No files loaded yet</p>
+                              </div>
+                            ) : (
+                              googleFiles.map((file) => (
+                                <button
+                                  key={file.id}
+                                  onClick={() => loadGoogleTabs(file.id, file.name)}
+                                  className={`w-full text-left p-4 rounded-2xl border transition-all ${selectedGoogleFile?.id === file.id
+                                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-600/10'
+                                    : 'border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-400'
+                                    }`}
+                                >
+                                  <div className="font-bold text-sm text-slate-800 dark:text-slate-100">{file.name}</div>
+                                  <div className="text-[10px] font-mono text-slate-400 mt-1">{file.id}</div>
+                                </button>
+                              ))
+                            )}
+                          </div>
+
+                          {selectedGoogleFile && (
+                            <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl text-[11px] text-slate-500">
+                              Selected file: <span className="font-bold text-slate-700 dark:text-slate-200">{selectedGoogleFile.name}</span>
+                              <br />
+                              Tabs loaded: <span className="font-bold">{googleTabs.length}</span>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   ) : tempConn.type === 'PostgreSQL' ? (
@@ -2787,7 +3017,7 @@ const Connections: React.FC<ConnectionsProps> = ({
                   (step === 3 && tempConn.type === 'BigQuery' && !selectedDatasetId) ||
                   (step === 3 && tempConn.type === 'GoogleSheets' && !selectedGoogleFile) ||
                   (step === 3 && tempConn.type === 'PostgreSQL' && (!postgresConnectionId || selectedPostgresSchemas.length === 0 || selectedPostgresObjectKeys.length === 0)) ||
-                  (step === 4 && tempConn.type === 'Excel' && (!excelFile || selectedExcelSheets.length === 0)) ||
+                  (step === 4 && tempConn.type === 'Excel' && (selectedExcelSheets.length === 0 || (!excelFile && !(!!editingConnId && !isUpdatingExcelFile && storedExcelSheets.length > 0)))) ||
                   (step === 4 && tempConn.type === 'GoogleSheets' && selectedGoogleSheets.length === 0) ||
                   (step === 4 && tempConn.type === 'PostgreSQL' && selectedPostgresObjects.length === 0) ||
                   (step === 4 && tempConn.type === 'PostgreSQL' && postgresImportMode === 'incremental' && !isPostgresIncrementalSelectionValid) ||

@@ -15,7 +15,7 @@ const createGoogleAuthError = (message, details) => {
 
 const getGoogleOAuthEnv = () => {
     const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
-    const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+    const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
     const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI || 'postmessage';
 
     if (!clientId) {
@@ -168,4 +168,3 @@ module.exports = {
     ensureAccessToken,
     buildOAuthConfig,
 };
-

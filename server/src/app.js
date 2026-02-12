@@ -2,10 +2,36 @@
 // 360data Solutions - Backend Server
 // Port: 3001
 // ============================================
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+
+// Load env from project root and server folder without requiring dotenv package.
+const loadEnvFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return;
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const eqIndex = line.indexOf('=');
+        if (eqIndex <= 0) continue;
+        const key = line.slice(0, eqIndex).trim();
+        let value = line.slice(eqIndex + 1).trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+        if (!(key in process.env)) {
+            process.env[key] = value;
+        }
+    }
+};
+
+loadEnvFile(path.resolve(__dirname, '../../.env'));
+loadEnvFile(path.resolve(__dirname, '../.env'));
+
 const { pool } = require('./config/db');
 const { auditLog } = require('./middleware/audit');
 const { startGoogleSheetsScheduler } = require('./services/google-sheets-sync.service');

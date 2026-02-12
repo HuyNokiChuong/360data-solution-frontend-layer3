@@ -21,6 +21,7 @@ import {
     getDefaultAggregationForFieldType,
     normalizeAggregation
 } from '../../utils/aggregation';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface BIVisualBuilderProps {
     activeWidget?: BIWidget;
@@ -741,9 +742,9 @@ const PivotValueSelector: React.FC<{
                     >
                         <div className="sticky top-0 z-10 px-5 py-4 border-b border-slate-200 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between">
                             <div>
-                                <div className="text-sm font-black text-slate-900 dark:text-white">Conditional Formatting Rules</div>
+                                <div className="text-sm font-black text-slate-900 dark:text-white">{t('bi.cf.title')}</div>
                                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    Metric: <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeRuleMetric.field}</span>
+                                    {t('bi.cf.metric')}: <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeRuleMetric.field}</span>
                                 </div>
                             </div>
                             <button
@@ -761,7 +762,7 @@ const PivotValueSelector: React.FC<{
                         <div className="p-5 space-y-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="text-sm font-bold text-slate-700 dark:text-slate-200">
-                                    Rules are evaluated top-down. First match wins.
+                                    {t('bi.cf.rules_hint')}
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <select
@@ -769,22 +770,22 @@ const PivotValueSelector: React.FC<{
                                         className="bg-slate-100 dark:bg-slate-950 text-xs text-indigo-600 dark:text-indigo-300 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none"
                                         value=""
                                     >
-                                        <option value="" disabled>Apply preset...</option>
-                                        <option value="traffic">Traffic (Text)</option>
-                                        <option value="stoplight">Stoplight (Bg)</option>
-                                        <option value="heatmap">Heatmap</option>
+                                        <option value="" disabled>{t('bi.cf.apply_preset')}</option>
+                                        <option value="traffic">{t('bi.cf.preset_traffic')}</option>
+                                        <option value="stoplight">{t('bi.cf.preset_stoplight')}</option>
+                                        <option value="heatmap">{t('bi.cf.preset_heatmap')}</option>
                                     </select>
                                     <button
                                         onClick={() => setShowRecommendations(true)}
                                         className="text-xs bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-500 transition-colors font-black"
                                     >
-                                        Recommendations
+                                        {t('bi.cf.recommendations')}
                                     </button>
                                     <button
                                         onClick={() => handleAddRule(rulesModalIndex)}
                                         className="text-xs bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-black"
                                     >
-                                        + Add Rule
+                                        {t('bi.cf.add_rule')}
                                     </button>
                                 </div>
                             </div>
@@ -796,64 +797,64 @@ const PivotValueSelector: React.FC<{
                                 return (
                                     <div key={rIdx} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-xl p-4 space-y-3">
                                         <div className="flex items-center justify-between">
-                                            <div className="text-xs font-black uppercase tracking-wider text-slate-500">Rule #{rIdx + 1}</div>
+                                            <div className="text-xs font-black uppercase tracking-wider text-slate-500">{t('bi.cf.rule', { index: rIdx + 1 })}</div>
                                             <button
                                                 onClick={() => handleRemoveRule(rulesModalIndex, rIdx)}
                                                 className="text-xs text-red-500 hover:text-red-400 font-bold"
                                             >
-                                                Remove
+                                                {t('bi.cf.remove')}
                                             </button>
                                         </div>
 
                                         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                                             <div>
-                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Operator</label>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.operator')}</label>
                                                 <select
                                                     value={rule.condition}
                                                     onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { condition: e.target.value })}
                                                     className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                 >
-                                                    <option value="greater">&gt; Greater Than</option>
-                                                    <option value="less">&lt; Less Than</option>
-                                                    <option value="equal">= Equal</option>
-                                                    <option value="between">Between</option>
+                                                    <option value="greater">{t('bi.cf.greater_than')}</option>
+                                                    <option value="less">{t('bi.cf.less_than')}</option>
+                                                    <option value="equal">{t('bi.cf.equal')}</option>
+                                                    <option value="between">{t('bi.cf.between')}</option>
                                                 </select>
                                             </div>
 
                                             {rule.condition !== 'between' && (
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Compare Type</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.compare_type')}</label>
                                                     <select
                                                         value={rule.compareMode || 'literal'}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareMode: e.target.value })}
                                                         className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                     >
-                                                        <option value="literal">Fixed Number</option>
-                                                        <option value="field">Metric / Total</option>
-                                                        <option value="formula">Formula</option>
+                                                        <option value="literal">{t('bi.cf.fixed_number')}</option>
+                                                        <option value="field">{t('bi.cf.metric_total')}</option>
+                                                        <option value="formula">{t('bi.cf.formula')}</option>
                                                     </select>
                                                 </div>
                                             )}
 
                                             {useLiteral ? (
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Value</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.value')}</label>
                                                     <input
                                                         type="number"
                                                         value={rule.value}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { value: e.target.value })}
                                                         className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
-                                                        placeholder="Enter threshold..."
+                                                        placeholder={t('bi.cf.threshold_placeholder')}
                                                     />
                                                 </div>
                                             ) : useFormula ? (
                                                 <div className="md:col-span-2">
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Formula</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.formula')}</label>
                                                     <textarea
                                                         value={rule.compareFormula || ''}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareFormula: e.target.value })}
                                                         className="w-full min-h-[72px] resize-y bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 font-mono"
-                                                        placeholder="e.g. ROW_TOTAL * 0.1 or SAFE_DIV(VALUE, GRAND_TOTAL) * 100"
+                                                        placeholder={t('bi.cf.formula_placeholder')}
                                                     />
                                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                                         {FORMULA_OPERATOR_SNIPPETS.map((item) => (
@@ -871,20 +872,20 @@ const PivotValueSelector: React.FC<{
                                                             {validateFormulaSyntax(rule.compareFormula) ? (
                                                                 <span className="text-red-500">{validateFormulaSyntax(rule.compareFormula)}</span>
                                                             ) : (
-                                                                <span className="text-emerald-500">Formula syntax looks good</span>
+                                                                <span className="text-emerald-500">{t('bi.cf.formula_ok')}</span>
                                                             )}
                                                         </div>
                                                         <button
                                                             onClick={() => setActiveFormulaRuleIndex(activeFormulaRuleIndex === rIdx ? null : rIdx)}
                                                             className="text-[10px] font-black text-indigo-500 hover:text-indigo-400"
                                                         >
-                                                            {activeFormulaRuleIndex === rIdx ? 'Hide Helpers' : 'Show Helpers'}
+                                                            {activeFormulaRuleIndex === rIdx ? t('bi.cf.hide_helpers') : t('bi.cf.show_helpers')}
                                                         </button>
                                                     </div>
                                                 </div>
                                             ) : (
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Target Metric</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.target_metric')}</label>
                                                     <select
                                                         value={compareTarget}
                                                         onChange={(e) => applyCompareTarget(rulesModalIndex, rIdx, e.target.value)}
@@ -901,16 +902,16 @@ const PivotValueSelector: React.FC<{
 
                                             {!useLiteral && (
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Target Scope</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.target_scope')}</label>
                                                     <select
                                                         value={rule.compareScope || 'cell'}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareScope: e.target.value })}
                                                         className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                     >
-                                                        <option value="cell">Same Cell</option>
-                                                        <option value="rowTotal">Same Row Total</option>
-                                                        <option value="columnTotal">Same Column Total</option>
-                                                        <option value="grandTotal">Grand Total</option>
+                                                        <option value="cell">{t('bi.cf.scope_same_cell')}</option>
+                                                        <option value="rowTotal">{t('bi.cf.scope_same_row_total')}</option>
+                                                        <option value="columnTotal">{t('bi.cf.scope_same_column_total')}</option>
+                                                        <option value="grandTotal">{t('bi.cf.scope_grand_total')}</option>
                                                     </select>
                                                 </div>
                                             )}
@@ -919,12 +920,12 @@ const PivotValueSelector: React.FC<{
                                         {useFormula && (
                                             <div className="space-y-2">
                                                 <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
-                                                    Variables: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>
+                                                    {t('bi.cf.variables')}: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>
                                                 </div>
                                                 {activeFormulaRuleIndex === rIdx && (
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border border-slate-200 dark:border-white/10 rounded-lg p-3 bg-white/60 dark:bg-slate-900/40">
                                                         <div>
-                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">Functions</div>
+                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.functions')}</div>
                                                             <div className="flex flex-wrap gap-1.5">
                                                                 {FORMULA_FUNCTION_SNIPPETS.map((fn) => (
                                                                     <button
@@ -939,7 +940,7 @@ const PivotValueSelector: React.FC<{
                                                             </div>
                                                         </div>
                                                         <div>
-                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">Variables</div>
+                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.variables')}</div>
                                                             <div className="max-h-24 overflow-y-auto flex flex-wrap gap-1.5 custom-scrollbar">
                                                                 {formulaVariables.map((variable) => (
                                                                     <button
@@ -960,7 +961,7 @@ const PivotValueSelector: React.FC<{
                                         {rule.condition === 'between' && (
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Lower Bound</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.lower_bound')}</label>
                                                     <input
                                                         type="number"
                                                         value={rule.value}
@@ -969,7 +970,7 @@ const PivotValueSelector: React.FC<{
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">Upper Bound</label>
+                                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.upper_bound')}</label>
                                                     <input
                                                         type="number"
                                                         value={rule.value2}
@@ -982,7 +983,7 @@ const PivotValueSelector: React.FC<{
 
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                             <div>
-                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Color Style</label>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.color_style')}</label>
                                                 <select
                                                     value={rule.textColor || rule.backgroundColor || ''}
                                                     onChange={(e) => {
@@ -994,28 +995,28 @@ const PivotValueSelector: React.FC<{
                                                     }}
                                                     className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                 >
-                                                    <option value="text:#10b981">Green Text</option>
-                                                    <option value="text:#ef4444">Red Text</option>
-                                                    <option value="text:#f59e0b">Amber Text</option>
-                                                    <option value="text:#ffffff">White Text</option>
-                                                    <option value="bg:#064e3b">Green Background</option>
-                                                    <option value="bg:#7f1d1d">Red Background</option>
-                                                    <option value="bg:#78350f">Amber Background</option>
+                                                    <option value="text:#10b981">{t('bi.cf.green_text')}</option>
+                                                    <option value="text:#ef4444">{t('bi.cf.red_text')}</option>
+                                                    <option value="text:#f59e0b">{t('bi.cf.amber_text')}</option>
+                                                    <option value="text:#ffffff">{t('bi.cf.white_text')}</option>
+                                                    <option value="bg:#064e3b">{t('bi.cf.green_bg')}</option>
+                                                    <option value="bg:#7f1d1d">{t('bi.cf.red_bg')}</option>
+                                                    <option value="bg:#78350f">{t('bi.cf.amber_bg')}</option>
                                                 </select>
                                             </div>
                                             <div>
-                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">Icon</label>
+                                                <label className="block text-[11px] font-bold text-slate-500 mb-1">{t('bi.cf.icon')}</label>
                                                 <select
                                                     value={rule.icon || ''}
                                                     onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { icon: e.target.value || undefined })}
                                                     className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
                                                 >
-                                                    <option value="">No Icon</option>
-                                                    <option value="fas fa-arrow-up">Up</option>
-                                                    <option value="fas fa-arrow-down">Down</option>
-                                                    <option value="fas fa-minus">Flat</option>
-                                                    <option value="fas fa-circle-exclamation">Alert</option>
-                                                    <option value="fas fa-star">Star</option>
+                                                    <option value="">{t('bi.cf.no_icon')}</option>
+                                                    <option value="fas fa-arrow-up">{t('bi.cf.icon_up')}</option>
+                                                    <option value="fas fa-arrow-down">{t('bi.cf.icon_down')}</option>
+                                                    <option value="fas fa-minus">{t('bi.cf.icon_flat')}</option>
+                                                    <option value="fas fa-circle-exclamation">{t('bi.cf.icon_alert')}</option>
+                                                    <option value="fas fa-star">{t('bi.cf.icon_star')}</option>
                                                 </select>
                                             </div>
                                         </div>
@@ -1025,7 +1026,7 @@ const PivotValueSelector: React.FC<{
 
                             {(!activeRuleMetric.conditionalFormatting || activeRuleMetric.conditionalFormatting.length === 0) && (
                                 <div className="text-sm text-slate-500 dark:text-slate-400 italic border border-dashed border-slate-300 dark:border-white/10 rounded-xl p-4 text-center">
-                                    No rules yet. Click <span className="font-bold text-indigo-500">+ Add Rule</span> to start.
+                                    {t('bi.cf.no_rules', { addRule: t('bi.cf.add_rule') })}
                                 </div>
                             )}
                         </div>
@@ -1044,9 +1045,9 @@ const PivotValueSelector: React.FC<{
                     >
                         <div className="sticky top-0 z-10 px-5 py-4 border-b border-slate-200 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between">
                             <div>
-                                <div className="text-sm font-black text-slate-900 dark:text-white">Recommended Rules</div>
+                                <div className="text-sm font-black text-slate-900 dark:text-white">{t('bi.cf.recommended_title')}</div>
                                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    One click to apply for metric <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeRuleMetric.field}</span>
+                                    {t('bi.cf.recommended_subtitle', { metric: activeRuleMetric.field })}
                                 </div>
                             </div>
                             <button
@@ -1092,6 +1093,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     activeTab,
     setActiveTab
 }) => {
+    const { t } = useLanguageStore();
     const { dataSources, selectedDataSourceId, setSelectedDataSource, connections, updateDataSource } = useDataStore();
     const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource, syncPageDataSource } = useDashboardStore();
 
