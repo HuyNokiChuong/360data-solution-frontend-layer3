@@ -1,5 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { SharePermission, BIDashboard } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { BIDashboard, DashboardRLSConfig, SharePermission, ShareSavePayload } from '../types';
+import { RLSConfigPanel } from './RLSConfigPanel';
+import { useLanguageStore } from '../../../store/languageStore';
+import { API_BASE } from '../../../services/api';
+import { useDataStore } from '../store/dataStore';
 
 interface ShareModalProps {
     isOpen: boolean;
@@ -7,219 +11,382 @@ interface ShareModalProps {
     title: string;
     itemType: 'dashboard' | 'folder';
     permissions: SharePermission[];
+    dashboard?: BIDashboard;
     folderDashboards?: BIDashboard[];
-    onSave: (email: string, roles: Record<string, SharePermission['permission'] | 'none'>) => void;
+    onSave: (email: string, payload: ShareSavePayload) => void;
 }
 
-export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, title, itemType, permissions, folderDashboards, onSave }) => {
-    const [email, setEmail] = useState('');
-    const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
-    const [currentPermissions, setCurrentPermissions] = useState<SharePermission[]>(permissions || []);
+const createDefaultConfig = (dashboard?: BIDashboard): DashboardRLSConfig => ({
+    allowedPageIds: (dashboard?.pages || []).map((p) => p.id),
+    rules: [],
+});
 
-    // Initialize granular roles
+const getDashboardFields = (dashboard?: BIDashboard, dataSources: any[] = [], allowedPageIds?: string[]): string[] => {
+    if (!dashboard) return [];
+    const fieldSet = new Set<string>();
+    const pageScope = Array.isArray(allowedPageIds) && allowedPageIds.length > 0
+        ? new Set(allowedPageIds)
+        : null;
+
+    (dashboard.dataSources || []).forEach((ds) => {
+        (ds.schema || []).forEach((f) => {
+            if (f?.name) fieldSet.add(f.name);
+        });
+    });
+
+    const pageWidgets = (dashboard.pages || [])
+        .filter((p) => !pageScope || pageScope.has(p.id))
+        .flatMap((p) => p.widgets || []);
+    const allWidgets = [...(dashboard.widgets || []), ...pageWidgets];
+
+    const addSchemaFieldsFromSource = (widget: any) => {
+        if (!widget) return;
+        const widgetSource = dataSources.find((ds: any) =>
+            (widget.dataSourceId && ds.id === widget.dataSourceId) ||
+            (widget.dataSourceName && (ds.name === widget.dataSourceName || ds.tableName === widget.dataSourceName))
+        );
+
+        (widgetSource?.schema || []).forEach((f: any) => {
+            if (f?.name) fieldSet.add(String(f.name));
+        });
+    };
+
+    allWidgets.forEach((w: any) => {
+        addSchemaFieldsFromSource(w);
+
+        const candidates = [
+            w.xAxis,
+            ...(w.yAxis || []),
+            ...(w.values || []),
+            ...(w.dimensions || []),
+            ...(w.measures || []),
+            ...((w.columns || []).map((c: any) => c?.field).filter(Boolean)),
+            ...((w.pivotRows || []).filter(Boolean)),
+            ...((w.pivotCols || []).filter(Boolean)),
+            ...((w.pivotValues || []).map((pv: any) => pv?.field).filter(Boolean)),
+            w.metric,
+            w.comparisonValue,
+            w.legend,
+            w.slicerField,
+        ].filter(Boolean);
+
+        candidates.forEach((c) => fieldSet.add(String(c)));
+    });
+
+    (dashboard.globalFilters || []).forEach((gf: any) => {
+        if (gf?.field) fieldSet.add(String(gf.field));
+    });
+    (dashboard.calculatedFields || []).forEach((cf: any) => {
+        if (cf?.name) fieldSet.add(String(cf.name));
+    });
+    (dashboard.quickMeasures || []).forEach((qm: any) => {
+        if (qm?.field) fieldSet.add(String(qm.field));
+        if (qm?.label) fieldSet.add(String(qm.label));
+    });
+
+    return Array.from(fieldSet).sort((a, b) => a.localeCompare(b));
+};
+
+const validateRule = (rule: any): boolean => {
+    const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
+    if (conditions.length === 0) return false;
+
+    return conditions.every((condition: any) => {
+        if (!condition?.field) return false;
+        const op = condition.operator;
+        if (['isNull', 'isNotNull'].includes(op)) return true;
+        if (op === 'in') return Array.isArray(condition.values) && condition.values.length > 0;
+        if (op === 'between') return !!String(condition.value || '').trim() && !!String(condition.value2 || '').trim();
+        return !!String(condition.value || '').trim();
+    });
+};
+
+export const ShareModal: React.FC<ShareModalProps> = ({
+    isOpen,
+    onClose,
+    title,
+    itemType,
+    dashboard,
+    folderDashboards,
+    onSave,
+}) => {
+    const { t } = useLanguageStore();
+    const dataSources = useDataStore((s) => s.dataSources);
+    const [email, setEmail] = useState('');
+    const [workspaceUserEmails, setWorkspaceUserEmails] = useState<string[]>([]);
+    const [isEmailSuggestionOpen, setIsEmailSuggestionOpen] = useState(false);
+    const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
+    const [dashboardRLS, setDashboardRLS] = useState<Record<string, DashboardRLSConfig>>({});
+    const [confirmedDashboardIds, setConfirmedDashboardIds] = useState<Set<string>>(new Set());
+    const [activeDashboardId, setActiveDashboardId] = useState<string>('');
+
+    const dashboards = useMemo(() => (itemType === 'dashboard' ? (dashboard ? [dashboard] : []) : (folderDashboards || [])), [itemType, dashboard, folderDashboards]);
+    const dashboardById = useMemo(() => new Map(dashboards.map((d) => [d.id, d])), [dashboards]);
+
     useEffect(() => {
-        if (isOpen) {
-            const initialRoles: Record<string, SharePermission['permission'] | 'none'> = {};
-            if (itemType === 'folder' && folderDashboards) {
-                // Default all to 'none' (Don't Share) - users must explicitly grant permissions
-                folderDashboards.forEach(d => {
-                    initialRoles[d.id] = 'none';
-                });
-                // Also handle the folder itself (using 'folder' as key)
-                initialRoles['folder'] = 'none';
-            } else {
-                initialRoles['dashboard'] = 'none';
-            }
-            setGranularRoles(initialRoles);
+        if (!isOpen) return;
+
+        const roles: Record<string, SharePermission['permission'] | 'none'> = {};
+        const rlsMap: Record<string, DashboardRLSConfig> = {};
+
+        if (itemType === 'folder') {
+            roles.folder = 'none';
         }
-    }, [isOpen, itemType, folderDashboards]);
+
+        dashboards.forEach((d, idx) => {
+            roles[itemType === 'dashboard' ? 'dashboard' : d.id] = 'none';
+            rlsMap[d.id] = createDefaultConfig(d);
+            if (idx === 0) setActiveDashboardId(d.id);
+        });
+
+        setGranularRoles(roles);
+        setDashboardRLS(rlsMap);
+        setConfirmedDashboardIds(new Set());
+        if (!dashboards.length) setActiveDashboardId('');
+    }, [isOpen, itemType, dashboards]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const token = localStorage.getItem('auth_token');
+        if (!token) return;
+
+        fetch(`${API_BASE}/users`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((res) => res.json())
+            .then((data) => {
+                const emails = Array.isArray(data?.data)
+                    ? data.data.map((u: any) => String(u?.email || '').trim()).filter(Boolean)
+                    : [];
+                setWorkspaceUserEmails(Array.from(new Set(emails)));
+            })
+            .catch(() => {
+                setWorkspaceUserEmails([]);
+            });
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
+    const filteredSuggestions = (() => {
+        const keyword = email.trim().toLowerCase();
+        if (!keyword) return [];
+        return workspaceUserEmails
+            .filter((candidate) => candidate.toLowerCase().includes(keyword))
+            .slice(0, 8);
+    })();
+
+    const selectedDashboard = dashboardById.get(activeDashboardId) || dashboards[0];
+    const selectedRoleKey = itemType === 'dashboard' ? 'dashboard' : selectedDashboard?.id || '';
+
     const handleRoleChange = (id: string, role: SharePermission['permission'] | 'none') => {
-        setGranularRoles(prev => ({ ...prev, [id]: role }));
+        setGranularRoles((prev) => ({ ...prev, [id]: role }));
+        if (itemType === 'folder' && id !== 'folder' && role === 'none') {
+            setConfirmedDashboardIds((prev) => {
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+            });
+        }
     };
+
+    const saveDisabled = (() => {
+        const roleEntries = Object.entries(granularRoles).filter(([k]) => k !== 'folder');
+        const activeDashboardEntries = roleEntries.filter(([, role]) => role !== 'none');
+
+        if (activeDashboardEntries.length === 0) return false;
+
+        for (const [key] of activeDashboardEntries) {
+            const dashboardId = itemType === 'dashboard' ? dashboard?.id : key;
+            if (!dashboardId) continue;
+            const cfg = dashboardRLS[dashboardId];
+            if (!cfg || cfg.allowedPageIds.length === 0) return true;
+            if (cfg.rules.some((rule) => !validateRule(rule))) return true;
+            if (itemType === 'folder' && !confirmedDashboardIds.has(dashboardId)) return true;
+        }
+        return false;
+    })();
 
     const handleSave = () => {
         if (!email.trim() || !email.includes('@')) {
-            alert("Please enter a valid corporate email.");
+            alert(t('share.invalid_email'));
             return;
         }
 
-        // Construct permissions list to pass back
-        // For 'folder' itemType, we need to pass which dashboard gets what perms
-        // But the onSave signature is (permissions, selectedDashboardIds)
-        // We'll adapt: if granular Roles are all the same, use standard flow.
-        // If different, we might need to call onSave multiple times or enhance it.
-
-        // Let's assume onSave can handle a mapping or we call it per dashboard.
-        // Actually, let's keep it simple: 
-        // 1. Apply folder permission if applicable
-        // 2. Apply each dashboard permission individually
-
-        // We'll pass the granularRoles back as a special case or just fix the parent.
-        // For now, let's pass a special 'granularMapping' in the permissions array or similar? No.
-
-        // BETTER: I will update the BISidebar and DashboardToolbar to handle the granular mapping.
-        // I'll change the onSave signature to take the role mapping.
-
-        (onSave as any)(email, granularRoles);
+        onSave(email.trim(), {
+            roles: granularRoles,
+            dashboardRLS,
+            confirmedDashboardIds: Array.from(confirmedDashboardIds),
+        });
         onClose();
         setEmail('');
     };
 
     return (
-        <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-300"
-            onClick={onClose}
-        >
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-300" onClick={onClose}>
             <div
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-[2.5rem] w-[640px] shadow-3xl animate-in zoom-in-95 duration-300 overflow-hidden flex flex-col max-h-[90vh]"
-                onClick={e => e.stopPropagation()}
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-[2rem] w-[1100px] max-w-[95vw] shadow-3xl animate-in zoom-in-95 duration-300 overflow-hidden flex flex-col max-h-[92vh]"
+                onClick={(e) => e.stopPropagation()}
             >
-                {/* Header */}
-                <div className="flex items-center justify-between p-10 pb-6 border-b border-white/5 shrink-0">
+                <div className="flex items-center justify-between p-8 pb-5 border-b border-white/5 shrink-0">
                     <div>
-                        <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Share Access</h2>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1 italic">Identity & Permission Provisioning</p>
+                        <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">{t('share.title')}</h2>
+                        <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1 italic">{t('share.subtitle')}</p>
                     </div>
-                    <button onClick={onClose} className="w-12 h-12 flex items-center justify-center rounded-2xl bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all hover:scale-110 active:scale-95">
+                    <button onClick={onClose} className="w-11 h-11 flex items-center justify-center rounded-2xl bg-slate-100 dark:bg-white/5 text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all">
                         <i className="fas fa-times"></i>
                     </button>
                 </div>
 
-                <div className="p-10 flex-1 overflow-y-auto custom-scrollbar space-y-10">
-                    {/* Step 1: Email */}
-                    <div className="space-y-4">
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
-                            <i className="fas fa-envelope text-indigo-500"></i>
-                            User Email Address
-                        </label>
+                <div className="px-8 pt-6">
+                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] pb-2">{t('share.user_email')}</label>
+                    <div className="relative">
                         <input
                             autoFocus
                             type="email"
                             value={email}
-                            onChange={e => setEmail(e.target.value)}
-                            placeholder="collaborator@yourcompany.com"
-                            className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-6 py-5 text-lg font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 transition-all placeholder-slate-400 dark:placeholder-slate-800 shadow-inner"
+                            onChange={(e) => {
+                                setEmail(e.target.value);
+                                setIsEmailSuggestionOpen(true);
+                            }}
+                            onFocus={() => setIsEmailSuggestionOpen(true)}
+                            onBlur={() => {
+                                setTimeout(() => setIsEmailSuggestionOpen(false), 120);
+                            }}
+                            placeholder={t('share.email_placeholder')}
+                            className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-base font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600"
                         />
-                    </div>
 
-                    {/* Step 2: Granular List */}
-                    <div className="space-y-4">
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
-                            <i className="fas fa-shield-alt text-indigo-500"></i>
-                            Define Workspace Permissions
-                        </label>
-
-                        <div className="bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl overflow-hidden shadow-2xl">
-                            {/* List Header */}
-                            <div className="grid grid-cols-12 gap-4 px-6 py-4 bg-slate-100 dark:bg-white/[0.03] border-b border-white/5 font-black text-[9px] text-slate-400 uppercase tracking-widest">
-                                <div className="col-span-12">Resource Name & Purpose</div>
+                        {isEmailSuggestionOpen && filteredSuggestions.length > 0 && (
+                            <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
+                                {filteredSuggestions.map((suggestion) => (
+                                    <button
+                                        key={suggestion}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            setEmail(suggestion);
+                                            setIsEmailSuggestionOpen(false);
+                                        }}
+                                        className="w-full text-left px-4 py-3 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5"
+                                    >
+                                        {suggestion}
+                                    </button>
+                                ))}
                             </div>
-
-                            <div className="divide-y divide-white/5 max-h-[350px] overflow-y-auto custom-scrollbar">
-                                {/* Folder itself if applicable */}
-                                {itemType === 'folder' && (
-                                    <div className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
-                                        <div className="col-span-7 flex items-center gap-4">
-                                            <div className="w-10 h-10 bg-yellow-500/10 text-yellow-500 rounded-xl flex items-center justify-center text-sm shadow-inner group-hover:scale-110 transition-transform">
-                                                <i className="fas fa-folder"></i>
-                                            </div>
-                                            <div>
-                                                <div className="text-sm font-black text-slate-900 dark:text-white tracking-tight">{title} <span className="text-[10px] text-slate-500 uppercase ml-2">(Folder)</span></div>
-                                                <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Container & Organizational Access</div>
-                                            </div>
-                                        </div>
-                                        <div className="col-span-5 flex justify-end">
-                                            <select
-                                                value={granularRoles['folder']}
-                                                onChange={e => handleRoleChange('folder', e.target.value as any)}
-                                                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 dark:text-white outline-none cursor-pointer focus:border-indigo-600 appearance-none shadow-sm min-w-[100px] text-center"
-                                            >
-                                                <option value="none">Don't Share</option>
-                                                <option value="view">Viewer</option>
-                                                <option value="edit">Editor</option>
-                                                <option value="admin">Admin</option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {/* Dashboards */}
-                                {itemType === 'dashboard' ? (
-                                    <div className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
-                                        <div className="col-span-7 flex items-center gap-4">
-                                            <div className="w-10 h-10 bg-indigo-500/10 text-indigo-400 rounded-xl flex items-center justify-center text-sm shadow-inner group-hover:scale-110 transition-transform">
-                                                <i className="fas fa-chart-line"></i>
-                                            </div>
-                                            <div>
-                                                <div className="text-sm font-black text-slate-900 dark:text-white tracking-tight">{title}</div>
-                                                <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Primary Dashboard Asset</div>
-                                            </div>
-                                        </div>
-                                        <div className="col-span-5 flex justify-end">
-                                            <select
-                                                value={granularRoles['dashboard']}
-                                                onChange={e => handleRoleChange('dashboard', e.target.value as any)}
-                                                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 dark:text-white outline-none cursor-pointer focus:border-indigo-600 appearance-none shadow-sm min-w-[100px] text-center"
-                                            >
-                                                <option value="none">Don't Share</option>
-                                                <option value="view">Viewer</option>
-                                                <option value="edit">Editor</option>
-                                                <option value="admin">Admin</option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    folderDashboards?.map(dashboard => (
-                                        <div key={dashboard.id} className="grid grid-cols-12 gap-4 px-6 py-5 hover:bg-white/[0.02] transition-colors items-center group">
-                                            <div className="col-span-7 flex items-center gap-4">
-                                                <div className="w-10 h-10 bg-indigo-500/5 text-slate-400 group-hover:text-indigo-400 rounded-xl flex items-center justify-center text-sm shadow-inner transition-all">
-                                                    <i className="fas fa-chart-bar"></i>
-                                                </div>
-                                                <div>
-                                                    <div className="text-sm font-bold text-slate-700 dark:text-slate-300 group-hover:text-white transition-colors">{dashboard.title}</div>
-                                                    <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter">Report Resource</div>
-                                                </div>
-                                            </div>
-                                            <div className="col-span-5 flex justify-end">
-                                                <select
-                                                    value={granularRoles[dashboard.id] || 'none'}
-                                                    onChange={e => handleRoleChange(dashboard.id, e.target.value as any)}
-                                                    className={`border rounded-xl px-4 py-2 text-xs font-bold outline-none cursor-pointer appearance-none shadow-sm min-w-[100px] text-center transition-all ${granularRoles[dashboard.id] === 'none'
-                                                        ? 'bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/5 text-slate-400'
-                                                        : 'bg-white dark:bg-slate-900 border-indigo-500/50 text-indigo-500 dark:text-white'
-                                                        }`}
-                                                >
-                                                    <option value="none">Don't Share</option>
-                                                    <option value="view">Viewer</option>
-                                                    <option value="edit">Editor</option>
-                                                    <option value="admin">Admin</option>
-                                                </select>
-                                            </div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
+                        )}
                     </div>
                 </div>
 
-                {/* Footer */}
-                <div className="p-10 border-t border-white/5 bg-slate-50/50 dark:bg-white/[0.01] shrink-0 flex justify-end gap-5">
-                    <button
-                        onClick={onClose}
-                        className="px-8 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
-                    >
-                        Cancel
-                    </button>
+                <div className="p-8 grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0 overflow-hidden">
+                    <div className="min-h-0 flex flex-col bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden">
+                        <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 text-[10px] font-black uppercase tracking-widest text-slate-500">{t('share.resource_name_purpose')}</div>
+                        <div className="overflow-y-auto divide-y divide-slate-200 dark:divide-white/5">
+                            {itemType === 'folder' && (
+                                <div className="px-5 py-4 flex items-center justify-between gap-3 bg-amber-50/80 dark:bg-amber-500/10 border-y border-amber-200/80 dark:border-amber-500/20">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-300 flex items-center justify-center">
+                                            <i className="fas fa-folder text-xs"></i>
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-black text-slate-900 dark:text-white">
+                                                {title}
+                                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/20 text-[9px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-200">
+                                                    {t('share.folder')}
+                                                </span>
+                                            </div>
+                                            <div className="text-[10px] text-amber-700/90 dark:text-amber-200/80 uppercase font-bold">{t('share.container_access')}</div>
+                                        </div>
+                                    </div>
+                                    <select value={granularRoles.folder || 'none'} onChange={(e) => handleRoleChange('folder', e.target.value as any)} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold">
+                                        <option value="none">{t('share.dont_share')}</option>
+                                        <option value="view">{t('share.viewer')}</option>
+                                        <option value="edit">{t('share.editor')}</option>
+                                        <option value="admin">{t('share.admin')}</option>
+                                    </select>
+                                </div>
+                            )}
+
+                            {(itemType === 'dashboard' ? dashboards : dashboards).map((d) => {
+                                const rowKey = itemType === 'dashboard' ? 'dashboard' : d.id;
+                                const isActive = selectedDashboard?.id === d.id;
+                                const configured = confirmedDashboardIds.has(d.id);
+
+                                return (
+                                    <button
+                                        key={d.id}
+                                        type="button"
+                                        onClick={() => setActiveDashboardId(d.id)}
+                                        className={`w-full text-left px-5 py-4 flex items-center justify-between gap-3 ${isActive ? 'bg-indigo-50 dark:bg-indigo-600/10' : 'hover:bg-slate-100 dark:hover:bg-white/5'}`}
+                                    >
+                                        <div>
+                                            <div className="text-sm font-bold text-slate-900 dark:text-white">{d.title}</div>
+                                            <div className="text-[10px] text-slate-500 uppercase font-bold">{t('share.dashboard')}</div>
+                                            {itemType === 'folder' && granularRoles[d.id] !== 'none' && (
+                                                <div className={`text-[10px] mt-1 font-bold uppercase ${configured ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                                    {configured ? t('share.configured') : t('share.not_configured')}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <select
+                                            value={granularRoles[rowKey] || 'none'}
+                                            onChange={(e) => {
+                                                e.stopPropagation();
+                                                handleRoleChange(rowKey, e.target.value as any);
+                                            }}
+                                            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs font-bold"
+                                        >
+                                            <option value="none">{t('share.dont_share')}</option>
+                                            <option value="view">{t('share.viewer')}</option>
+                                            <option value="edit">{t('share.editor')}</option>
+                                            <option value="admin">{t('share.admin')}</option>
+                                        </select>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {selectedDashboard ? (
+                        <RLSConfigPanel
+                            dashboard={selectedDashboard}
+                            role={(granularRoles[selectedRoleKey] || 'none') as any}
+                            config={dashboardRLS[selectedDashboard.id] || createDefaultConfig(selectedDashboard)}
+                            fields={getDashboardFields(
+                                selectedDashboard,
+                                dataSources,
+                                dashboardRLS[selectedDashboard.id]?.allowedPageIds
+                            )}
+                            isConfirmed={confirmedDashboardIds.has(selectedDashboard.id)}
+                            onChange={(nextConfig) => {
+                                setDashboardRLS((prev) => ({ ...prev, [selectedDashboard.id]: nextConfig }));
+                                setConfirmedDashboardIds((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(selectedDashboard.id);
+                                    return next;
+                                });
+                            }}
+                            onConfirm={() => {
+                                setConfirmedDashboardIds((prev) => {
+                                    const next = new Set(prev);
+                                    next.add(selectedDashboard.id);
+                                    return next;
+                                });
+                            }}
+                        />
+                    ) : (
+                        <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center text-sm text-slate-500">{t('share.no_dashboard_available')}</div>
+                    )}
+                </div>
+
+                <div className="p-8 border-t border-white/5 bg-slate-50/50 dark:bg-white/[0.01] shrink-0 flex justify-end gap-4">
+                    <button onClick={onClose} className="px-7 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors">{t('share.cancel')}</button>
                     <button
                         onClick={handleSave}
-                        className="px-10 py-5 rounded-[1.5rem] bg-indigo-600 hover:bg-indigo-500 text-white shadow-2xl shadow-indigo-600/30 transition-all font-black text-xs uppercase tracking-widest active:scale-95 flex items-center gap-3"
+                        disabled={saveDisabled}
+                        className="px-9 py-4 rounded-xl bg-indigo-600 disabled:bg-slate-400 disabled:cursor-not-allowed hover:bg-indigo-500 text-white transition-all font-black text-xs uppercase tracking-widest flex items-center gap-2"
                     >
-                        <span>Confirm & Save Access</span>
-                        <i className="fas fa-paper-plane text-[10px] opacity-50"></i>
+                        <span>{t('share.confirm_save')}</span>
+                        <i className="fas fa-paper-plane text-[10px] opacity-70"></i>
                     </button>
                 </div>
             </div>

@@ -17,7 +17,13 @@ router.get('/', async (req, res) => {
         const result = await query(
             `SELECT d.*, 
         COALESCE(
-          (SELECT json_agg(json_build_object('userId', ds.user_id, 'permission', ds.permission, 'sharedAt', ds.shared_at))
+          (SELECT json_agg(json_build_object(
+            'userId', ds.user_id,
+            'permission', ds.permission,
+            'sharedAt', ds.shared_at,
+            'allowedPageIds', COALESCE(to_jsonb(ds)->'allowed_page_ids', '[]'::jsonb),
+            'rls', COALESCE(to_jsonb(ds)->'rls_config', '{}'::jsonb)
+          ))
            FROM dashboard_shares ds WHERE ds.dashboard_id = d.id), '[]'
         ) as shared_with
        FROM dashboards d 
@@ -26,7 +32,7 @@ router.get('/', async (req, res) => {
             [req.user.workspace_id]
         );
 
-        res.json({ success: true, data: result.rows.map(formatDashboard) });
+        res.json({ success: true, data: result.rows.map(formatDashboard).map((d) => applyPageAccessConstraint(d, req.user.email)) });
     } catch (err) {
         console.error('List dashboards error:', err);
         res.status(500).json({ success: false, message: 'Failed to list dashboards' });
@@ -219,11 +225,28 @@ router.post('/:id/share', async (req, res) => {
 
         // Insert new shares
         for (const perm of (permissions || [])) {
-            await client.query(
-                `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, $3)
-         ON CONFLICT (dashboard_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, shared_at = NOW()`,
-                [dashboardId, perm.userId, perm.permission]
-            );
+            const allowedPageIds = Array.isArray(perm?.allowedPageIds) ? perm.allowedPageIds : [];
+            const rlsConfig = perm?.rls && typeof perm.rls === 'object' ? perm.rls : {};
+            try {
+                await client.query(
+                    `INSERT INTO dashboard_shares (dashboard_id, user_id, permission, allowed_page_ids, rls_config) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+             ON CONFLICT (dashboard_id, user_id) DO UPDATE
+             SET permission = EXCLUDED.permission,
+                 allowed_page_ids = EXCLUDED.allowed_page_ids,
+                 rls_config = EXCLUDED.rls_config,
+                 shared_at = NOW()`,
+                    [dashboardId, perm.userId, perm.permission, JSON.stringify(allowedPageIds), JSON.stringify(rlsConfig)]
+                );
+            } catch (err) {
+                // Backward-compatible fallback when RLS columns are not migrated yet.
+                await client.query(
+                    `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, $3)
+             ON CONFLICT (dashboard_id, user_id) DO UPDATE
+             SET permission = EXCLUDED.permission,
+                 shared_at = NOW()`,
+                    [dashboardId, perm.userId, perm.permission]
+                );
+            }
         }
 
         await client.query('COMMIT');
@@ -259,6 +282,24 @@ function formatDashboard(row) {
         updatedAt: row.updated_at,
         createdBy: row.created_by,
         sharedWith: row.shared_with || [],
+    };
+}
+
+function applyPageAccessConstraint(dashboard, email) {
+    const shares = Array.isArray(dashboard.sharedWith) ? dashboard.sharedWith : [];
+    const currentShare = shares.find((s) => s.userId === email);
+    if (!currentShare || currentShare.permission === 'admin') return dashboard;
+
+    const allowed = Array.isArray(currentShare.allowedPageIds) ? currentShare.allowedPageIds : [];
+    if (allowed.length === 0) return dashboard;
+
+    const filteredPages = (dashboard.pages || []).filter((p) => allowed.includes(p.id));
+    return {
+        ...dashboard,
+        pages: filteredPages,
+        activePageId: filteredPages.some((p) => p.id === dashboard.activePageId)
+            ? dashboard.activePageId
+            : (filteredPages[0]?.id || ''),
     };
 }
 

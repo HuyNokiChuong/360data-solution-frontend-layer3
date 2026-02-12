@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import type { ModelRelationship, ModelTable, RelationshipSuggestion } from '../../types';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface ListViewProps {
   tables: ModelTable[];
@@ -37,6 +38,7 @@ const ListView: React.FC<ListViewProps> = ({
   onAcceptSuggestion,
   onRejectSuggestion,
 }) => {
+  const { t } = useLanguageStore();
   const [search, setSearch] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [form, setForm] = useState({
@@ -110,7 +112,7 @@ const ListView: React.FC<ListViewProps> = ({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search tables..."
+            placeholder={t('dm.search_tables')}
             className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white"
           />
         </div>
@@ -128,7 +130,7 @@ const ListView: React.FC<ListViewProps> = ({
                 }`}
               >
                 <div className="text-xs font-black text-slate-900 dark:text-white truncate">{table.tableName}</div>
-                <div className="text-[10px] text-slate-500 truncate">{table.datasetName || 'dataset'}</div>
+                <div className="text-[10px] text-slate-500 truncate">{table.datasetName || t('dm.dataset')}</div>
               </button>
             );
           })}
@@ -138,8 +140,8 @@ const ListView: React.FC<ListViewProps> = ({
       <section className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden flex flex-col">
         <header className="p-4 border-b border-slate-200 dark:border-white/10 flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-black text-slate-900 dark:text-white">{selectedTable ? selectedTable.tableName : 'Data Modeling'}</h3>
-            <p className="text-[11px] text-slate-500">List view</p>
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">{selectedTable ? selectedTable.tableName : t('dm.title')}</h3>
+            <p className="text-[11px] text-slate-500">{t('dm.list_view')}</p>
           </div>
           <div className="flex gap-2">
             <button
@@ -147,7 +149,7 @@ const ListView: React.FC<ListViewProps> = ({
               disabled={autoDetectLoading}
               className="px-3 py-2 rounded-lg text-[11px] font-black bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30 disabled:opacity-50"
             >
-              {autoDetectLoading ? 'Detecting...' : 'Auto Detect Relationship'}
+              {autoDetectLoading ? t('dm.detecting') : t('dm.auto_detect_relationship')}
             </button>
             {canEdit && (
               <button
@@ -157,7 +159,7 @@ const ListView: React.FC<ListViewProps> = ({
                 }}
                 className="px-3 py-2 rounded-lg text-[11px] font-black bg-indigo-600 text-white"
               >
-                Create Relationship
+                {t('dm.create_relationship')}
               </button>
             )}
           </div>
@@ -172,7 +174,7 @@ const ListView: React.FC<ListViewProps> = ({
                   onChange={(e) => setForm((prev) => ({ ...prev, fromTableId: e.target.value, fromColumn: '' }))}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
                 >
-                  <option value="">Table A</option>
+                  <option value="">{t('dm.table_a')}</option>
                   {tables.map((table) => (
                     <option key={table.id} value={table.id}>{table.tableName}</option>
                   ))}
@@ -182,7 +184,7 @@ const ListView: React.FC<ListViewProps> = ({
                   onChange={(e) => setForm((prev) => ({ ...prev, fromColumn: e.target.value }))}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
                 >
-                  <option value="">Column A</option>
+                  <option value="">{t('dm.column_a')}</option>
                   {fromColumns.map((col) => (
                     <option key={col.name} value={col.name}>{col.name}</option>
                   ))}
@@ -192,7 +194,7 @@ const ListView: React.FC<ListViewProps> = ({
                   onChange={(e) => setForm((prev) => ({ ...prev, toTableId: e.target.value, toColumn: '' }))}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
                 >
-                  <option value="">Table B</option>
+                  <option value="">{t('dm.table_b')}</option>
                   {tables.map((table) => (
                     <option key={table.id} value={table.id}>{table.tableName}</option>
                   ))}
@@ -202,7 +204,7 @@ const ListView: React.FC<ListViewProps> = ({
                   onChange={(e) => setForm((prev) => ({ ...prev, toColumn: e.target.value }))}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
                 >
-                  <option value="">Column B</option>
+                  <option value="">{t('dm.column_b')}</option>
                   {toColumns.map((col) => (
                     <option key={col.name} value={col.name}>{col.name}</option>
                   ))}
@@ -221,8 +223,8 @@ const ListView: React.FC<ListViewProps> = ({
                   onChange={(e) => setForm((prev) => ({ ...prev, crossFilterDirection: e.target.value as any }))}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
                 >
-                  <option value="single">Single</option>
-                  <option value="both">Both</option>
+                  <option value="single">{t('dm.single')}</option>
+                  <option value="both">{t('dm.both')}</option>
                 </select>
               </div>
               <div className="mt-3 flex justify-end gap-2">
@@ -230,7 +232,7 @@ const ListView: React.FC<ListViewProps> = ({
                   onClick={() => setIsCreating(false)}
                   className="px-3 py-2 rounded-lg text-xs font-bold border border-slate-200 dark:border-white/10"
                 >
-                  Cancel
+                  {t('dm.cancel')}
                 </button>
                 <button
                   onClick={async () => {
@@ -241,7 +243,7 @@ const ListView: React.FC<ListViewProps> = ({
                   disabled={!form.fromTableId || !form.fromColumn || !form.toTableId || !form.toColumn}
                   className="px-3 py-2 rounded-lg text-xs font-black bg-indigo-600 text-white disabled:opacity-50"
                 >
-                  Save Relationship
+                  {t('dm.save_relationship')}
                 </button>
               </div>
             </div>
@@ -249,7 +251,7 @@ const ListView: React.FC<ListViewProps> = ({
 
           {selectedTable && (
             <div className="p-4 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-950/40">
-              <div className="text-xs font-black text-slate-700 dark:text-slate-300 mb-2">Columns</div>
+              <div className="text-xs font-black text-slate-700 dark:text-slate-300 mb-2">{t('dm.columns')}</div>
               <div className="space-y-1">
                 {selectedTable.schema.map((col) => {
                   const hasKey = relatedColumnSet.has(String(col.name).toLowerCase());
@@ -269,27 +271,27 @@ const ListView: React.FC<ListViewProps> = ({
 
           <div className="p-4 rounded-xl border border-slate-200 dark:border-white/10">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-black text-slate-700 dark:text-slate-300">Auto Detect Suggestions</div>
+              <div className="text-xs font-black text-slate-700 dark:text-slate-300">{t('dm.auto_detect_suggestions')}</div>
               {selectedSuggestionIds.length > 0 && canEdit && (
                 <div className="flex gap-2">
                   <button
                     onClick={handleBulkReject}
                     className="px-2 py-1 text-[10px] font-black rounded border border-slate-200 dark:border-white/10"
                   >
-                    Reject Selected
+                    {t('dm.reject_selected')}
                   </button>
                   <button
                     onClick={handleBulkAccept}
                     className="px-2 py-1 text-[10px] font-black rounded bg-indigo-600 text-white"
                   >
-                    Accept Selected
+                    {t('dm.accept_selected')}
                   </button>
                 </div>
               )}
             </div>
             <div className="space-y-2">
               {suggestions.length === 0 && (
-                <div className="text-xs text-slate-500">No suggestion. Click Auto Detect Relationship.</div>
+                <div className="text-xs text-slate-500">{t('dm.no_suggestion')}</div>
               )}
               {suggestions.map((suggestion) => (
                 <div key={suggestion.id} className="p-2 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-950/40">
@@ -320,13 +322,13 @@ const ListView: React.FC<ListViewProps> = ({
                         onClick={() => onRejectSuggestion(suggestion.id)}
                         className="px-2 py-1 text-[10px] font-black rounded border border-slate-200 dark:border-white/10"
                       >
-                        Reject
+                        {t('dm.reject')}
                       </button>
                       <button
                         onClick={() => onAcceptSuggestion(suggestion)}
                         className="px-2 py-1 text-[10px] font-black rounded bg-indigo-600 text-white"
                       >
-                        Accept
+                        {t('dm.accept')}
                       </button>
                     </div>
                   )}
@@ -336,9 +338,9 @@ const ListView: React.FC<ListViewProps> = ({
           </div>
 
           <div className="p-4 rounded-xl border border-slate-200 dark:border-white/10">
-            <div className="text-xs font-black text-slate-700 dark:text-slate-300 mb-2">Relationships</div>
+            <div className="text-xs font-black text-slate-700 dark:text-slate-300 mb-2">{t('dm.relationships')}</div>
             <div className="space-y-2">
-              {selectedTableRelationships.length === 0 && <div className="text-xs text-slate-500">No relationships yet.</div>}
+              {selectedTableRelationships.length === 0 && <div className="text-xs text-slate-500">{t('dm.no_relationships')}</div>}
               {selectedTableRelationships.map((rel) => (
                 <div key={rel.id} className="p-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900">
                   <div className="text-xs text-slate-800 dark:text-slate-200">
@@ -358,7 +360,7 @@ const ListView: React.FC<ListViewProps> = ({
                         onClick={() => onDeleteRelationship(rel.id)}
                         className="px-2 py-1 text-[10px] font-black rounded border border-red-500/30 text-red-500"
                       >
-                        Delete
+                        {t('dm.delete')}
                       </button>
                     </div>
                   )}

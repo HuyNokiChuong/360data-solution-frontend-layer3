@@ -14,6 +14,7 @@ import {
   useNodesState,
 } from '@xyflow/react';
 import type { ModelRelationship, ModelTable } from '../../types';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface DiagramViewProps {
   tables: ModelTable[];
@@ -90,6 +91,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
   onDeleteRelationship,
   onActionError,
 }) => {
+  const { t } = useLanguageStore();
   const positionMap = useRef<Map<string, { x: number; y: number }>>(new Map());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
@@ -168,7 +170,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
             event.stopPropagation();
             openEdgeMenuById(rel.id, event.clientX, event.clientY);
           }}
-          title="Right click để chỉnh relationship"
+          title={t('dm.right_click_hint')}
         >
           {`${rel.relationshipType} • ${rel.crossFilterDirection}`}
         </button>
@@ -237,7 +239,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
         crossFilterDirection: 'single',
       });
     } catch (err: any) {
-      const message = err?.message || 'Failed to create relationship';
+      const message = err?.message || t('dm.create_relationship');
       setCanvasError(message);
       onActionError?.(message);
     }
@@ -269,7 +271,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
       });
       setEdgeContextMenu(null);
     } catch (err: any) {
-      const message = err?.message || 'Failed to update relationship';
+      const message = err?.message || t('dm.save_relationship');
       setCanvasError(message);
       onActionError?.(message);
     }
@@ -283,7 +285,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
       setEdgeContextMenu(null);
       setSelectedEdgeId(null);
     } catch (err: any) {
-      const message = err?.message || 'Failed to delete relationship';
+      const message = err?.message || t('dm.delete');
       setCanvasError(message);
       onActionError?.(message);
     }
@@ -293,7 +295,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
     <div ref={containerRef} className="h-full rounded-2xl border border-slate-200 dark:border-white/10 overflow-hidden relative">
       {!canEdit && (
         <div className="absolute top-2 left-2 z-20 px-3 py-1.5 rounded-lg text-[11px] font-black bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30">
-          Read only: chỉ Admin/Editor mới tạo được relationship
+          {t('dm.read_only_diagram')}
         </div>
       )}
       {canvasError && (
@@ -358,9 +360,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
             {selectedRelationship.fromTable}.{selectedRelationship.fromColumn} {'->'} {selectedRelationship.toTable}.{selectedRelationship.toColumn}
           </div>
 
-          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">
-            Relationship Type
-          </label>
+          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">{t('dm.relationship_type')}</label>
           <select
             value={edgeContextMenu.relationshipType}
             onChange={(e) => setEdgeContextMenu((prev) => prev ? { ...prev, relationshipType: e.target.value as '1-1' | '1-n' | 'n-n' } : prev)}
@@ -371,16 +371,14 @@ const DiagramView: React.FC<DiagramViewProps> = ({
             <option value="n-n">n-n</option>
           </select>
 
-          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">
-            Cross Filter Direction
-          </label>
+          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">{t('dm.cross_filter_direction')}</label>
           <select
             value={edgeContextMenu.crossFilterDirection}
             onChange={(e) => setEdgeContextMenu((prev) => prev ? { ...prev, crossFilterDirection: e.target.value as 'single' | 'both' } : prev)}
             className="w-full mb-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
           >
-            <option value="single">Single</option>
-            <option value="both">Both</option>
+            <option value="single">{t('dm.single')}</option>
+            <option value="both">{t('dm.both')}</option>
           </select>
 
           <div className="flex items-center justify-between gap-2">
@@ -389,7 +387,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
               onClick={() => setEdgeContextMenu(null)}
               className="px-2 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 dark:border-white/10"
             >
-              Close
+              {t('dm.close')}
             </button>
             <div className="flex items-center gap-2">
               {canEdit && (
@@ -398,7 +396,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
                   onClick={handleDeleteSelectedRelationship}
                   className="px-2 py-1.5 rounded-lg text-[11px] font-black border border-red-500/30 text-red-500"
                 >
-                  Delete
+                  {t('dm.delete')}
                 </button>
               )}
               {canEdit && (
@@ -407,7 +405,7 @@ const DiagramView: React.FC<DiagramViewProps> = ({
                   onClick={handleSaveEdgeSettings}
                   className="px-2 py-1.5 rounded-lg text-[11px] font-black bg-indigo-600 text-white"
                 >
-                  Save
+                  {t('dm.save')}
                 </button>
               )}
             </div>

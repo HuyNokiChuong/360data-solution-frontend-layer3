@@ -281,6 +281,8 @@ export interface SemanticFilterItem {
 export interface SemanticQuerySpec {
   dataModelId?: string;
   tableIds: string[];
+  dashboardId?: string;
+  pageId?: string;
   select: SemanticSelectItem[];
   filters?: SemanticFilterItem[];
   groupBy?: Array<{ tableId: string; column: string }>;

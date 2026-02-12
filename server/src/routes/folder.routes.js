@@ -17,7 +17,12 @@ router.get('/', async (req, res) => {
         const result = await query(
             `SELECT f.*,
         COALESCE(
-          (SELECT json_agg(json_build_object('userId', fs.user_id, 'permission', fs.permission, 'sharedAt', fs.shared_at))
+          (SELECT json_agg(json_build_object(
+            'userId', fs.user_id,
+            'permission', fs.permission,
+            'sharedAt', fs.shared_at,
+            'rls', COALESCE(to_jsonb(fs)->'rls_config', '{}'::jsonb)
+          ))
            FROM folder_shares fs WHERE fs.folder_id = f.id), '[]'
         ) as shared_with
        FROM folders f
@@ -163,11 +168,20 @@ router.post('/:id/share', async (req, res) => {
         await client.query('DELETE FROM folder_shares WHERE folder_id = $1', [folderId]);
 
         for (const perm of (permissions || [])) {
-            await client.query(
-                `INSERT INTO folder_shares (folder_id, user_id, permission) VALUES ($1, $2, $3)
-         ON CONFLICT (folder_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, shared_at = NOW()`,
-                [folderId, perm.userId, perm.permission]
-            );
+            const rlsConfig = perm?.rls && typeof perm.rls === 'object' ? perm.rls : {};
+            try {
+                await client.query(
+                    `INSERT INTO folder_shares (folder_id, user_id, permission, rls_config) VALUES ($1, $2, $3, $4::jsonb)
+             ON CONFLICT (folder_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, rls_config = EXCLUDED.rls_config, shared_at = NOW()`,
+                    [folderId, perm.userId, perm.permission, JSON.stringify(rlsConfig)]
+                );
+            } catch (err) {
+                await client.query(
+                    `INSERT INTO folder_shares (folder_id, user_id, permission) VALUES ($1, $2, $3)
+             ON CONFLICT (folder_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, shared_at = NOW()`,
+                    [folderId, perm.userId, perm.permission]
+                );
+            }
         }
 
         await client.query('COMMIT');

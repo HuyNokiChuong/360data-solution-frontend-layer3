@@ -3,7 +3,7 @@ import { useDashboardStore } from './store/dashboardStore';
 import { useFilterStore } from './store/filterStore';
 import { useLanguageStore } from '../../store/languageStore';
 import { ShareModal } from './modals/ShareModal';
-import { SharePermission } from './types';
+import { SharePermission, ShareSavePayload } from './types';
 
 interface DashboardToolbarProps {
     dashboardId: string;
@@ -398,15 +398,19 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     title={activeDashboard.title}
                     itemType="dashboard"
                     permissions={activeDashboard.sharedWith || []}
-                    onSave={(email, roles) => {
-                        const dashboardRole = roles['dashboard'];
+                    dashboard={activeDashboard}
+                    onSave={(email, payload: ShareSavePayload) => {
+                        const dashboardRole = payload.roles['dashboard'];
+                        const rlsCfg = payload.dashboardRLS[activeDashboard.id];
                         if (activeDashboard) {
                             let newPerms = [...(activeDashboard.sharedWith || [])].filter(p => p.userId !== email);
                             if (dashboardRole !== 'none') {
                                 newPerms.push({
                                     userId: email,
                                     permission: dashboardRole,
-                                    sharedAt: new Date().toISOString()
+                                    sharedAt: new Date().toISOString(),
+                                    allowedPageIds: rlsCfg?.allowedPageIds || [],
+                                    rls: rlsCfg || { allowedPageIds: [], rules: [] },
                                 });
                             }
                             shareDashboard(activeDashboard.id, newPerms);

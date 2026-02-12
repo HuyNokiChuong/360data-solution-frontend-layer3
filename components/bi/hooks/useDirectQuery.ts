@@ -510,6 +510,8 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                     const request: any = {
                         dataModelId: dataSource.dataModelId,
+                        dashboardId: activeDashboard?.id,
+                        pageId: activeDashboard?.activePageId,
                         tableIds: Array.from(semanticTableIds),
                         select: semanticSelect,
                         filters: semanticFiltersForPlanner,

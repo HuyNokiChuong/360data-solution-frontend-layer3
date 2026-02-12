@@ -11,12 +11,14 @@ import {
 import ListView from './ListView';
 import DiagramView from './DiagramView';
 import '@xyflow/react/dist/style.css';
+import { useLanguageStore } from '../../store/languageStore';
 
 interface DataModelingProps {
   currentUser: User;
 }
 
 const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
+  const { t } = useLanguageStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'diagram'>('list');
@@ -45,7 +47,7 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
       setRelationships(nextRelationships);
       setSelectedTableId((prev) => prev && nextTables.some((table) => table.id === prev) ? prev : (nextTables[0]?.id || null));
     } catch (err: any) {
-      setError(err.message || 'Failed to load data model');
+      setError(err.message || t('dm.title'));
     } finally {
       setLoading(false);
     }
@@ -88,7 +90,7 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
       const detected = await autoDetectRelationships({ dataModelId: dataModel.id });
       setSuggestions(detected);
     } catch (err: any) {
-      setError(err.message || 'Auto detect failed');
+      setError(err.message || t('dm.auto_detect_relationship'));
     } finally {
       setAutoDetectLoading(false);
     }
@@ -115,13 +117,13 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
       <div className="h-full bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden flex flex-col">
         <header className="px-4 py-3 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-black text-slate-900 dark:text-white">Data Modeling</h2>
+            <h2 className="text-sm font-black text-slate-900 dark:text-white">{t('dm.title')}</h2>
             <p className="text-[11px] text-slate-500">
-              {dataModel ? `${dataModel.name} • ${tables.length} tables • ${relationships.length} relationships` : 'Semantic layer'}
+              {dataModel ? `${dataModel.name} • ${tables.length} tables • ${relationships.length} relationships` : t('dm.semantic_layer')}
             </p>
             {!canEdit && (
               <p className="text-[11px] text-amber-600 dark:text-amber-300 mt-1">
-                Read only: cần role Admin hoặc Editor để chỉnh relationship
+                {t('dm.read_only')}
               </p>
             )}
           </div>
@@ -130,19 +132,19 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
               onClick={() => setViewMode('list')}
               className={`px-3 py-2 rounded-lg text-[11px] font-black ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
             >
-              List View
+              {t('dm.list_view')}
             </button>
             <button
               onClick={() => setViewMode('diagram')}
               className={`px-3 py-2 rounded-lg text-[11px] font-black ${viewMode === 'diagram' ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
             >
-              Diagram View
+              {t('dm.diagram_view')}
             </button>
             <button
               onClick={refreshData}
               className="px-3 py-2 rounded-lg text-[11px] font-black border border-slate-200 dark:border-white/10"
             >
-              Refresh
+              {t('dm.refresh')}
             </button>
           </div>
         </header>

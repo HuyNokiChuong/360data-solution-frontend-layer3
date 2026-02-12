@@ -340,6 +340,49 @@ export interface SharePermission {
     userId: string;
     permission: 'view' | 'edit' | 'admin';
     sharedAt: string;
+    allowedPageIds?: string[];
+    rls?: DashboardRLSConfig;
+}
+
+export type RLSRuleOperator =
+    | 'eq'
+    | 'in'
+    | 'neq'
+    | 'gt'
+    | 'gte'
+    | 'lt'
+    | 'lte'
+    | 'between'
+    | 'contains'
+    | 'startsWith'
+    | 'endsWith'
+    | 'isNull'
+    | 'isNotNull';
+
+export interface RLSCondition {
+    id: string;
+    field: string;
+    operator: RLSRuleOperator;
+    value?: string;
+    values?: string[];
+    value2?: string;
+}
+
+export interface RLSRule {
+    id: string;
+    combinator: 'AND' | 'OR';
+    conditions: RLSCondition[];
+}
+
+export interface DashboardRLSConfig {
+    allowedPageIds: string[];
+    rules: RLSRule[];
+}
+
+export interface ShareSavePayload {
+    roles: Record<string, SharePermission['permission'] | 'none'>;
+    dashboardRLS: Record<string, DashboardRLSConfig>;
+    confirmedDashboardIds?: string[];
 }
 
 // --------------------------------------------

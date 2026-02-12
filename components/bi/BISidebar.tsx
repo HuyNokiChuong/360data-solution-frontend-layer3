@@ -4,11 +4,10 @@ import { useLanguageStore } from '../../store/languageStore';
 import { BIFolder, BIDashboard } from './types';
 import DataSourcesPanel from './panels/DataSourcesPanel';
 import FieldsListPanel from './panels/FieldsListPanel';
-import GlobalFiltersPanel from './panels/GlobalFiltersPanel';
 import { useDashboardStore } from './store/dashboardStore';
 import { useDataStore } from './store/dataStore';
 import { ShareModal } from './modals/ShareModal';
-import { SharePermission } from './types';
+import { SharePermission, ShareSavePayload } from './types';
 import {
     useDraggable,
     useDroppable,
@@ -70,7 +69,7 @@ const DeleteConfirmationPopup: React.FC<{
     );
 };
 
-type SidebarTab = 'dashboards' | 'data' | 'fields' | 'filters';
+type SidebarTab = 'dashboards' | 'data' | 'fields';
 
 const DraggableDashboard: React.FC<{
     dashboard: BIDashboard;
@@ -294,7 +293,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
     const [editingDashboardId, setEditingDashboardId] = useState<string | null>(null);
     const [editValue, setEditValue] = useState('');
     const [deleteRequest, setDeleteRequest] = useState<{ id: string, type: 'folder' | 'dashboard', name: string, top: number, left: number } | null>(null);
-    const [shareModalData, setShareModalData] = useState<{ isOpen: boolean; type: 'folder' | 'dashboard'; id: string; name: string; permissions: SharePermission[]; folderDashboards?: BIDashboard[] } | null>(null);
+    const [shareModalData, setShareModalData] = useState<{ isOpen: boolean; type: 'folder' | 'dashboard'; id: string; name: string; permissions: SharePermission[]; dashboard?: BIDashboard; folderDashboards?: BIDashboard[] } | null>(null);
     const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
 
 
@@ -369,7 +368,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
                                 left: e.clientX
                             });
                         }}
-                        onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [] })}
+                onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [], dashboard: d })}
                         onStartRename={() => { setEditingDashboardId(d.id); setEditValue(d.title); }}
                         onCancelRename={() => setEditingDashboardId(null)}
                         canEdit={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || d.createdBy === currentUserId}
@@ -417,9 +416,6 @@ const BISidebar: React.FC<BISidebarProps> = ({
                 </button>
                 <button onClick={() => setActiveTab('fields')} className={`flex-1 min-w-[60px] px-2 py-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'fields' ? 'text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600 dark:border-indigo-400 bg-indigo-50 dark:bg-indigo-600/10' : 'text-slate-500 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5'}`}>
                     {t('bi.fields')}
-                </button>
-                <button onClick={() => setActiveTab('filters')} className={`flex-1 min-w-[60px] px-2 py-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'filters' ? 'text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600 dark:border-indigo-400 bg-indigo-50 dark:bg-indigo-600/10' : 'text-slate-500 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5'}`}>
-                    FILTERS
                 </button>
             </div>
 
@@ -495,7 +491,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
                                                         left: e.clientX
                                                     });
                                                 }}
-                                                onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [] })}
+                                                onShareRequest={() => setShareModalData({ isOpen: true, type: 'dashboard', id: d.id, name: d.title, permissions: d.sharedWith || [], dashboard: d })}
                                                 onStartRename={() => { setEditingDashboardId(d.id); setEditValue(d.title); }}
                                                 onCancelRename={() => setEditingDashboardId(null)}
                                                 canEdit={d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'admin' || d.sharedWith?.find(p => p.userId === currentUserId)?.permission === 'edit' || d.createdBy === currentUserId}
@@ -511,7 +507,6 @@ const BISidebar: React.FC<BISidebarProps> = ({
 
                 {activeTab === 'data' && <DataSourcesPanel onSelectDataSource={onSelectDataSource} onReloadDataSource={onReloadDataSource} onStopDataSource={onStopDataSource} />}
                 {activeTab === 'fields' && <FieldsListPanel />}
-                {activeTab === 'filters' && <GlobalFiltersPanel />}
             </div>
 
             {deleteRequest && (
@@ -537,9 +532,11 @@ const BISidebar: React.FC<BISidebarProps> = ({
                     itemType={shareModalData.type}
                     title={shareModalData.name}
                     permissions={shareModalData.permissions}
+                    dashboard={shareModalData.dashboard}
                     folderDashboards={shareModalData.folderDashboards}
-                    onSave={(email: string, roles: Record<string, SharePermission['permission'] | 'none'>) => {
+                    onSave={(email: string, payload: ShareSavePayload) => {
                         const now = new Date().toISOString();
+                        const { roles, dashboardRLS } = payload;
 
                         // 1. Handle Folder-level permission
                         if (shareModalData.type === 'folder') {
@@ -565,7 +562,14 @@ const BISidebar: React.FC<BISidebarProps> = ({
                             if (dashboard) {
                                 let newPerms = [...(dashboard.sharedWith || [])].filter(p => p.userId !== email);
                                 if (role !== 'none') {
-                                    newPerms.push({ userId: email, permission: role, sharedAt: now });
+                                    const rlsCfg = dashboardRLS[dashboard.id];
+                                    newPerms.push({
+                                        userId: email,
+                                        permission: role,
+                                        sharedAt: now,
+                                        allowedPageIds: rlsCfg?.allowedPageIds || [],
+                                        rls: rlsCfg || { allowedPageIds: [], rules: [] },
+                                    });
                                 }
                                 shareDashboard(dashboard.id, newPerms);
                             }

@@ -3,7 +3,7 @@
 // Slicer Widget - For Data Filtering
 // ============================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
@@ -145,6 +145,23 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
     };
 
     const [isOpen, setIsOpen] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+    React.useEffect(() => {
+        if (!isOpen) return;
+
+        const handleOutsideClick = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (dropdownRef.current && !dropdownRef.current.contains(target)) {
+                setIsOpen(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleOutsideClick);
+        return () => {
+            document.removeEventListener('mousedown', handleOutsideClick);
+        };
+    }, [isOpen]);
 
     const handleSelectAll = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -172,7 +189,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                 {/* Search Bar */}
                 {uniqueValues.length > 5 && (
                     <div className="mb-2 px-1">
-                        <div className="relative">
+                        <div className="relative" ref={dropdownRef}>
                             <i className="fas fa-search absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500"></i>
                             <input
                                 type="text"

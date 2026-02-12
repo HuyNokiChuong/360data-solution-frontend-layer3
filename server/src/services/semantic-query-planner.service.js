@@ -290,6 +290,16 @@ const getFieldTableIds = (request) => {
     return Array.from(ids);
 };
 
+const combineLogicalClauses = (parts) => {
+    if (!parts || parts.length === 0) return '';
+    let expr = `(${parts[0].sql})`;
+    for (let i = 1; i < parts.length; i += 1) {
+        const logical = String(parts[i].logical || 'AND').toUpperCase() === 'OR' ? 'OR' : 'AND';
+        expr = `(${expr} ${logical} (${parts[i].sql}))`;
+    }
+    return expr;
+};
+
 const buildPostgresFilterClause = (aliasByTableId, filters, params) => {
     const clauses = [];
 
@@ -308,63 +318,64 @@ const buildPostgresFilterClause = (aliasByTableId, filters, params) => {
 
         switch (operator) {
             case 'equals':
-                clauses.push(`${colRef} = ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
                 break;
             case 'notEquals':
-                clauses.push(`${colRef} != ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} != ${pushParam(value)}` });
                 break;
             case 'contains':
-                clauses.push(`${colRef} ILIKE ${pushParam(`%${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`%${value}%`)}` });
                 break;
             case 'notContains':
-                clauses.push(`${colRef} NOT ILIKE ${pushParam(`%${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} NOT ILIKE ${pushParam(`%${value}%`)}` });
                 break;
             case 'startsWith':
-                clauses.push(`${colRef} ILIKE ${pushParam(`${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`${value}%`)}` });
                 break;
             case 'endsWith':
-                clauses.push(`${colRef} ILIKE ${pushParam(`%${value}`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`%${value}`)}` });
                 break;
             case 'greaterThan':
-                clauses.push(`${colRef} > ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} > ${pushParam(value)}` });
                 break;
             case 'greaterOrEqual':
-                clauses.push(`${colRef} >= ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} >= ${pushParam(value)}` });
                 break;
             case 'lessThan':
-                clauses.push(`${colRef} < ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} < ${pushParam(value)}` });
                 break;
             case 'lessOrEqual':
-                clauses.push(`${colRef} <= ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} <= ${pushParam(value)}` });
                 break;
             case 'between':
-                clauses.push(`${colRef} BETWEEN ${pushParam(value)} AND ${pushParam(filter.value2)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} BETWEEN ${pushParam(value)} AND ${pushParam(filter.value2)}` });
                 break;
             case 'in': {
                 const values = Array.isArray(value) ? value : [value];
                 const placeholders = values.map((val) => pushParam(val));
-                clauses.push(`${colRef} IN (${placeholders.join(', ')})`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IN (${placeholders.join(', ')})` });
                 break;
             }
             case 'notIn': {
                 const values = Array.isArray(value) ? value : [value];
                 const placeholders = values.map((val) => pushParam(val));
-                clauses.push(`${colRef} NOT IN (${placeholders.join(', ')})`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} NOT IN (${placeholders.join(', ')})` });
                 break;
             }
             case 'isNull':
-                clauses.push(`${colRef} IS NULL`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
                 break;
             case 'isNotNull':
-                clauses.push(`${colRef} IS NOT NULL`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
                 break;
             default:
-                clauses.push(`${colRef} = ${pushParam(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
                 break;
         }
     });
 
-    return clauses;
+    const merged = combineLogicalClauses(clauses);
+    return merged ? [merged] : [];
 };
 
 const sanitizeBigQueryValue = (value) => {
@@ -388,66 +399,129 @@ const buildBigQueryFilterClause = (aliasByTableId, filters) => {
 
         switch (operator) {
             case 'equals':
-                clauses.push(`${colRef} = ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'notEquals':
-                clauses.push(`${colRef} != ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} != ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'contains':
-                clauses.push(`${colRef} LIKE ${sanitizeBigQueryValue(`%${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
                 break;
             case 'notContains':
-                clauses.push(`${colRef} NOT LIKE ${sanitizeBigQueryValue(`%${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} NOT LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
                 break;
             case 'startsWith':
-                clauses.push(`${colRef} LIKE ${sanitizeBigQueryValue(`${value}%`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`${value}%`)}` });
                 break;
             case 'endsWith':
-                clauses.push(`${colRef} LIKE ${sanitizeBigQueryValue(`%${value}`)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`%${value}`)}` });
                 break;
             case 'greaterThan':
-                clauses.push(`${colRef} > ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} > ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'greaterOrEqual':
-                clauses.push(`${colRef} >= ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} >= ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'lessThan':
-                clauses.push(`${colRef} < ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} < ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'lessOrEqual':
-                clauses.push(`${colRef} <= ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} <= ${sanitizeBigQueryValue(value)}` });
                 break;
             case 'between':
-                clauses.push(`${colRef} BETWEEN ${sanitizeBigQueryValue(value)} AND ${sanitizeBigQueryValue(filter.value2)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} BETWEEN ${sanitizeBigQueryValue(value)} AND ${sanitizeBigQueryValue(filter.value2)}` });
                 break;
             case 'in': {
                 const values = Array.isArray(value) ? value : [value];
                 const rendered = values.map((val) => sanitizeBigQueryValue(val)).join(', ');
-                clauses.push(`${colRef} IN (${rendered})`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IN (${rendered})` });
                 break;
             }
             case 'notIn': {
                 const values = Array.isArray(value) ? value : [value];
                 const rendered = values.map((val) => sanitizeBigQueryValue(val)).join(', ');
-                clauses.push(`${colRef} NOT IN (${rendered})`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} NOT IN (${rendered})` });
                 break;
             }
             case 'isNull':
-                clauses.push(`${colRef} IS NULL`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
                 break;
             case 'isNotNull':
-                clauses.push(`${colRef} IS NOT NULL`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
                 break;
             default:
-                clauses.push(`${colRef} = ${sanitizeBigQueryValue(value)}`);
+                clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
                 break;
         }
     });
 
-    return clauses;
+    const merged = combineLogicalClauses(clauses);
+    return merged ? [merged] : [];
 };
 
-const buildSemanticQueryPlan = async ({ workspaceId, request }) => {
+const mapRlsOperator = (operator) => {
+    const mapping = {
+        eq: 'equals',
+        in: 'in',
+        neq: 'notEquals',
+        gt: 'greaterThan',
+        gte: 'greaterOrEqual',
+        lt: 'lessThan',
+        lte: 'lessOrEqual',
+        between: 'between',
+        contains: 'contains',
+        startsWith: 'startsWith',
+        endsWith: 'endsWith',
+        isNull: 'isNull',
+        isNotNull: 'isNotNull',
+    };
+    return mapping[operator] || 'equals';
+};
+
+const parseJsonObject = (value) => {
+    if (!value) return {};
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (err) {
+            return {};
+        }
+    }
+    if (typeof value === 'object') return value;
+    return {};
+};
+
+const parsePageIdsFromDashboardPages = (pagesRaw) => {
+    const pages = parseJsonArray(pagesRaw);
+    return pages
+        .map((p) => String(p?.id || '').trim())
+        .filter(Boolean);
+};
+
+const resolveRlsTableBinding = (catalog, selectedTables, fieldName) => {
+    const selectedSet = new Set((selectedTables || []).map((t) => t.id));
+    const candidates = (catalog.tables || []).filter((table) => selectedSet.has(table.id) && (table.schema || []).some((col) => col.name === fieldName));
+    if (candidates[0]) return candidates[0];
+    return null;
+};
+
+const loadDashboardShareRlsContext = async ({ workspaceId, userEmail, dashboardId }) => {
+    if (!dashboardId || !userEmail) return null;
+    const result = await query(
+        `SELECT permission, allowed_page_ids, rls_config, d.pages
+         FROM dashboard_shares ds
+         JOIN dashboards d ON d.id = ds.dashboard_id
+         WHERE ds.dashboard_id = $1
+           AND ds.user_id = $2
+           AND d.workspace_id = $3
+         LIMIT 1`,
+        [dashboardId, userEmail, workspaceId]
+    );
+    return result.rows[0] || null;
+};
+
+const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
     const payload = request || {};
     const catalog = await loadModelCatalog(workspaceId, payload.dataModelId);
 
@@ -542,7 +616,58 @@ const buildSemanticQueryPlan = async ({ workspaceId, request }) => {
     const select = Array.isArray(payload.select) ? payload.select : [];
     const groupByInput = Array.isArray(payload.groupBy) ? payload.groupBy : [];
     const orderByInput = Array.isArray(payload.orderBy) ? payload.orderBy : [];
-    const filters = Array.isArray(payload.filters) ? payload.filters : [];
+    const filters = Array.isArray(payload.filters) ? [...payload.filters] : [];
+
+    const shareContext = await loadDashboardShareRlsContext({
+        workspaceId,
+        userEmail,
+        dashboardId: payload.dashboardId,
+    });
+    if (shareContext && shareContext.permission !== 'admin') {
+        const allowedPageIdsRaw = parseJsonArray(shareContext.allowed_page_ids);
+        const allowedPageIds = allowedPageIdsRaw.length > 0
+            ? allowedPageIdsRaw.map((id) => String(id))
+            : parsePageIdsFromDashboardPages(shareContext.pages);
+        const requestedPageId = payload.pageId ? String(payload.pageId) : '';
+        if (!requestedPageId || (allowedPageIds.length > 0 && !allowedPageIds.includes(requestedPageId))) {
+            const err = new Error('Access denied: page is not allowed by RLS policy');
+            err.status = 403;
+            err.code = 'RLS_PAGE_DENIED';
+            throw err;
+        }
+
+        const rlsConfig = parseJsonObject(shareContext.rls_config);
+        const rlsRules = Array.isArray(rlsConfig.rules) ? rlsConfig.rules : [];
+        rlsRules.forEach((rule) => {
+            const conditions = Array.isArray(rule?.conditions) && rule.conditions.length > 0
+                ? rule.conditions
+                : [rule];
+
+            conditions.forEach((condition, idx) => {
+                const field = String(condition?.field || '').trim();
+                if (!field) return;
+                const boundTable = resolveRlsTableBinding(catalog, selectedTables, field);
+                if (!boundTable) return;
+
+                const normalized = {
+                    tableId: boundTable.id,
+                    column: field,
+                    operator: mapRlsOperator(condition.operator),
+                    logical: idx === 0
+                        ? 'AND'
+                        : (String(rule.combinator || rule.logical || 'AND').toUpperCase() === 'OR' ? 'OR' : 'AND'),
+                    value: condition.value,
+                    value2: condition.value2,
+                };
+
+                if (normalized.operator === 'in') {
+                    normalized.value = Array.isArray(condition.values) ? condition.values : [];
+                }
+
+                filters.push(normalized);
+            });
+        });
+    }
 
     const selectParts = [];
     const groupByParts = [];
@@ -651,7 +776,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request }) => {
     };
 };
 
-const executePostgresPlan = async ({ workspaceId, request }) => {
+const executePostgresPlan = async ({ workspaceId, request, userEmail }) => {
     const payload = request || {};
     const rawSql = typeof payload.rawSql === 'string' ? payload.rawSql.trim() : '';
 
@@ -675,6 +800,7 @@ const executePostgresPlan = async ({ workspaceId, request }) => {
 
         const validationPlan = await buildSemanticQueryPlan({
             workspaceId,
+            userEmail,
             request: {
                 dataModelId: payload.dataModelId,
                 tableIds,
@@ -701,7 +827,7 @@ const executePostgresPlan = async ({ workspaceId, request }) => {
         };
     }
 
-    const plan = await buildSemanticQueryPlan({ workspaceId, request: payload });
+    const plan = await buildSemanticQueryPlan({ workspaceId, request: payload, userEmail });
     if (plan.engine !== POSTGRES_ENGINE) {
         const err = new Error('Execution endpoint only supports postgres runtime. Use /query/plan for bigquery SQL.');
         err.status = 400;

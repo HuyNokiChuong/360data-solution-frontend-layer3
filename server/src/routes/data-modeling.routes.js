@@ -456,6 +456,7 @@ router.post('/query/plan', async (req, res) => {
     try {
         const plan = await buildSemanticQueryPlan({
             workspaceId: req.user.workspace_id,
+            userEmail: req.user.email,
             request: req.body || {},
         });
 
@@ -478,6 +479,7 @@ router.post('/query/execute', async (req, res) => {
     try {
         const execution = await executePostgresPlan({
             workspaceId: req.user.workspace_id,
+            userEmail: req.user.email,
             request: req.body || {},
         });
 
