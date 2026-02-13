@@ -1876,7 +1876,7 @@ const BIMain: React.FC<BIMainProps> = ({
                 {dataPanelOpen ? (
                     <div
                         style={{ width: dataPanelWidth }}
-                        className="border-l border-slate-200 dark:border-white/5 bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear"
+                        className="border-l border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear"
                     >
                         <div
                             className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-[90] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
