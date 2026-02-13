@@ -65,7 +65,7 @@ const BICanvas: React.FC<BICanvasProps> = ({
         alignWidgets,
         clearSelection
     } = useDashboardStore();
-    const { addCrossFilter, drillDowns, setDrillDown } = useFilterStore();
+    const { addCrossFilter, removeCrossFilter, crossFilters, drillDowns, setDrillDown } = useFilterStore();
     const [isDragging, setIsDragging] = React.useState(false);
     const [sortConfig, setSortConfig] = useState<{ field: 'name' | 'rowCount', direction: 'asc' | 'desc' }>({
         field: 'name',
@@ -91,6 +91,47 @@ const BICanvas: React.FC<BICanvasProps> = ({
             minH: 2
         }));
     }, [canvasWidgets]);
+
+    // Rehydrate persisted filter widgets when re-entering dashboard/page.
+    // This avoids a state mismatch where filter UI keeps values but query runtime has no active cross-filters.
+    React.useEffect(() => {
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const pageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
+        if (!pageWidgets || pageWidgets.length === 0) return;
+
+        const filterWidgets = pageWidgets.filter((w) => ['slicer', 'date-range', 'search'].includes(w.type));
+        if (filterWidgets.length === 0) return;
+
+        filterWidgets.forEach((filterWidget) => {
+            const persistedFilters = (filterWidget.filters || [])
+                .filter((f) => !!f?.field && f.enabled !== false);
+            const affectedWidgetIds = pageWidgets
+                .filter((w) => w.id !== filterWidget.id)
+                .map((w) => w.id);
+            const current = crossFilters.find((cf) => cf.sourceWidgetId === filterWidget.id);
+
+            if (persistedFilters.length === 0) {
+                if (current) {
+                    removeCrossFilter(filterWidget.id);
+                }
+                return;
+            }
+            const sameFilters = JSON.stringify(current?.filters || []) === JSON.stringify(persistedFilters);
+            const sameTargets = JSON.stringify(current?.affectedWidgetIds || []) === JSON.stringify(affectedWidgetIds);
+
+            if (!sameFilters || !sameTargets) {
+                addCrossFilter(filterWidget.id, persistedFilters, affectedWidgetIds);
+            }
+        });
+    }, [
+        dashboard.id,
+        dashboard.activePageId,
+        dashboard.pages,
+        dashboard.widgets,
+        addCrossFilter,
+        removeCrossFilter,
+        crossFilters
+    ]);
 
     // Handle layout change
     const handleLayoutChange = (newLayout: any[]) => {

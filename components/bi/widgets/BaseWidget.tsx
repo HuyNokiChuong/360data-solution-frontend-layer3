@@ -56,6 +56,19 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
         setTitleValue(widget.title);
     }, [widget.title]);
 
+    React.useEffect(() => {
+        if (!isFullscreen) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsFullscreen(false);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isFullscreen]);
+
     const handleTitleSubmit = () => {
         if (titleValue.trim() && activeDashboardId) {
             updateWidget(activeDashboardId, widget.id, { title: titleValue.trim() });

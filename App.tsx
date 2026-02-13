@@ -212,6 +212,82 @@ const App: React.FC = () => {
     return { kept, removed };
   };
 
+  const normalizeReportSessionEntry = (session: ReportSession): ReportSession => ({
+    ...session,
+    id: isUUID(session.id) ? session.id : generateUUID(),
+    title: String(session.title || 'New Analysis'),
+    timestamp: String(session.timestamp || new Date().toISOString()),
+    messages: Array.isArray(session.messages) ? session.messages : [],
+  });
+
+  const mergeReportSessions = (localSessions: ReportSession[], serverSessions: ReportSession[]): ReportSession[] => {
+    const parseTs = (ts: string) => {
+      const t = new Date(ts).getTime();
+      return Number.isNaN(t) ? 0 : t;
+    };
+    const isDefaultTitle = (title: string) => {
+      const normalized = String(title || '').trim().toLowerCase();
+      return !normalized || normalized === 'new analysis' || normalized === 'data exploration hub' || normalized === 'untitled session';
+    };
+
+    const mergePair = (base: ReportSession, incoming: ReportSession): ReportSession => {
+      const baseMessages = Array.isArray(base.messages) ? base.messages : [];
+      const incomingMessages = Array.isArray(incoming.messages) ? incoming.messages : [];
+
+      const mergedMessagesMap = new Map<string, any>();
+      [...baseMessages, ...incomingMessages].forEach((msg) => {
+        if (!msg?.id) return;
+        mergedMessagesMap.set(msg.id, msg);
+      });
+
+      const mergedMessages = mergedMessagesMap.size > 0
+        ? Array.from(mergedMessagesMap.values())
+        : (baseMessages.length >= incomingMessages.length ? baseMessages : incomingMessages);
+
+      const baseTs = parseTs(base.timestamp);
+      const incomingTs = parseTs(incoming.timestamp);
+      const latestTimestamp = incomingTs >= baseTs ? incoming.timestamp : base.timestamp;
+
+      let mergedTitle = base.title;
+      if ((isDefaultTitle(mergedTitle) || !String(mergedTitle || '').trim()) && !isDefaultTitle(incoming.title)) {
+        mergedTitle = incoming.title;
+      } else if (!String(mergedTitle || '').trim() && String(incoming.title || '').trim()) {
+        mergedTitle = incoming.title;
+      }
+
+      if (incomingMessages.length > baseMessages.length) {
+        return {
+          ...base,
+          ...incoming,
+          title: mergedTitle,
+          timestamp: latestTimestamp,
+          messages: mergedMessages,
+        };
+      }
+
+      return {
+        ...incoming,
+        ...base,
+        title: mergedTitle,
+        timestamp: latestTimestamp,
+        messages: mergedMessages,
+      };
+    };
+
+    const mergedById = new Map<string, ReportSession>();
+    const ingest = (session: ReportSession) => {
+      const normalized = normalizeReportSessionEntry(session);
+      const existing = mergedById.get(normalized.id);
+      mergedById.set(normalized.id, existing ? mergePair(existing, normalized) : normalized);
+    };
+
+    (localSessions || []).forEach(ingest);
+    (serverSessions || []).forEach(ingest);
+
+    return Array.from(mergedById.values())
+      .sort((a, b) => parseTs(b.timestamp) - parseTs(a.timestamp));
+  };
+
   const syncConnectionsAndTables = async (tokenOverride?: string) => {
     const token = tokenOverride || localStorage.getItem('auth_token');
     if (!token) return;
@@ -341,7 +417,7 @@ const App: React.FC = () => {
                 id: isUUID(session.id) ? session.id : generateUUID(),
               }));
               const { kept, removed } = pruneDuplicateEmptySessions(serverSessions);
-              setReportSessions(kept);
+              setReportSessions((prev) => mergeReportSessions(prev, kept));
 
               if (removed.length > 0) {
                 removed.forEach((session) => {
@@ -448,7 +524,36 @@ const App: React.FC = () => {
     const prevSessions = prevSessionsRef.current;
     const prevIds = new Set(prevSessions.map(s => s.id));
 
+    const syncMessagesToBackend = (sessionId: string, messages: any[]) => {
+      if (!sessionId || !Array.isArray(messages) || messages.length === 0) return;
+
+      messages.forEach((message) => {
+        if (!message?.id || !isUUID(message.id)) return;
+
+        fetch(`${API_BASE}/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            visualData: message.visualData,
+            sqlTrace: message.sqlTrace,
+            executionTime: message.executionTime
+          })
+        }).then((r) => {
+          if (r.status === 401) {
+            handleLogout();
+          }
+        }).catch(console.error);
+      });
+    };
+
     for (const session of reportSessions) {
+      const prevSession = prevSessions.find((s) => s.id === session.id);
+      const previousMessageIds = new Set((prevSession?.messages || []).map((m: any) => m.id));
+      const newMessages = (session.messages || []).filter((m: any) => m?.id && !previousMessageIds.has(m.id));
+
       if (!prevIds.has(session.id)) {
         // New session → create on backend
         fetch(`${API_BASE}/sessions`, {
@@ -464,16 +569,20 @@ const App: React.FC = () => {
             return r.json();
           })
           .then(resData => {
-            if (resData.success && resData.data?.id !== session.id) {
+            if (!resData.success) return;
+
+            const backendSessionId = resData.data?.id || session.id;
+            syncMessagesToBackend(backendSessionId, newMessages);
+
+            if (backendSessionId !== session.id) {
               // Update local ID with backend UUID
-              setReportSessions(prev => prev.map(s => s.id === session.id ? { ...s, id: resData.data.id } : s));
+              setReportSessions(prev => prev.map(s => s.id === session.id ? { ...s, id: backendSessionId } : s));
             }
           })
           .catch(console.error);
       } else {
         // Existing session — check if title changed
-        const prev = prevSessions.find(s => s.id === session.id);
-        if (prev && prev.title !== session.title) {
+        if (prevSession && prevSession.title !== session.title) {
           fetch(`${API_BASE}/sessions/${session.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -484,6 +593,8 @@ const App: React.FC = () => {
             }
           }).catch(console.error);
         }
+
+        syncMessagesToBackend(session.id, newMessages);
       }
     }
 

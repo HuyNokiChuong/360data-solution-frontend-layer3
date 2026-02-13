@@ -29,6 +29,12 @@ interface ScopedTableResolution {
   ambiguous: boolean;
 }
 
+const DEFAULT_REPORT_SESSION_TITLES = new Set([
+  'new analysis',
+  'data exploration hub',
+  'untitled session',
+]);
+
 interface ReportsProps {
   tables: SyncedTable[];
   connections: Connection[];
@@ -350,9 +356,24 @@ const Reports: React.FC<ReportsProps> = ({
 
     let targetSessionId = forcedSessionId || activeSessionId;
 
+    const deriveSessionTitle = (input: string): string => {
+      const compact = String(input || '').replace(/\s+/g, ' ').trim();
+      if (!compact) return 'New Analysis';
+      const maxLength = 50;
+      if (compact.length <= maxLength) return compact;
+      return `${compact.slice(0, maxLength - 3).trimEnd()}...`;
+    };
+
+    const shouldAutoSetTitle = (title: string | undefined): boolean => {
+      const normalized = String(title || '').trim().toLowerCase();
+      return !normalized || DEFAULT_REPORT_SESSION_TITLES.has(normalized);
+    };
+
     // 1. Add User Message (only if not a retry)
     if (!isRetry) {
-      const userMsg = { id: `u-${Date.now()}`, role: 'user' as const, content: text };
+      const userMsg = { id: generateUUID(), role: 'user' as const, content: text };
+      const nextTitle = deriveSessionTitle(text);
+      const nextTimestamp = new Date().toISOString();
 
       setSessions((prev: ReportSession[]) => {
         // Find current session
@@ -369,8 +390,8 @@ const Reports: React.FC<ReportsProps> = ({
             targetSessionId = newId; // Update the tracking ID
             const newSession: ReportSession = {
               id: newId,
-              title: text.substring(0, 50),
-              timestamp: new Date().toLocaleDateString(),
+              title: nextTitle,
+              timestamp: nextTimestamp,
               messages: [userMsg]
             };
             setActiveSessionId(newId);
@@ -383,7 +404,8 @@ const Reports: React.FC<ReportsProps> = ({
             ? {
               ...s,
               messages: [...s.messages, userMsg],
-              title: (s.messages.length === 0 || s.title === 'New Analysis') ? text.substring(0, 50) : s.title
+              timestamp: nextTimestamp,
+              title: shouldAutoSetTitle(s.title) ? nextTitle : s.title
             }
             : s
         );
@@ -523,7 +545,7 @@ const Reports: React.FC<ReportsProps> = ({
 
       // 4. Add AI Response
       const aiMsg = {
-        id: `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        id: generateUUID(),
         role: 'assistant' as const,
         content: result.dashboard.summary,
         visualData: result.dashboard,
@@ -539,7 +561,11 @@ const Reports: React.FC<ReportsProps> = ({
         return prev.map(s => {
           if (s.id !== sessionToUpdate.id) return s;
           if (s.messages.some(m => m.id === aiMsg.id)) return s;
-          return { ...s, messages: [...s.messages, aiMsg] };
+          return {
+            ...s,
+            timestamp: new Date().toISOString(),
+            messages: [...s.messages, aiMsg]
+          };
         });
       });
       abortControllerRef.current = null;
@@ -561,7 +587,7 @@ const Reports: React.FC<ReportsProps> = ({
       const rawMsg = e.message || "Unknown error";
       const isLeaked = rawMsg.toLowerCase().includes('leaked');
       const errorMsg = {
-        id: `err-${Date.now()}`,
+        id: generateUUID(),
         role: 'assistant' as const,
         content: isLeaked
           ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
@@ -570,7 +596,7 @@ const Reports: React.FC<ReportsProps> = ({
       setSessions((prev: ReportSession[]) => {
         const sessionToUpdate = prev.find(s => s.id === targetSessionId) || prev[0];
         if (!sessionToUpdate) return prev;
-        return prev.map(s => s.id === sessionToUpdate.id ? { ...s, messages: [...s.messages, errorMsg] } : s);
+        return prev.map(s => s.id === sessionToUpdate.id ? { ...s, timestamp: new Date().toISOString(), messages: [...s.messages, errorMsg] } : s);
       });
     } finally {
       if (!isRetry) {

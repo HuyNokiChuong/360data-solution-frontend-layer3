@@ -525,7 +525,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             onClick={onClick}
             onExportExcel={handleExportExcel}
         >
-            <div className={`w-full h-full overflow-auto custom-scrollbar bg-slate-50/50 dark:bg-slate-950/30 rounded-lg shadow-inner font-['Outfit'] ${resizingConfig ? 'cursor-col-resize select-none' : ''}`}>
+            <div className={`w-full h-full overflow-auto custom-scrollbar bg-white dark:bg-slate-950/30 rounded-lg shadow-inner font-['Outfit'] ${resizingConfig ? 'cursor-col-resize select-none' : ''}`}>
                 <table className="w-full border-collapse text-[11px] table-fixed min-w-max">
                     <thead className="sticky top-0 z-20">
                         <tr className="bg-slate-100 dark:bg-slate-900 shadow-xl border-b border-slate-200 dark:border-indigo-500/20">
@@ -598,7 +598,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                         return (
                                             <th
                                                 key={uniqueKey}
-                                                className="p-1 px-2 border-b border-r border-slate-200 dark:border-white/5 text-slate-500 font-bold uppercase tracking-tighter text-[9px] whitespace-nowrap relative group"
+                                                className="p-1 px-2 border-b border-r border-slate-200 dark:border-white/5 text-slate-700 dark:text-slate-500 font-bold uppercase tracking-tighter text-[9px] whitespace-nowrap relative group"
                                                 style={{ width: width, minWidth: width }}
                                             >
                                                 {v.field}
@@ -616,7 +616,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                                     return (
                                         <th
                                             key={uniqueKey}
-                                            className="p-1 px-2 border-b border-slate-200 dark:border-white/10 text-slate-500 font-bold uppercase tracking-tighter text-[9px] bg-slate-100 dark:bg-slate-900/50 whitespace-nowrap relative group"
+                                            className="p-1 px-2 border-b border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-500 font-bold uppercase tracking-tighter text-[9px] bg-slate-100 dark:bg-slate-900/50 whitespace-nowrap relative group"
                                             style={{ width: width, minWidth: width }}
                                         >
                                             {v.field}
@@ -652,9 +652,9 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                             const isExpanded = expandedKeys.has(node.key);
 
                             return (
-                                <tr key={node.key} className="group hover:bg-indigo-500/5 dark:hover:bg-indigo-500/10 transition-colors odd:bg-transparent even:bg-slate-50/20 dark:even:bg-white/[0.02]">
+                                <tr key={node.key} className="group hover:bg-indigo-500/5 dark:hover:bg-indigo-500/10 transition-colors odd:bg-transparent even:bg-slate-50/60 dark:even:bg-white/[0.02]">
                                     <td
-                                        className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/10 text-slate-900 dark:text-white font-medium sticky left-0 bg-white dark:bg-slate-950/95 backdrop-blur-sm group-hover:bg-slate-50 dark:group-hover:bg-slate-900 transition-colors z-10 overflow-hidden text-ellipsis align-middle"
+                                        className="p-2 px-3 border-b border-r border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-medium sticky left-0 bg-white dark:bg-slate-950/95 backdrop-blur-sm group-hover:bg-slate-50 dark:group-hover:bg-slate-900 transition-colors z-10 overflow-hidden text-ellipsis align-middle"
                                         style={{ maxWidth: rowHeaderWidth, paddingLeft: `${node.depth * 16 + 12}px` }}
                                     >
                                         <div className="flex items-center gap-2">
@@ -681,7 +681,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                                             if (widget.hideZeros && isZero) {
                                                 return (
-                                                    <td key={`${node.key}-${c}-${v.field}`} className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/5 text-right text-slate-300 dark:text-slate-700 font-mono align-middle bg-transparent">-</td>
+                                                    <td key={`${node.key}-${c}-${v.field}`} className="p-2 px-3 border-b border-r border-slate-200 dark:border-white/5 text-right text-slate-400 dark:text-slate-700 font-mono align-middle bg-transparent">-</td>
                                                 );
                                             }
 
@@ -696,14 +696,14 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                                             return (
                                                 <td key={`${node.key}-${c}-${v.field}`}
-                                                    className="p-2 px-3 border-b border-r border-slate-100 dark:border-white/5 text-right text-slate-600 dark:text-slate-300 font-mono align-middle whitespace-nowrap overflow-hidden text-ellipsis"
+                                                    className="p-2 px-3 border-b border-r border-slate-200 dark:border-white/5 text-right text-slate-700 dark:text-slate-300 font-mono align-middle whitespace-nowrap overflow-hidden text-ellipsis"
                                                     style={{
                                                         ...style,
                                                         maxWidth: width,
                                                         fontFamily: "'JetBrains Mono', monospace",
                                                         fontWeight: !isLeafNode ? 'bold' : 'normal',
                                                         // Only apply default subtotal color if no conditional color is set
-                                                        color: style.color || (!isLeafNode ? '#cbd5e1' : undefined)
+                                                        color: style.color || (!isLeafNode ? (isDark ? '#cbd5e1' : '#334155') : undefined)
                                                     }}
                                                 >
                                                     <span className="inline-flex items-center justify-end gap-1 w-full">
@@ -734,7 +734,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                                         return (
                                             <td key={`total-${node.key}-${v.field}`}
-                                                className="p-2 px-3 border-b border-slate-200 dark:border-white/10 text-right text-slate-900 dark:text-white font-bold font-mono bg-slate-50 dark:bg-white/5 align-middle whitespace-nowrap overflow-hidden text-ellipsis"
+                                                className="p-2 px-3 border-b border-slate-200 dark:border-white/10 text-right text-slate-900 dark:text-white font-bold font-mono bg-slate-100 dark:bg-white/5 align-middle whitespace-nowrap overflow-hidden text-ellipsis"
                                                 style={{
                                                     ...style,
                                                     fontFamily: "'JetBrains Mono', monospace"
@@ -751,7 +751,10 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
                             );
                         })}
                     </tbody>
-                    <tfoot className="sticky bottom-0 z-20 shadow-[0_-10px_20px_rgba(0,0,0,0.5)]">
+                    <tfoot
+                        className="sticky bottom-0 z-20"
+                        style={{ boxShadow: isDark ? '0 -10px 20px rgba(0,0,0,0.5)' : '0 -6px 14px rgba(15,23,42,0.08)' }}
+                    >
                         <tr className="bg-slate-100 dark:bg-slate-900 border-t border-emerald-500/30">
                             <td className="p-3 border-r border-slate-200 dark:border-white/10 text-emerald-600 dark:text-emerald-400 font-black uppercase sticky left-0 bg-slate-100 dark:bg-slate-900 z-30">
                                 Grand Total

@@ -22,6 +22,8 @@ import {
     normalizeAggregation
 } from '../../utils/aggregation';
 import { useLanguageStore } from '../../store/languageStore';
+import { AI_MODELS } from '../../constants';
+import { generateCalculatedFieldFormula } from '../../services/ai';
 
 interface BIVisualBuilderProps {
     activeWidget?: BIWidget;
@@ -61,6 +63,22 @@ const FORMULA_FUNCTION_SNIPPETS: Array<{ label: string; snippet: string; hint: s
     { label: 'ABS', snippet: 'ABS(VALUE - ROW_TOTAL)', hint: 'absolute difference' },
     { label: 'MAX', snippet: 'MAX(VALUE, ROW_TOTAL)', hint: 'max value' },
 ];
+
+const CF_FORMULA_STRUCTURES: Array<{ labelKey: string; template: string; noteKey: string }> = [
+    { labelKey: 'bi.cf.struct.share_threshold', template: 'ROW_TOTAL * 0.1', noteKey: 'bi.cf.struct.share_threshold_note' },
+    { labelKey: 'bi.cf.struct.column_baseline', template: 'COLUMN_TOTAL / 10', noteKey: 'bi.cf.struct.column_baseline_note' },
+    { labelKey: 'bi.cf.struct.grand_total_share', template: 'GRAND_TOTAL * 0.05', noteKey: 'bi.cf.struct.grand_total_share_note' },
+    { labelKey: 'bi.cf.struct.safe_ratio', template: 'SAFE_DIV(VALUE, ROW_TOTAL)', noteKey: 'bi.cf.struct.safe_ratio_note' },
+    { labelKey: 'bi.cf.struct.clamp_range', template: 'CLAMP(VALUE, 0, GRAND_TOTAL)', noteKey: 'bi.cf.struct.clamp_range_note' },
+];
+
+const normalizeConditionalFormulaFromAI = (formula: string): string => {
+    return String(formula || '')
+        .replace(/^\s*=\s*/, '')
+        .replace(/\[\s*([A-Za-z0-9_]+)\s*\]/g, '$1')
+        .replace(/\bCEILING\s*\(/gi, 'CEIL(')
+        .trim();
+};
 
 const stripHierarchySuffix = (fieldName?: string) => {
     const raw = String(fieldName || '').trim();
@@ -607,14 +625,22 @@ const PivotValueSelector: React.FC<{
     defaultAxis?: 'left' | 'right';
     hideAxisSelector?: boolean;
 }> = ({ label, values = [], fields, onChange, slotId, defaultAxis = 'left', hideAxisSelector }) => {
+    const { t } = useLanguageStore();
     const { setNodeRef, isOver } = useDroppable({
         id: slotId,
         data: { slot: slotId }
     });
 
     const [rulesModalIndex, setRulesModalIndex] = useState<number | null>(null);
-    const [activeFormulaRuleIndex, setActiveFormulaRuleIndex] = useState<number | null>(null);
-    const [showRecommendations, setShowRecommendations] = useState(false);
+    const [focusedFormulaRuleIndex, setFocusedFormulaRuleIndex] = useState<number | null>(null);
+    const [aiPrompt, setAiPrompt] = useState('');
+    const [aiBusyRuleIndex, setAiBusyRuleIndex] = useState<number | null>(null);
+    const [aiError, setAiError] = useState('');
+    const [aiInfo, setAiInfo] = useState('');
+    const [aiModelId, setAiModelId] = useState(() => {
+        if (typeof localStorage === 'undefined') return 'gpt-5.1';
+        return localStorage.getItem('preferred_ai_model') || 'gpt-5.1';
+    });
 
     const getDefaultAggregation = (fieldName: string): AggregationType => {
         const selectedField = resolveFieldDefinitionByName(fields, fieldName);
@@ -757,6 +783,42 @@ const PivotValueSelector: React.FC<{
         return [...new Set([...core, ...measureVars])];
     }, [activeRuleMetric, compareMetricOptions]);
 
+    const hasGoogleKey = typeof localStorage !== 'undefined' && !!localStorage.getItem('gemini_api_key');
+    const hasOpenAIKey = typeof localStorage !== 'undefined' && !!localStorage.getItem('openai_api_key');
+    const hasAnthropicKey = typeof localStorage !== 'undefined' && !!localStorage.getItem('anthropic_api_key');
+
+    const aiModelOptions = React.useMemo(() => {
+        const modelsWithKey = AI_MODELS.filter((model) => {
+            if (model.provider === 'Google') return hasGoogleKey;
+            if (model.provider === 'OpenAI') return hasOpenAIKey;
+            if (model.provider === 'Anthropic') return hasAnthropicKey;
+            return false;
+        });
+        return modelsWithKey.length > 0 ? modelsWithKey : AI_MODELS;
+    }, [hasGoogleKey, hasOpenAIKey, hasAnthropicKey]);
+
+    const selectedAiModel = React.useMemo(
+        () => aiModelOptions.find((model) => model.id === aiModelId) || aiModelOptions[0],
+        [aiModelId, aiModelOptions]
+    );
+
+    const aiFormulaFields = React.useMemo(
+        () => formulaVariables.map((name) => ({ name, type: 'number' as const })),
+        [formulaVariables]
+    );
+
+    React.useEffect(() => {
+        if (!aiModelOptions.some((model) => model.id === aiModelId)) {
+            setAiModelId(aiModelOptions[0]?.id || 'gpt-5.1');
+        }
+    }, [aiModelId, aiModelOptions]);
+
+    React.useEffect(() => {
+        if (typeof localStorage !== 'undefined' && aiModelId) {
+            localStorage.setItem('preferred_ai_model', aiModelId);
+        }
+    }, [aiModelId]);
+
     const validateFormulaSyntax = (formula?: string) => {
         if (!formula || !formula.trim()) return 'Formula is required';
         try {
@@ -799,12 +861,64 @@ const PivotValueSelector: React.FC<{
         handleUpdateRule(rulesModalIndex, ruleIndex, { compareFormula: next, compareMode: 'formula' });
     };
 
+    const applyFormulaStructure = (ruleIndex: number, template: string) => {
+        if (rulesModalIndex === null) return;
+        handleUpdateRule(rulesModalIndex, ruleIndex, { compareFormula: template, compareMode: 'formula' });
+    };
+
+    const handleGenerateAiFormula = async (ruleIndex: number) => {
+        if (rulesModalIndex === null) return;
+        const prompt = aiPrompt.trim();
+        if (!prompt) {
+            setAiError(t('bi.cf.ai.prompt_required'));
+            return;
+        }
+        if (aiFormulaFields.length === 0) {
+            setAiError(t('bi.cf.ai.no_variables'));
+            return;
+        }
+
+        setAiError('');
+        setAiInfo('');
+        setAiBusyRuleIndex(ruleIndex);
+        try {
+            const result = await generateCalculatedFieldFormula({
+                prompt: `${prompt}
+Generate ONLY the threshold expression for compareFormula.
+Do not generate full boolean condition.
+Use only these variables: ${formulaVariables.join(', ')}.
+Do not use square brackets. Use plain variable tokens.`,
+                modelId: selectedAiModel?.id,
+                provider: selectedAiModel?.provider as 'Google' | 'OpenAI' | 'Anthropic',
+                currentFieldName: `cf_rule_${ruleIndex + 1}`,
+                availableFields: aiFormulaFields
+            });
+
+            const normalizedFormula = normalizeConditionalFormulaFromAI(result.formula);
+            const syntaxError = validateFormulaSyntax(normalizedFormula);
+            if (syntaxError) {
+                setAiError(t('bi.cf.ai.invalid_formula', { error: syntaxError }));
+                return;
+            }
+
+            handleUpdateRule(rulesModalIndex, ruleIndex, {
+                compareFormula: normalizedFormula,
+                compareMode: 'formula'
+            });
+            setAiInfo(t('bi.cf.ai.generated_by', { provider: result.provider, model: result.modelId }));
+        } catch (error: any) {
+            setAiError(error?.message || t('bi.cf.ai.generate_failed'));
+        } finally {
+            setAiBusyRuleIndex(null);
+        }
+    };
+
     const recommendations: ConditionalRuleRecommendation[] = React.useMemo(() => {
         return [
             {
                 id: 'high-share',
-                title: 'High Share (> 10% Grand Total)',
-                description: 'Highlight cells contributing more than 10% of the grand total.',
+                title: t('bi.cf.rec.high_share_title'),
+                description: t('bi.cf.rec.high_share_desc'),
                 category: 'threshold',
                 buildRule: () => ({
                     condition: 'greater',
@@ -817,8 +931,8 @@ const PivotValueSelector: React.FC<{
             },
             {
                 id: 'row-outlier',
-                title: 'Row Outlier (> 1.5x Row Total)',
-                description: 'Mark values that are unusually high within the same row.',
+                title: t('bi.cf.rec.row_outlier_title'),
+                description: t('bi.cf.rec.row_outlier_desc'),
                 category: 'anomaly',
                 buildRule: () => ({
                     condition: 'greater',
@@ -832,8 +946,8 @@ const PivotValueSelector: React.FC<{
             },
             {
                 id: 'gt-column-avg',
-                title: 'Above Column Baseline',
-                description: 'Color cells greater than column total average estimate.',
+                title: t('bi.cf.rec.column_baseline_title'),
+                description: t('bi.cf.rec.column_baseline_desc'),
                 category: 'comparison',
                 buildRule: () => ({
                     condition: 'greater',
@@ -846,8 +960,8 @@ const PivotValueSelector: React.FC<{
             },
             {
                 id: 'drop-vs-row',
-                title: 'Drop Vs Row Total (< 8%)',
-                description: 'Flag weak cells under 8% of row total.',
+                title: t('bi.cf.rec.drop_vs_row_title'),
+                description: t('bi.cf.rec.drop_vs_row_desc'),
                 category: 'trend',
                 buildRule: () => ({
                     condition: 'less',
@@ -861,8 +975,8 @@ const PivotValueSelector: React.FC<{
             },
             {
                 id: 'safe-margin',
-                title: 'Safe Margin (Ratio > 20%)',
-                description: 'Use safe division to avoid divide-by-zero while comparing margins.',
+                title: t('bi.cf.rec.safe_margin_title'),
+                description: t('bi.cf.rec.safe_margin_desc'),
                 category: 'comparison',
                 buildRule: (metric) => ({
                     condition: 'greater',
@@ -875,7 +989,7 @@ const PivotValueSelector: React.FC<{
                 })
             }
         ];
-    }, []);
+    }, [t]);
 
     const applyRecommendation = (recommendation: ConditionalRuleRecommendation) => {
         if (rulesModalIndex === null || !activeRuleMetric) return;
@@ -884,7 +998,6 @@ const PivotValueSelector: React.FC<{
         currentRules.push(recommendation.buildRule(activeRuleMetric));
         newValues[rulesModalIndex] = { ...newValues[rulesModalIndex], conditionalFormatting: currentRules };
         onChange(newValues);
-        setShowRecommendations(false);
     };
 
     return (
@@ -991,8 +1104,7 @@ const PivotValueSelector: React.FC<{
                     className="fixed inset-0 z-[120] bg-slate-950/70 backdrop-blur-[2px] flex items-center justify-center p-4"
                     onClick={() => {
                         setRulesModalIndex(null);
-                        setShowRecommendations(false);
-                        setActiveFormulaRuleIndex(null);
+                        setFocusedFormulaRuleIndex(null);
                     }}
                 >
                     <div
@@ -1009,8 +1121,7 @@ const PivotValueSelector: React.FC<{
                             <button
                                 onClick={() => {
                                     setRulesModalIndex(null);
-                                    setShowRecommendations(false);
-                                    setActiveFormulaRuleIndex(null);
+                                    setFocusedFormulaRuleIndex(null);
                                 }}
                                 className="w-8 h-8 rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                             >
@@ -1025,6 +1136,18 @@ const PivotValueSelector: React.FC<{
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <select
+                                        value={selectedAiModel?.id || aiModelId}
+                                        onChange={(e) => setAiModelId(e.target.value)}
+                                        className="bg-slate-100 dark:bg-slate-950 text-xs text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none"
+                                        title="AI model for formula suggestion"
+                                    >
+                                        {aiModelOptions.map((model) => (
+                                            <option key={model.id} value={model.id}>
+                                                {model.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <select
                                         onChange={(e) => e.target.value && handleApplyPreset(rulesModalIndex, e.target.value as any)}
                                         className="bg-slate-100 dark:bg-slate-950 text-xs text-indigo-600 dark:text-indigo-300 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none"
                                         value=""
@@ -1035,17 +1158,30 @@ const PivotValueSelector: React.FC<{
                                         <option value="heatmap">{t('bi.cf.preset_heatmap')}</option>
                                     </select>
                                     <button
-                                        onClick={() => setShowRecommendations(true)}
-                                        className="text-xs bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-500 transition-colors font-black"
-                                    >
-                                        {t('bi.cf.recommendations')}
-                                    </button>
-                                    <button
                                         onClick={() => handleAddRule(rulesModalIndex)}
                                         className="text-xs bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-black"
                                     >
                                         {t('bi.cf.add_rule')}
                                     </button>
+                                </div>
+                            </div>
+
+                            <div className="border border-slate-200 dark:border-white/10 rounded-xl p-3 bg-slate-50 dark:bg-slate-950/40">
+                                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500 mb-2">
+                                    {t('bi.cf.quick_apply_title')}
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    {recommendations.map((item) => (
+                                        <button
+                                            key={item.id}
+                                            onClick={() => applyRecommendation(item)}
+                                            className="text-left border border-slate-200 dark:border-white/10 rounded-lg p-2 bg-white dark:bg-slate-900 hover:border-indigo-500/50 transition-colors"
+                                            title={item.description}
+                                        >
+                                            <div className="text-xs font-black text-slate-900 dark:text-white">{item.title}</div>
+                                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">{item.description}</div>
+                                        </button>
+                                    ))}
                                 </div>
                             </div>
 
@@ -1112,6 +1248,7 @@ const PivotValueSelector: React.FC<{
                                                     <textarea
                                                         value={rule.compareFormula || ''}
                                                         onChange={(e) => handleUpdateRule(rulesModalIndex, rIdx, { compareFormula: e.target.value })}
+                                                        onFocus={() => setFocusedFormulaRuleIndex(rIdx)}
                                                         className="w-full min-h-[72px] resize-y bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 font-mono"
                                                         placeholder={t('bi.cf.formula_placeholder')}
                                                     />
@@ -1134,12 +1271,9 @@ const PivotValueSelector: React.FC<{
                                                                 <span className="text-emerald-500">{t('bi.cf.formula_ok')}</span>
                                                             )}
                                                         </div>
-                                                        <button
-                                                            onClick={() => setActiveFormulaRuleIndex(activeFormulaRuleIndex === rIdx ? null : rIdx)}
-                                                            className="text-[10px] font-black text-indigo-500 hover:text-indigo-400"
-                                                        >
-                                                            {activeFormulaRuleIndex === rIdx ? t('bi.cf.hide_helpers') : t('bi.cf.show_helpers')}
-                                                        </button>
+                                                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                                                            {t('bi.cf.helpers_always_on')}
+                                                        </span>
                                                     </div>
                                                 </div>
                                             ) : (
@@ -1178,42 +1312,83 @@ const PivotValueSelector: React.FC<{
 
                                         {useFormula && (
                                             <div className="space-y-2">
-                                                <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
-                                                    {t('bi.cf.variables')}: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>
-                                                </div>
-                                                {activeFormulaRuleIndex === rIdx && (
+                                                    <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2">
+                                                        {t('bi.cf.variables')}: <span className="font-mono">VALUE</span>, <span className="font-mono">ROW_TOTAL</span>, <span className="font-mono">COLUMN_TOTAL</span>, <span className="font-mono">GRAND_TOTAL</span>, <span className="font-mono">VALUE_[field]_[agg]</span>
+                                                    </div>
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border border-slate-200 dark:border-white/10 rounded-lg p-3 bg-white/60 dark:bg-slate-900/40">
                                                         <div>
-                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.functions')}</div>
+                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.struct.title')}</div>
                                                             <div className="flex flex-wrap gap-1.5">
-                                                                {FORMULA_FUNCTION_SNIPPETS.map((fn) => (
+                                                                {CF_FORMULA_STRUCTURES.map((item) => (
                                                                     <button
-                                                                        key={`${rIdx}-func-${fn.label}`}
-                                                                        onClick={() => insertFormulaSnippet(rIdx, fn.snippet)}
+                                                                        key={`${rIdx}-structure-${item.labelKey}`}
+                                                                        onClick={() => applyFormulaStructure(rIdx, item.template)}
                                                                         className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors"
-                                                                        title={fn.hint}
+                                                                        title={t(item.noteKey)}
                                                                     >
-                                                                        {fn.label}
+                                                                        {t(item.labelKey)}
                                                                     </button>
                                                                 ))}
+                                                            </div>
+                                                            <div className="text-[10px] text-slate-500 mt-2">
+                                                                {t('bi.cf.struct.hint')}
                                                             </div>
                                                         </div>
-                                                        <div>
-                                                            <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.variables')}</div>
-                                                            <div className="max-h-24 overflow-y-auto flex flex-wrap gap-1.5 custom-scrollbar">
-                                                                {formulaVariables.map((variable) => (
-                                                                    <button
-                                                                        key={`${rIdx}-var-${variable}`}
-                                                                        onClick={() => insertFormulaSnippet(rIdx, variable)}
-                                                                        className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors font-mono"
-                                                                    >
-                                                                        {variable}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
+                                                    <div>
+                                                        <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.functions')}</div>
+                                                        <div className="flex flex-wrap gap-1.5">
+                                                            {FORMULA_FUNCTION_SNIPPETS.map((fn) => (
+                                                                <button
+                                                                    key={`${rIdx}-func-${fn.label}`}
+                                                                    onClick={() => insertFormulaSnippet(rIdx, fn.snippet)}
+                                                                    className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors"
+                                                                    title={fn.hint}
+                                                                >
+                                                                    {fn.label}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                        <div className="mt-2 max-h-24 overflow-y-auto flex flex-wrap gap-1.5 custom-scrollbar">
+                                                            {formulaVariables.map((variable) => (
+                                                                <button
+                                                                    key={`${rIdx}-var-${variable}`}
+                                                                    onClick={() => insertFormulaSnippet(rIdx, variable)}
+                                                                    className="px-2 py-1 text-[10px] border border-slate-200 dark:border-white/10 rounded bg-slate-100 dark:bg-slate-950 hover:border-indigo-500 hover:text-indigo-500 transition-colors font-mono"
+                                                                >
+                                                                    {variable}
+                                                                </button>
+                                                            ))}
                                                         </div>
                                                     </div>
-                                                )}
+                                                </div>
+                                                <div className="border border-slate-200 dark:border-white/10 rounded-lg p-3 bg-white/70 dark:bg-slate-900/50">
+                                                    <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{t('bi.cf.ai.title')}</div>
+                                                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2">
+                                                        <input
+                                                            type="text"
+                                                            value={aiPrompt}
+                                                            onChange={(e) => setAiPrompt(e.target.value)}
+                                                            onFocus={() => setFocusedFormulaRuleIndex(rIdx)}
+                                                            className="w-full bg-white dark:bg-slate-900 text-sm border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2"
+                                                            placeholder={t('bi.cf.ai.placeholder')}
+                                                        />
+                                                        <button
+                                                            onClick={() => handleGenerateAiFormula(rIdx)}
+                                                            disabled={aiBusyRuleIndex === rIdx || !aiPrompt.trim()}
+                                                            className="px-3 py-2 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed font-black"
+                                                        >
+                                                            {aiBusyRuleIndex === rIdx ? t('bi.cf.ai.generating') : t('bi.cf.ai.generate')}
+                                                        </button>
+                                                        <span className="px-2 py-2 text-[10px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg">
+                                                            {t('bi.cf.ai.target_rule', { index: (focusedFormulaRuleIndex ?? rIdx) + 1 })}
+                                                        </span>
+                                                    </div>
+                                                    {(aiError || aiInfo) && (
+                                                        <div className={`mt-2 text-[10px] ${aiError ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                            {aiError || aiInfo}
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </div>
                                         )}
 
@@ -1293,52 +1468,6 @@ const PivotValueSelector: React.FC<{
                 </div>
             )}
 
-            {showRecommendations && activeRuleMetric && (
-                <div
-                    className="fixed inset-0 z-[130] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4"
-                    onClick={() => setShowRecommendations(false)}
-                >
-                    <div
-                        className="w-full max-w-3xl max-h-[85vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl"
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div className="sticky top-0 z-10 px-5 py-4 border-b border-slate-200 dark:border-white/10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between">
-                            <div>
-                                <div className="text-sm font-black text-slate-900 dark:text-white">{t('bi.cf.recommended_title')}</div>
-                                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    {t('bi.cf.recommended_subtitle', { metric: activeRuleMetric.field })}
-                                </div>
-                            </div>
-                            <button
-                                onClick={() => setShowRecommendations(false)}
-                                className="w-8 h-8 rounded-lg border border-slate-200 dark:border-white/10 text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
-                            >
-                                <i className="fas fa-times"></i>
-                            </button>
-                        </div>
-
-                        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {recommendations.map((item) => (
-                                <div key={item.id} className="border border-slate-200 dark:border-white/10 rounded-xl p-3 bg-slate-50 dark:bg-slate-950/60">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="text-sm font-black text-slate-900 dark:text-white">{item.title}</div>
-                                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
-                                            {item.category}
-                                        </span>
-                                    </div>
-                                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{item.description}</div>
-                                    <button
-                                        onClick={() => applyRecommendation(item)}
-                                        className="mt-3 text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-500 transition-colors font-black"
-                                    >
-                                        Apply Rule
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };
