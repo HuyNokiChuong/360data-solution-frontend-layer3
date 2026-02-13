@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceDot, Label, ReferenceLine, LabelList } from 'recharts';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
@@ -13,6 +13,7 @@ import { useChartColors } from '../utils/chartColors';
 import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import ChartLegend from './ChartLegend';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface AreaChartWidgetProps {
     widget: BIWidget;
@@ -127,6 +128,36 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
     const isFiltered = isWidgetFiltered(widget.id) || (drillDownState && drillDownState.currentLevel > 0);
     const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
 
+    const categoryFields = useMemo(() => {
+        const fromAxis = xFields.filter(Boolean);
+        const base = fromAxis.length > 0 ? fromAxis : (widget.xAxis ? [widget.xAxis] : []);
+        const withLegend = widget.legend ? [...base, widget.legend] : base;
+        return Array.from(new Set(withLegend.filter(Boolean)));
+    }, [xFields, widget.xAxis, widget.legend]);
+
+    const measureFields = useMemo(() => {
+        const configured = [
+            ...(widget.yAxisConfigs || []).map((config) => config.field),
+            ...(widget.yAxis || []),
+            ...(widget.values || []),
+            ...(widget.measures || []),
+            ...series
+        ];
+        return Array.from(new Set(configured.filter(Boolean)));
+    }, [widget.yAxisConfigs, widget.yAxis, widget.values, widget.measures, series]);
+
+    const exportFields = useMemo(() => {
+        return [...categoryFields, ...measureFields].map((field) => ({ field }));
+    }, [categoryFields, measureFields]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Area Chart',
+            rows: effectiveChartData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, effectiveChartData, exportFields]);
+
     const handleAreaClick = (data: any) => {
         if (onDataClick && widget.enableCrossFilter !== false) {
             onDataClick(data);
@@ -182,7 +213,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
 
     if (series.length === 0) {
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick}>
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="area" message="Select Y-Axis field" onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
         );
@@ -190,7 +221,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
 
     if (effectiveChartData.length === 0) {
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick}>
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="area" message="No data available" onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
         );
@@ -207,6 +238,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
             loading={isLoading}
             error={error || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">

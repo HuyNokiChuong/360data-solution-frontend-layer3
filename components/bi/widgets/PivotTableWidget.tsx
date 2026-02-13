@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { BIWidget, ConditionalFormat, PivotValue } from '../types';
 import { useFilterStore } from '../store/filterStore';
 import { pivotData } from '../engine/calculations';
@@ -9,6 +9,7 @@ import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
 import { useChartColors } from '../utils/chartColors';
 import { formatBIValue } from '../engine/utils';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface PivotTableWidgetProps {
     widget: BIWidget;
@@ -464,10 +465,27 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
     const rowHeaderWidth = getColWidth('ROW_HEADERS', 240);
 
+    const exportFields = useMemo(() => {
+        const fieldOrder = [
+            ...(widget.pivotRows || []),
+            ...(widget.pivotCols || []),
+            ...(widget.pivotValues || []).map((value) => value.field)
+        ];
+        return Array.from(new Set(fieldOrder.filter(Boolean))).map((field) => ({ field }));
+    }, [widget.pivotRows, widget.pivotCols, widget.pivotValues]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Pivot Table',
+            rows: widgetData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, widgetData, exportFields]);
+
     // Early returns moved here to comply with React hooks rules - hooks must be called in the same order every render
     if (!widget.dataSourceId) {
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="table" message="Select data source" onClickDataTab={onClickDataTab} />
             </BaseWidget>
         );
@@ -475,7 +493,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
     if (error === 'No data') {
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="table" message="No data available" onClickDataTab={onClickDataTab} />
             </BaseWidget>
         );
@@ -483,7 +501,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
     if (error === 'Fields not configured') {
         return (
-            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick}>
+            <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="table" message="Configure Values" onClickDataTab={onClickDataTab} />
             </BaseWidget>
         );
@@ -500,6 +518,7 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
             loading={isLoading}
             error={directError || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className={`w-full h-full overflow-auto custom-scrollbar bg-slate-50/50 dark:bg-slate-950/30 rounded-lg shadow-inner font-['Outfit'] ${resizingConfig ? 'cursor-col-resize select-none' : ''}`}>
                 <table className="w-full border-collapse text-[11px] table-fixed min-w-max">

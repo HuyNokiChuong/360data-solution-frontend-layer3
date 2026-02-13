@@ -2,7 +2,7 @@
 // Table Widget
 // ============================================
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
@@ -12,6 +12,7 @@ import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import { getFieldValue, formatBIValue } from '../engine/utils';
 import EmptyChartState from './EmptyChartState';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface TableWidgetProps {
     widget: BIWidget;
@@ -104,9 +105,67 @@ const TableWidget: React.FC<TableWidgetProps> = ({
         return [];
     }, [widget.columns, dataSource]);
 
-    const pageSize = widget.pageSize || 10;
+    const exportFields = useMemo(() => {
+        return columns.map((column) => ({
+            field: column.field,
+            header: column.header || column.field
+        }));
+    }, [columns]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Table',
+            rows: tableData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, tableData, exportFields]);
+
+    const pageSize = 100;
     const totalPages = Math.ceil(tableData.length / pageSize);
     const paginatedData = tableData.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+    const parseNumericValue = (value: any): number | null => {
+        if (value === null || value === undefined || value === '') return null;
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : null;
+        }
+        if (typeof value !== 'string') return null;
+
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+
+        const normalized = trimmed.replace(/,/g, '');
+        if (!/^-?\d+(\.\d+)?$/.test(normalized)) return null;
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const totalsByField = useMemo(() => {
+        const totals: Record<string, { isNumeric: boolean; sum: number }> = {};
+
+        columns.forEach((column) => {
+            const values = tableData.map((row) => getFieldValue(row, column.field));
+            const numericValues = values
+                .map(parseNumericValue)
+                .filter((value): value is number => value !== null);
+            const hasNonNumeric = values.some((value) => {
+                if (value === null || value === undefined || value === '') return false;
+                return parseNumericValue(value) === null;
+            });
+            const isNumeric = numericValues.length > 0 && !hasNonNumeric;
+            totals[column.field] = {
+                isNumeric,
+                sum: isNumeric ? numericValues.reduce((acc, value) => acc + value, 0) : 0
+            };
+        });
+
+        return totals;
+    }, [columns, tableData]);
+
+    const totalLabelField = useMemo(() => {
+        const firstTextColumn = columns.find((column) => !totalsByField[column.field]?.isNumeric);
+        return firstTextColumn?.field || columns[0]?.field || '';
+    }, [columns, totalsByField]);
 
     const handleSort = (field: string) => {
         if (sortField === field) {
@@ -140,6 +199,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                 loadingProgress={loadingProgress}
                 error={directError || undefined}
                 onClick={onClick}
+                onExportExcel={handleExportExcel}
             >
                 <EmptyChartState type="table" message={errorMsg} onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
@@ -157,6 +217,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
             loading={directLoading}
             error={directError || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="flex flex-col h-full">
                 {/* Table */}
@@ -198,6 +259,30 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                                 </tr>
                             ))}
                         </tbody>
+                        {columns.length > 0 && tableData.length > 0 && (
+                            <tfoot className="sticky bottom-0 bg-slate-100 dark:bg-slate-900 border-t border-slate-300 dark:border-white/10">
+                                <tr>
+                                    {columns.map((col) => {
+                                        const isLabelColumn = col.field === totalLabelField;
+                                        const totalInfo = totalsByField[col.field];
+                                        const format = (col as any).format || widget.valueFormat || 'standard';
+
+                                        return (
+                                            <td
+                                                key={`total-${col.field}`}
+                                                className="px-3 py-2 font-bold text-slate-700 dark:text-slate-200"
+                                            >
+                                                {isLabelColumn
+                                                    ? `Total (${tableData.length.toLocaleString()} rows)`
+                                                    : totalInfo?.isNumeric
+                                                        ? formatBIValue(totalInfo.sum, format)
+                                                        : '-'}
+                                            </td>
+                                        );
+                                    })}
+                                </tr>
+                            </tfoot>
+                        )}
                     </table>
                 </div>
 

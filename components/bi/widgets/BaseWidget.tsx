@@ -15,6 +15,7 @@ interface BaseWidgetProps {
     onEdit?: () => void;
     onDelete?: () => void;
     onDuplicate?: () => void;
+    onExportExcel?: () => void;
     isSelected?: boolean;
     isFiltered?: boolean;
     loading?: boolean;
@@ -36,6 +37,7 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
     onEdit,
     onDelete,
     onDuplicate,
+    onExportExcel,
     isSelected = false,
     isFiltered = false,
     loading = false,
@@ -229,6 +231,18 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
                     >
                         <i className={`fas fa-${isFullscreen ? 'compress' : 'expand'} text-xs`}></i>
                     </button>
+                    {onExportExcel && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onExportExcel();
+                            }}
+                            className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-emerald-500"
+                            title="Export Excel"
+                        >
+                            <i className="fas fa-file-download text-xs"></i>
+                        </button>
+                    )}
                     {onEdit && (
                         <button
                             onClick={onEdit}

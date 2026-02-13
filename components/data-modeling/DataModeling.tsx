@@ -10,6 +10,7 @@ import {
 } from '../../services/dataModeling';
 import ListView from './ListView';
 import DiagramView from './DiagramView';
+import ActiveRelationshipsView from './ActiveRelationshipsView';
 import '@xyflow/react/dist/style.css';
 import { useLanguageStore } from '../../store/languageStore';
 
@@ -21,7 +22,7 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
   const { t } = useLanguageStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'list' | 'diagram'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'diagram' | 'active'>('list');
   const [dataModel, setDataModel] = useState<DataModel | null>(null);
   const [tables, setTables] = useState<ModelTable[]>([]);
   const [relationships, setRelationships] = useState<ModelRelationship[]>([]);
@@ -29,7 +30,10 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
   const [suggestions, setSuggestions] = useState<RelationshipSuggestion[]>([]);
   const [autoDetectLoading, setAutoDetectLoading] = useState(false);
 
-  const canEdit = useMemo(() => ['Admin', 'Editor'].includes(currentUser.role), [currentUser.role]);
+  const canEdit = useMemo(() => {
+    const role = String(currentUser.role || '').trim().toLowerCase();
+    return role === 'admin' || role === 'editor' || role === 'super admin' || role === 'super_admin' || role === 'superadmin';
+  }, [currentUser.role]);
 
   const refreshData = useCallback(async () => {
     setLoading(true);
@@ -62,7 +66,7 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
     fromColumn: string;
     toTableId: string;
     toColumn: string;
-    relationshipType: '1-1' | '1-n' | 'n-n';
+    relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
     crossFilterDirection: 'single' | 'both';
   }) => {
     if (!dataModel) return;
@@ -82,6 +86,34 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
     await deleteRelationship(relationshipId);
     setRelationships((prev) => prev.filter((item) => item.id !== relationshipId));
   }, []);
+
+  const handleEditRelationship = useCallback(async (
+    relationshipId: string,
+    updates: {
+      relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
+      crossFilterDirection: 'single' | 'both';
+    }
+  ) => {
+    if (!dataModel) return;
+    const current = relationships.find((item) => item.id === relationshipId);
+    if (!current) return;
+
+    const updated = await createRelationship({
+      dataModelId: dataModel.id,
+      fromTableId: current.fromTableId,
+      fromColumn: current.fromColumn,
+      toTableId: current.toTableId,
+      toColumn: current.toColumn,
+      relationshipType: updates.relationshipType,
+      crossFilterDirection: updates.crossFilterDirection,
+    });
+
+    setRelationships((prev) => {
+      const replaced = prev.map((item) => (item.id === relationshipId || item.id === updated.id ? updated : item));
+      if (replaced.some((item) => item.id === updated.id)) return replaced;
+      return [...replaced, updated];
+    });
+  }, [dataModel, relationships]);
 
   const handleAutoDetect = useCallback(async () => {
     if (!dataModel) return;
@@ -141,6 +173,12 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
               {t('dm.diagram_view')}
             </button>
             <button
+              onClick={() => setViewMode('active')}
+              className={`px-3 py-2 rounded-lg text-[11px] font-black ${viewMode === 'active' ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
+            >
+              Active Relationships
+            </button>
+            <button
               onClick={refreshData}
               className="px-3 py-2 rounded-lg text-[11px] font-black border border-slate-200 dark:border-white/10"
             >
@@ -172,7 +210,7 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
             onAcceptSuggestion={handleAcceptSuggestion}
             onRejectSuggestion={handleRejectSuggestion}
           />
-        ) : (
+        ) : viewMode === 'diagram' ? (
           <div className="flex-1 p-4">
             <DiagramView
               tables={tables}
@@ -183,6 +221,13 @@ const DataModeling: React.FC<DataModelingProps> = ({ currentUser }) => {
               onActionError={setError}
             />
           </div>
+        ) : (
+          <ActiveRelationshipsView
+            relationships={relationships}
+            canEdit={canEdit}
+            onDeleteRelationship={handleDeleteRelationship}
+            onEditRelationship={handleEditRelationship}
+          />
         )}
       </div>
     </div>

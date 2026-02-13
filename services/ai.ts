@@ -32,6 +32,60 @@ const getApiKey = (provider: string) => {
   return key.trim();
 };
 
+type AIProvider = 'Google' | 'OpenAI' | 'Anthropic';
+
+const inferProviderFromModelId = (modelId: string): AIProvider => {
+  if (!modelId) return 'Google';
+  if (modelId.startsWith('gpt') || modelId.startsWith('o1')) return 'OpenAI';
+  if (modelId.startsWith('claude')) return 'Anthropic';
+  return 'Google';
+};
+
+const hasApiKeyForProvider = (provider: AIProvider): boolean => !!getApiKey(provider);
+
+const pickBestFormulaModel = (preferredModelId?: string, preferredProvider?: AIProvider): { provider: AIProvider; modelId: string } => {
+  if (preferredModelId) {
+    const inferredProvider = inferProviderFromModelId(preferredModelId);
+    if (hasApiKeyForProvider(inferredProvider)) {
+      return { provider: inferredProvider, modelId: preferredModelId };
+    }
+  }
+
+  if (preferredProvider && hasApiKeyForProvider(preferredProvider)) {
+    if (preferredProvider === 'OpenAI') return { provider: 'OpenAI', modelId: 'gpt-5.1' };
+    if (preferredProvider === 'Anthropic') return { provider: 'Anthropic', modelId: 'claude-sonnet-4-20250514' };
+    return { provider: 'Google', modelId: 'gemini-2.5-pro' };
+  }
+
+  if (hasApiKeyForProvider('OpenAI')) return { provider: 'OpenAI', modelId: 'gpt-5.1' };
+  if (hasApiKeyForProvider('Anthropic')) return { provider: 'Anthropic', modelId: 'claude-sonnet-4-20250514' };
+  if (hasApiKeyForProvider('Google')) return { provider: 'Google', modelId: 'gemini-2.5-pro' };
+
+  throw new Error('No AI API key found. Vui lòng thêm API Key trong AI Settings.');
+};
+
+export interface FormulaGenerationField {
+  name: string;
+  type: 'string' | 'number' | 'date' | 'boolean' | string;
+}
+
+export interface GenerateCalculatedFieldFormulaInput {
+  prompt: string;
+  availableFields: FormulaGenerationField[];
+  modelId?: string;
+  provider?: AIProvider;
+  currentFieldName?: string;
+  signal?: AbortSignal;
+}
+
+export interface GenerateCalculatedFieldFormulaResult {
+  suggestedName: string;
+  formula: string;
+  explanation: string;
+  provider: AIProvider;
+  modelId: string;
+}
+
 async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7, signal?: AbortSignal) {
   const apiKey = getApiKey('OpenAI');
   if (!apiKey) throw new Error("OpenAI API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
@@ -903,6 +957,130 @@ export async function analyzeDashboardContent(
       return "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ vài giây rồi gửi lại tin nhắn nhé.";
     }
     return `Đã có lỗi xảy ra khi gọi AI Advisor: ${errorMsg || "Vui lòng kiểm tra API Key hoặc kết nối trong tab AI Setting."}`;
+  }
+}
+
+export async function generateCalculatedFieldFormula(
+  input: GenerateCalculatedFieldFormulaInput
+): Promise<GenerateCalculatedFieldFormulaResult> {
+  const normalizedPrompt = (input.prompt || '').trim();
+  if (!normalizedPrompt) {
+    throw new Error('Prompt is required. Hãy mô tả công thức bạn cần tạo.');
+  }
+
+  const availableFields = Array.isArray(input.availableFields) ? input.availableFields : [];
+  if (availableFields.length === 0) {
+    throw new Error('No fields available for formula generation.');
+  }
+
+  const modelSelection = pickBestFormulaModel(input.modelId, input.provider);
+  const fieldCatalog = availableFields
+    .map((f) => `- ${f.name} (${f.type})`)
+    .join('\n');
+
+  const systemInstruction = `
+You are a BI formula copilot.
+Return valid JSON only.
+You write formulas for this exact expression engine:
+- Field reference syntax: [FieldName]
+- Supported functions only: IF, AND, OR, NOT, ABS, ROUND, CEILING, FLOOR, MAX, MIN, UPPER, LOWER, CONCAT, LEN
+- Operators: + - * / % > < >= <= == != && || !
+
+Rules:
+1. Output one single expression in "formula", no markdown, no code fences.
+2. Use only fields from the provided list.
+3. Do not output SQL, SELECT, GROUP BY, window functions, or table aliases.
+4. Keep it concise and executable.
+5. If request is ambiguous, choose the safest assumption and mention it in "explanation".
+6. Suggest a readable snake_case field name in "suggestedName".
+`;
+
+  const userPrompt = `
+User request:
+${normalizedPrompt}
+
+Current field name (optional):
+${input.currentFieldName || '(empty)'}
+
+Available fields:
+${fieldCatalog}
+
+Return strictly this JSON shape:
+{
+  "suggestedName": "string",
+  "formula": "string",
+  "explanation": "string"
+}
+`;
+
+  try {
+    let responseText = '{}';
+
+    if (modelSelection.provider === 'OpenAI') {
+      responseText = await callOpenAI(modelSelection.modelId, systemInstruction, userPrompt, 0.2, input.signal);
+    } else if (modelSelection.provider === 'Anthropic') {
+      responseText = await callAnthropic(modelSelection.modelId, systemInstruction, userPrompt, 0.2, input.signal);
+    } else {
+      const apiKey = getApiKey('Google');
+      if (!apiKey) throw new Error('Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.');
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: modelSelection.modelId,
+        systemInstruction
+      });
+
+      const response = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+          responseSchema: {
+            type: SchemaType.OBJECT,
+            properties: {
+              suggestedName: { type: SchemaType.STRING },
+              formula: { type: SchemaType.STRING },
+              explanation: { type: SchemaType.STRING }
+            },
+            required: ['formula']
+          } as any
+        }
+      }, { signal: input.signal });
+
+      responseText = response.response.text();
+    }
+
+    const parsed = JSON.parse(cleanJsonResponse(responseText || '{}'));
+    const formula = String(parsed.formula || parsed.expression || '').trim();
+    if (!formula) {
+      throw new Error('AI did not return a valid formula.');
+    }
+
+    const rawName = String(parsed.suggestedName || parsed.fieldName || parsed.name || input.currentFieldName || 'calculated_field')
+      .trim();
+    const suggestedName = rawName
+      .replace(/[^\w\s]/g, '')
+      .trim()
+      .replace(/\s+/g, '_') || 'calculated_field';
+
+    const explanation = String(parsed.explanation || parsed.reasoning || parsed.note || '').trim();
+
+    return {
+      suggestedName,
+      formula,
+      explanation,
+      provider: modelSelection.provider,
+      modelId: modelSelection.modelId
+    };
+  } catch (e: any) {
+    const errorMsg = e?.message || String(e);
+    if (errorMsg.toLowerCase().includes('leaked')) {
+      throw new Error('API Key đã bị lộ và bị khóa. Vui lòng tạo key mới trong AI Settings.');
+    }
+    if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
+      throw new Error('AI đang quá tải (rate limit). Vui lòng thử lại sau vài giây.');
+    }
+    throw new Error(`Không thể generate công thức: ${errorMsg}`);
   }
 }
 

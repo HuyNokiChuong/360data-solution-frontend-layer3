@@ -8,7 +8,7 @@ import BIVisualBuilder from './BIVisualBuilder';
 import DashboardToolbar from './DashboardToolbar';
 
 import GlobalFilterBar from './GlobalFilterBar';
-import DataSourcesPanel from './panels/DataSourcesPanel';
+import RightDataSidebar from './panels/RightDataSidebar';
 import { ExportService } from './engine/ExportService';
 import { SyncedTable, Connection, User } from '../../types';
 import { fetchTableData, fetchTableSchema } from '../../services/bigquery';
@@ -27,12 +27,12 @@ import {
     useSensor,
     useSensors,
     PointerSensor,
+    DragStartEvent,
+    DragCancelEvent,
     DragEndEvent,
-    DragOverEvent,
+    DragOverlay,
     closestCenter,
-    defaultDropAnimationSideEffects,
 } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
 
 interface BIMainProps {
     tables: SyncedTable[];
@@ -67,7 +67,6 @@ const BIMain: React.FC<BIMainProps> = ({
         createDashboard,
         updateDashboard,
         syncDashboardDataSource,
-        syncPageDataSource,
         addWidget,
         updateWidget,
         selectedWidgetIds,
@@ -119,7 +118,14 @@ const BIMain: React.FC<BIMainProps> = ({
                 );
                 const scopedModelTables = modelTables.filter((table) => activeTableIds.has(table.syncedTableId));
 
-                const fieldMap: Record<string, { tableId: string; column: string }> = {};
+                const fieldMap: Record<string, {
+                    tableId: string;
+                    column: string;
+                    tableName?: string;
+                    datasetName?: string;
+                    sourceId?: string;
+                    syncedTableId?: string;
+                }> = {};
                 const schema: Field[] = [];
                 const usedFieldNames = new Set<string>();
 
@@ -136,6 +142,10 @@ const BIMain: React.FC<BIMainProps> = ({
                         fieldMap[uniqueName] = {
                             tableId: table.id,
                             column: column.name,
+                            tableName: table.tableName,
+                            datasetName: table.datasetName,
+                            sourceId: table.sourceId,
+                            syncedTableId: table.syncedTableId,
                         };
 
                         schema.push({
@@ -397,18 +407,24 @@ const BIMain: React.FC<BIMainProps> = ({
 
     const [leftPanelOpen, setLeftPanelOpen] = useState(true);
     const [rightPanelOpen, setRightPanelOpen] = useState(true);
+    const [dataPanelOpen, setDataPanelOpen] = useState(true);
     const [leftPanelWidth, setLeftPanelWidth] = useState(256); // Default 256px (w-64)
     const [rightPanelWidth, setRightPanelWidth] = useState(320); // Default 320px (w-80)
-    const isResizingRef = useRef<'left' | 'right' | null>(null);
+    const [dataPanelWidth, setDataPanelWidth] = useState(320);
+    const isResizingRef = useRef<'left' | 'right' | 'data-right' | null>(null);
 
-    const startResizing = (panel: 'left' | 'right') => (e: React.MouseEvent) => {
+    const startResizing = (panel: 'left' | 'right' | 'data-right') => (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
         isResizingRef.current = panel;
 
         // Capture initial state
         const startX = e.clientX;
-        const startWidth = panel === 'left' ? leftPanelWidth : rightPanelWidth;
+        const startWidth = panel === 'left'
+            ? leftPanelWidth
+            : panel === 'right'
+                ? rightPanelWidth
+                : dataPanelWidth;
 
         document.body.style.cursor = 'col-resize';
         document.body.style.userSelect = 'none';
@@ -422,9 +438,12 @@ const BIMain: React.FC<BIMainProps> = ({
             if (isResizingRef.current === 'left') {
                 const newWidth = Math.max(200, Math.min(800, startWidth + deltaX));
                 setLeftPanelWidth(newWidth);
-            } else {
+            } else if (isResizingRef.current === 'right') {
                 const newWidth = Math.max(250, Math.min(800, startWidth - deltaX));
                 setRightPanelWidth(newWidth);
+            } else {
+                const newWidth = Math.max(260, Math.min(640, startWidth - deltaX));
+                setDataPanelWidth(newWidth);
             }
         };
 
@@ -530,8 +549,31 @@ const BIMain: React.FC<BIMainProps> = ({
 
     // DND Sensors
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+    const [dragFieldPreview, setDragFieldPreview] = useState<{
+        name: string;
+        type: Field['type'];
+        sourceName?: string;
+    } | null>(null);
+
+    const handleDragStart = (event: DragStartEvent) => {
+        const activeData = event.active.data.current as any;
+        if (activeData?.field) {
+            setDragFieldPreview({
+                name: activeData.field.name,
+                type: activeData.field.type,
+                sourceName: activeData.dataSourceName,
+            });
+        } else {
+            setDragFieldPreview(null);
+        }
+    };
+
+    const handleDragCancel = (_event: DragCancelEvent) => {
+        setDragFieldPreview(null);
+    };
 
     const handleDragEnd = (event: DragEndEvent) => {
+        setDragFieldPreview(null);
         const { active, over } = event;
         if (!over) return;
 
@@ -572,7 +614,82 @@ const BIMain: React.FC<BIMainProps> = ({
             return;
         }
 
-        // 2. Handle Field Dragging (from sidebar to slots)
+        // 2. Handle table-column reordering inside visual builder
+        if (activeData.type === 'table-column') {
+            if (!activeWidget || activeWidget.type !== 'table') return;
+            const currentColumns = [...(activeWidget.columns || [])];
+            if (currentColumns.length === 0) return;
+
+            const sourceIndex = Number(activeData.columnIndex);
+            const targetIsInsertSlot = overData?.slot === 'table-columns-insert';
+            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= currentColumns.length || !targetIsInsertSlot) {
+                return;
+            }
+
+            const requestedIndexRaw = Number(overData?.insertIndex);
+            if (!Number.isInteger(requestedIndexRaw)) return;
+
+            const [movedColumn] = currentColumns.splice(sourceIndex, 1);
+            const boundedTarget = Math.max(0, Math.min(requestedIndexRaw, currentColumns.length));
+            const finalIndex = sourceIndex < requestedIndexRaw ? boundedTarget - 1 : boundedTarget;
+            const safeFinalIndex = Math.max(0, Math.min(finalIndex, currentColumns.length));
+            currentColumns.splice(safeFinalIndex, 0, movedColumn);
+
+            const changed = currentColumns.some((col, idx) => col.field !== (activeWidget.columns || [])[idx]?.field);
+            if (changed) {
+                updateWidget(activeDashboard!.id, activeWidget.id, { columns: currentColumns });
+            }
+            return;
+        }
+
+        // 3. Handle metric/value reordering in visual builder
+        if (activeData.type === 'pivot-value-item') {
+            if (!activeWidget) return;
+            const sourceSlotId = String(activeData.slotId || '');
+            const sourceIndex = Number(activeData.valueIndex);
+            const targetSlot = overData?.slot;
+            const targetInsertRaw = Number(overData?.insertIndex);
+
+            if (!sourceSlotId || !Number.isInteger(sourceIndex)) return;
+            if (targetSlot !== `${sourceSlotId}-insert` || !Number.isInteger(targetInsertRaw)) return;
+
+            const reorder = <T,>(list: T[]) => {
+                if (sourceIndex < 0 || sourceIndex >= list.length) return list;
+                const cloned = [...list];
+                const [moved] = cloned.splice(sourceIndex, 1);
+                const boundedTarget = Math.max(0, Math.min(targetInsertRaw, cloned.length));
+                const finalIndex = sourceIndex < targetInsertRaw ? boundedTarget - 1 : boundedTarget;
+                const safeIndex = Math.max(0, Math.min(finalIndex, cloned.length));
+                cloned.splice(safeIndex, 0, moved);
+                return cloned;
+            };
+
+            if (sourceSlotId === 'yAxis-multi') {
+                const current = activeWidget.yAxisConfigs || [];
+                const next = reorder(current);
+                const changed = next.some((item, idx) => item.field !== current[idx]?.field || item.aggregation !== current[idx]?.aggregation);
+                if (changed) updateWidget(activeDashboard!.id, activeWidget.id, { yAxisConfigs: next });
+                return;
+            }
+
+            if (sourceSlotId === 'lineAxis-multi') {
+                const current = activeWidget.lineAxisConfigs || [];
+                const next = reorder(current);
+                const changed = next.some((item, idx) => item.field !== current[idx]?.field || item.aggregation !== current[idx]?.aggregation);
+                if (changed) updateWidget(activeDashboard!.id, activeWidget.id, { lineAxisConfigs: next });
+                return;
+            }
+
+            if (sourceSlotId === 'pivot-values') {
+                const current = activeWidget.pivotValues || [];
+                const next = reorder(current);
+                const changed = next.some((item, idx) => item.field !== current[idx]?.field || item.aggregation !== current[idx]?.aggregation);
+                if (changed) updateWidget(activeDashboard!.id, activeWidget.id, { pivotValues: next });
+                return;
+            }
+        }
+
+        // 4. Handle Field Dragging (from sidebar to slots)
         if (activeData.field) {
             const field = activeData.field as Field;
             const targetSlot = overData?.slot; // e.g., 'xAxis', 'yAxis', 'legend'
@@ -580,9 +697,94 @@ const BIMain: React.FC<BIMainProps> = ({
 
             if (targetSlot && activeWidget) {
                 const updates: Partial<BIWidget> = {};
+                const draggedDataSourceId = activeData.dataSourceId as string | undefined;
+                const draggedDataSource = draggedDataSourceId
+                    ? dataSources.find((ds) => ds.id === draggedDataSourceId)
+                    : undefined;
+                const normalizeKey = (value: string | undefined | null) => String(value || '').trim().toLowerCase();
 
-                // AUTO-BIND data source if widget doesn't have one
-                if (!activeWidget.dataSourceId && selectedDataSourceId) {
+                const resolveSemanticDragBinding = (source: DataSource | undefined, sourceField: Field) => {
+                    if (!source || !sourceField?.name) return null;
+                    if (source.type === 'semantic_model') {
+                        return {
+                            sourceId: source.id,
+                            sourceName: source.tableName || source.name,
+                            pipelineName: source.connectionId
+                                ? connections.find((conn) => conn.id === source.connectionId)?.name
+                                : undefined,
+                            fieldName: sourceField.name,
+                        };
+                    }
+
+                    const semanticSources = dataSources.filter((ds) => ds.type === 'semantic_model' && ds.semanticFieldMap);
+                    if (semanticSources.length === 0) return null;
+
+                    const columnName = normalizeKey(sourceField.name);
+                    const tableName = normalizeKey(source.tableName || source.name);
+                    const datasetName = normalizeKey(source.datasetName);
+                    const sourceConnectionId = normalizeKey(source.connectionId);
+                    const sourceSyncedTableId = normalizeKey(source.syncedTableId);
+
+                    let bestMatch: {
+                        score: number;
+                        sourceId: string;
+                        sourceName: string;
+                        pipelineName?: string;
+                        fieldName: string;
+                    } | null = null;
+
+                    semanticSources.forEach((semanticSource) => {
+                        const mapping = semanticSource.semanticFieldMap || {};
+                        Object.entries(mapping).forEach(([semanticFieldName, binding]) => {
+                            if (normalizeKey(binding?.column) !== columnName) return;
+
+                            let score = 0;
+                            if (sourceSyncedTableId && normalizeKey(binding?.syncedTableId) === sourceSyncedTableId) score += 100;
+                            if (sourceConnectionId && normalizeKey(binding?.sourceId) === sourceConnectionId) score += 30;
+                            if (tableName && normalizeKey(binding?.tableName) === tableName) score += 25;
+                            if (datasetName && normalizeKey(binding?.datasetName) === datasetName) score += 15;
+
+                            const semanticFieldKey = normalizeKey(semanticFieldName);
+                            if (tableName && semanticFieldKey.startsWith(`${tableName}.`)) score += 10;
+                            if (datasetName && tableName && semanticFieldKey.startsWith(`${datasetName}.${tableName}.`)) score += 8;
+
+                            if (score <= 0) return;
+
+                            if (!bestMatch || score > bestMatch.score) {
+                                bestMatch = {
+                                    score,
+                                    sourceId: semanticSource.id,
+                                    sourceName: semanticSource.tableName || semanticSource.name,
+                                    pipelineName: semanticSource.connectionId
+                                        ? connections.find((conn) => conn.id === semanticSource.connectionId)?.name
+                                        : undefined,
+                                    fieldName: semanticFieldName,
+                                };
+                            }
+                        });
+                    });
+
+                    return bestMatch;
+                };
+
+                const semanticBinding = resolveSemanticDragBinding(draggedDataSource, field);
+                const resolvedDataSourceId = semanticBinding?.sourceId || draggedDataSourceId;
+                const resolvedDataSourceName = semanticBinding?.sourceName || (draggedDataSource
+                    ? (draggedDataSource.tableName || draggedDataSource.name)
+                    : undefined);
+                const resolvedPipelineName = semanticBinding?.pipelineName || (draggedDataSource?.connectionId
+                    ? connections.find((conn) => conn.id === draggedDataSource.connectionId)?.name
+                    : undefined);
+                const resolvedFieldName = semanticBinding?.fieldName || field.name;
+
+                // AUTO-BIND data source based on dragged field
+                if (resolvedDataSourceId) {
+                    if (activeWidget.dataSourceId !== resolvedDataSourceId) {
+                        updates.dataSourceId = resolvedDataSourceId;
+                        updates.dataSourceName = resolvedDataSourceName;
+                        updates.dataSourcePipelineName = resolvedPipelineName;
+                    }
+                } else if (!activeWidget.dataSourceId && selectedDataSourceId) {
                     updates.dataSourceId = selectedDataSourceId;
                 }
 
@@ -598,90 +800,144 @@ const BIMain: React.FC<BIMainProps> = ({
 
                 if (targetSlot === 'xAxis-hierarchy') {
                     const current = activeWidget.drillDownHierarchy || [];
-                    if (!current.includes(field.name)) {
+                    if (!current.includes(resolvedFieldName)) {
                         if (isDateField) {
-                            const timeParts = getTimeHierarchy(field.name);
+                            const timeParts = getTimeHierarchy(resolvedFieldName);
                             updates.drillDownHierarchy = [...current, ...timeParts.filter(p => !current.includes(p))];
                         } else {
-                            updates.drillDownHierarchy = [...current, field.name];
+                            updates.drillDownHierarchy = [...current, resolvedFieldName];
                         }
                         updates.xAxis = updates.drillDownHierarchy[0];
                     }
                 } else if (targetSlot === 'legend-hierarchy') {
                     const current = activeWidget.legendHierarchy || [];
-                    if (!current.includes(field.name)) {
+                    if (!current.includes(resolvedFieldName)) {
                         if (isDateField) {
-                            const timeParts = getTimeHierarchy(field.name);
+                            const timeParts = getTimeHierarchy(resolvedFieldName);
                             updates.legendHierarchy = [...current, ...timeParts.filter(p => !current.includes(p))];
                         } else {
-                            updates.legendHierarchy = [...current, field.name];
+                            updates.legendHierarchy = [...current, resolvedFieldName];
                         }
                         updates.legend = updates.legendHierarchy[0];
                     }
                 } else if (targetSlot === 'xAxis') {
                     if (isDateField) {
-                        const timeParts = getTimeHierarchy(field.name);
+                        const timeParts = getTimeHierarchy(resolvedFieldName);
                         updates.drillDownHierarchy = timeParts;
                         updates.xAxis = timeParts[0];
                     } else {
-                        updates.xAxis = field.name;
+                        updates.xAxis = resolvedFieldName;
                     }
                 } else if (targetSlot === 'yAxis') {
-                    updates.yAxis = [field.name];
+                    updates.yAxis = [resolvedFieldName];
                     if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-2') {
                     const current = activeWidget.yAxis || [];
-                    updates.yAxis = [current[0] || '', field.name];
+                    updates.yAxis = [current[0] || '', resolvedFieldName];
                     if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-size') {
                     const current = activeWidget.yAxis || [];
-                    updates.yAxis = [current[0] || '', field.name];
+                    updates.yAxis = [current[0] || '', resolvedFieldName];
                     if (activeWidget.type === 'chart') updates.showLabels = true;
                 } else if (targetSlot === 'yAxis-comparison') {
-                    updates.comparisonValue = field.name;
+                    updates.comparisonValue = resolvedFieldName;
                 } else if (targetSlot === 'yAxis-multi') {
                     const current = activeWidget.yAxisConfigs || [];
-                    if (!current.find(v => v.field === field.name)) {
-                        updates.yAxisConfigs = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        updates.yAxisConfigs = [...current, { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                        if (activeWidget.type === 'chart') updates.showLabels = true;
+                    }
+                } else if (targetSlot === 'yAxis-multi-insert') {
+                    const current = activeWidget.yAxisConfigs || [];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        const requestedIndexRaw = Number(overData?.insertIndex);
+                        const insertIndex = Number.isInteger(requestedIndexRaw)
+                            ? Math.max(0, Math.min(requestedIndexRaw, current.length))
+                            : current.length;
+                        updates.yAxisConfigs = [
+                            ...current.slice(0, insertIndex),
+                            { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' },
+                            ...current.slice(insertIndex)
+                        ];
                         if (activeWidget.type === 'chart') updates.showLabels = true;
                     }
                 } else if (targetSlot === 'lineAxis-multi') {
                     const current = activeWidget.lineAxisConfigs || [];
-                    if (!current.find(v => v.field === field.name)) {
-                        updates.lineAxisConfigs = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        updates.lineAxisConfigs = [...current, { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                        if (activeWidget.type === 'chart') updates.showLabels = true;
+                    }
+                } else if (targetSlot === 'lineAxis-multi-insert') {
+                    const current = activeWidget.lineAxisConfigs || [];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        const requestedIndexRaw = Number(overData?.insertIndex);
+                        const insertIndex = Number.isInteger(requestedIndexRaw)
+                            ? Math.max(0, Math.min(requestedIndexRaw, current.length))
+                            : current.length;
+                        updates.lineAxisConfigs = [
+                            ...current.slice(0, insertIndex),
+                            { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' },
+                            ...current.slice(insertIndex)
+                        ];
                         if (activeWidget.type === 'chart') updates.showLabels = true;
                     }
                 } else if (targetSlot === 'slicerField') {
-                    updates.slicerField = field.name;
+                    updates.slicerField = resolvedFieldName;
                 } else if (targetSlot === 'table-columns') {
                     const current = activeWidget.columns || [];
-                    if (!current.find(c => c.field === field.name)) {
-                        updates.columns = [...current, { field: field.name, header: field.name }];
+                    if (!current.find(c => c.field === resolvedFieldName)) {
+                        updates.columns = [...current, { field: resolvedFieldName, header: field.name }];
+                    }
+                } else if (targetSlot === 'table-columns-insert') {
+                    const current = activeWidget.columns || [];
+                    if (!current.find(c => c.field === resolvedFieldName)) {
+                        const requestedIndexRaw = Number(overData?.insertIndex);
+                        const insertIndex = Number.isInteger(requestedIndexRaw)
+                            ? Math.max(0, Math.min(requestedIndexRaw, current.length))
+                            : current.length;
+                        updates.columns = [
+                            ...current.slice(0, insertIndex),
+                            { field: resolvedFieldName, header: field.name },
+                            ...current.slice(insertIndex)
+                        ];
                     }
                 } else if (targetSlot === 'pivot-rows') {
                     const current = activeWidget.pivotRows || [];
-                    if (!current.includes(field.name)) {
+                    if (!current.includes(resolvedFieldName)) {
                         if (isDateField) {
-                            const timeParts = getTimeHierarchy(field.name);
+                            const timeParts = getTimeHierarchy(resolvedFieldName);
                             updates.pivotRows = [...current, ...timeParts.filter(p => !current.includes(p))];
                         } else {
-                            updates.pivotRows = [...current, field.name];
+                            updates.pivotRows = [...current, resolvedFieldName];
                         }
                     }
                 } else if (targetSlot === 'pivot-cols') {
                     const current = activeWidget.pivotCols || [];
-                    if (!current.includes(field.name)) {
+                    if (!current.includes(resolvedFieldName)) {
                         if (isDateField) {
-                            const timeParts = getTimeHierarchy(field.name);
+                            const timeParts = getTimeHierarchy(resolvedFieldName);
                             updates.pivotCols = [...current, ...timeParts.filter(p => !current.includes(p))];
                         } else {
-                            updates.pivotCols = [...current, field.name];
+                            updates.pivotCols = [...current, resolvedFieldName];
                         }
                     }
                 } else if (targetSlot === 'pivot-values') {
                     const current = activeWidget.pivotValues || [];
-                    if (!current.find(v => v.field === field.name)) {
-                        updates.pivotValues = [...current, { field: field.name, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        updates.pivotValues = [...current, { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' }];
+                    }
+                } else if (targetSlot === 'pivot-values-insert') {
+                    const current = activeWidget.pivotValues || [];
+                    if (!current.find(v => v.field === resolvedFieldName)) {
+                        const requestedIndexRaw = Number(overData?.insertIndex);
+                        const insertIndex = Number.isInteger(requestedIndexRaw)
+                            ? Math.max(0, Math.min(requestedIndexRaw, current.length))
+                            : current.length;
+                        updates.pivotValues = [
+                            ...current.slice(0, insertIndex),
+                            { field: resolvedFieldName, aggregation: field.type === 'number' ? 'sum' : 'count' },
+                            ...current.slice(insertIndex)
+                        ];
                     }
                 }
 
@@ -713,6 +969,30 @@ const BIMain: React.FC<BIMainProps> = ({
                 }
             }
         }
+    };
+
+    const getSelectedOrEditingWidgetIds = () =>
+        [...new Set([...selectedWidgetIds, ...(editingWidgetId ? [editingWidgetId] : [])])];
+
+    const updateSelectedWidgetsLayout = (
+        mutator: (widget: BIWidget) => Partial<BIWidget> | null
+    ) => {
+        const dashboard = dashboards.find((d) => d.id === activeDashboardId);
+        if (!dashboard) return;
+
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const widgets = activePage ? activePage.widgets : (dashboard.widgets || []);
+        const ids = getSelectedOrEditingWidgetIds();
+        if (ids.length === 0) return;
+
+        ids.forEach((id) => {
+            const widget = widgets.find((item) => item.id === id);
+            if (!widget) return;
+            const updates = mutator(widget);
+            if (updates && Object.keys(updates).length > 0) {
+                updateWidget(dashboard.id, id, updates);
+            }
+        });
     };
 
     // Keyboard Shortcuts
@@ -747,12 +1027,55 @@ const BIMain: React.FC<BIMainProps> = ({
         onPaste: () => useDashboardStore.getState().pasteWidgets(),
         onCut: () => {
             if (!activeDashboard) return;
-            const idsToCut = [...new Set([...selectedWidgetIds, ...(editingWidgetId ? [editingWidgetId] : [])])];
+            const idsToCut = getSelectedOrEditingWidgetIds();
             if (idsToCut.length === 0) return;
             useDashboardStore.getState().copySelectedWidgets();
             idsToCut.forEach(id => deleteWidget(activeDashboard.id, id));
             clearSelection();
         },
+        onEdit: () => {
+            const ids = getSelectedOrEditingWidgetIds();
+            if (ids.length === 0) return;
+            setEditingWidget(ids[0]);
+        },
+        onMoveSelected: (deltaX, deltaY) => {
+            updateSelectedWidgetsLayout((widget) => {
+                const maxCols = 12;
+                const boundedWidth = Math.max(1, Math.min(maxCols, widget.w));
+                const nextX = Math.max(0, Math.min(maxCols - boundedWidth, widget.x + deltaX));
+                const nextY = Math.max(0, widget.y + deltaY);
+                if (nextX === widget.x && nextY === widget.y) return null;
+                return { x: nextX, y: nextY };
+            });
+        },
+        onResizeSelected: (deltaW, deltaH) => {
+            updateSelectedWidgetsLayout((widget) => {
+                const maxCols = 12;
+                const nextW = Math.max(2, Math.min(maxCols, widget.w + deltaW));
+                const nextH = Math.max(2, widget.h + deltaH);
+                const nextX = Math.max(0, Math.min(widget.x, maxCols - nextW));
+
+                if (nextW === widget.w && nextH === widget.h && nextX === widget.x) return null;
+                return { w: nextW, h: nextH, x: nextX };
+            });
+        },
+        onCycleSelection: (direction) => {
+            const dashboard = dashboards.find((d) => d.id === activeDashboardId);
+            if (!dashboard) return;
+            const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+            const widgets = (activePage ? activePage.widgets : (dashboard.widgets || [])).filter((widget) => !widget.isGlobalFilter);
+            if (widgets.length === 0) return;
+
+            const orderedIds = widgets.map((widget) => widget.id);
+            const currentId = editingWidgetId || selectedWidgetIds[selectedWidgetIds.length - 1] || orderedIds[0];
+            const currentIndex = Math.max(0, orderedIds.indexOf(currentId));
+            const nextIndex = direction === 'next'
+                ? (currentIndex + 1) % orderedIds.length
+                : (currentIndex - 1 + orderedIds.length) % orderedIds.length;
+            const nextId = orderedIds[nextIndex];
+            selectWidget(nextId, false);
+            setEditingWidget(nextId);
+        }
     });
 
     useEffect(() => {
@@ -938,21 +1261,94 @@ const BIMain: React.FC<BIMainProps> = ({
 
     const activeDashboard = dashboards.find(d => d.id === activeDashboardId);
     const activeWidget = activeDashboard?.widgets.find(w => w.id === editingWidgetId);
+    const [multiSourceSelections, setMultiSourceSelections] = useState<Record<string, string[]>>({});
+
+    const getSelectionKey = (dashboard?: typeof activeDashboard) => {
+        if (!dashboard) return null;
+        return `${dashboard.id}:${dashboard.activePageId || 'root'}`;
+    };
+
+    const getDefaultSelection = (dashboard?: typeof activeDashboard) => {
+        if (!dashboard) return [] as string[];
+        const activePage = dashboard.pages?.find((page) => page.id === dashboard.activePageId);
+        if (activePage?.dataSourceId) return [activePage.dataSourceId];
+        if (dashboard.dataSourceId) return [dashboard.dataSourceId];
+        return [];
+    };
+
+    const activeSelectionKey = getSelectionKey(activeDashboard);
+    const selectedDashboardDataSourceIds = React.useMemo(() => {
+        if (!activeSelectionKey) return [] as string[];
+        const fromMap = multiSourceSelections[activeSelectionKey] || [];
+        if (fromMap.length > 0) return Array.from(new Set(fromMap));
+        return Array.from(new Set(getDefaultSelection(activeDashboard)));
+    }, [activeSelectionKey, multiSourceSelections, activeDashboard]);
+
+    useEffect(() => {
+        if (!activeSelectionKey) return;
+        setMultiSourceSelections((prev) => {
+            if (prev[activeSelectionKey]?.length) return prev;
+            const fallback = getDefaultSelection(activeDashboard);
+            if (fallback.length === 0) return prev;
+            return { ...prev, [activeSelectionKey]: Array.from(new Set(fallback)) };
+        });
+    }, [activeSelectionKey, activeDashboard?.id, activeDashboard?.activePageId, activeDashboard?.dataSourceId]);
 
     // Sync selectedDataSourceId with active dashboard/page/widget context
     useEffect(() => {
-        if (activeDashboard) {
-            const dashboardDS = activeDashboard.dataSourceId;
-            const activePageId = activeDashboard.activePageId;
-            const activePage = activeDashboard.pages?.find((p: any) => p.id === activePageId);
-            const pageDS = activePage?.dataSourceId;
+        if (!activeDashboard) return;
+        const dashboardDS = activeDashboard.dataSourceId;
+        const activePageId = activeDashboard.activePageId;
+        const activePage = activeDashboard.pages?.find((p: any) => p.id === activePageId);
+        const pageDS = activePage?.dataSourceId;
+        const fallbackDS = selectedDashboardDataSourceIds[0];
+        const effectiveDS = activeWidget?.dataSourceId || pageDS || dashboardDS || fallbackDS;
+        const currentSelected = selectedDataSourceId
+            ? dataSources.find((ds) => ds.id === selectedDataSourceId)
+            : undefined;
 
-            const effectiveDS = pageDS || activeWidget?.dataSourceId || dashboardDS;
-            if (effectiveDS && (effectiveDS !== selectedDataSourceId)) {
-                setSelectedDataSource(effectiveDS);
-            }
+        // Keep user's active non-semantic table selection stable for drag/drop UX.
+        if (currentSelected && currentSelected.type !== 'semantic_model') return;
+
+        const effectiveSource = effectiveDS
+            ? dataSources.find((ds) => ds.id === effectiveDS)
+            : undefined;
+
+        const preferredNonSemantic = selectedDashboardDataSourceIds.find((id) => {
+            const ds = dataSources.find((source) => source.id === id);
+            return ds && ds.type !== 'semantic_model';
+        });
+
+        const nextSelected = effectiveSource?.type === 'semantic_model'
+            ? (preferredNonSemantic || null)
+            : (effectiveDS || null);
+
+        if (nextSelected && nextSelected !== selectedDataSourceId) {
+            setSelectedDataSource(nextSelected);
         }
-    }, [activeDashboardId, activeDashboard?.activePageId, editingWidgetId, activeWidget?.dataSourceId, selectedDataSourceId, setSelectedDataSource]);
+    }, [
+        activeDashboardId,
+        activeDashboard?.activePageId,
+        activeDashboard?.dataSourceId,
+        editingWidgetId,
+        activeWidget?.dataSourceId,
+        dataSources,
+        selectedDashboardDataSourceIds,
+        selectedDataSourceId,
+        setSelectedDataSource
+    ]);
+
+    useEffect(() => {
+        if (!activeSelectionKey || !activeWidget?.dataSourceId) return;
+        setMultiSourceSelections((prev) => {
+            const current = prev[activeSelectionKey] || [];
+            if (current.includes(activeWidget.dataSourceId!)) return prev;
+            return {
+                ...prev,
+                [activeSelectionKey]: [...current, activeWidget.dataSourceId!]
+            };
+        });
+    }, [activeSelectionKey, activeWidget?.dataSourceId]);
 
     // Load actual data on demand for all required data sources
     const syncQueueControllerRef = useRef<AbortController | null>(null);
@@ -994,8 +1390,11 @@ const BIMain: React.FC<BIMainProps> = ({
                 // Update ref to avoid repeated full syncs on unrelated state changes
                 lastReloadTriggerRef.current = reloadTrigger;
             } else {
+                const activePage = dashboard.pages?.find((page) => page.id === dashboard.activePageId);
                 if (dashboard.dataSourceId) requiredIds.add(dashboard.dataSourceId);
+                if (activePage?.dataSourceId) requiredIds.add(activePage.dataSourceId);
                 if (selectedDataSourceId) requiredIds.add(selectedDataSourceId);
+                selectedDashboardDataSourceIds.forEach((id) => requiredIds.add(id));
                 dashboard.widgets.forEach(w => { if (w.dataSourceId) requiredIds.add(w.dataSourceId); });
             }
 
@@ -1107,7 +1506,67 @@ const BIMain: React.FC<BIMainProps> = ({
             // Don't abort the global queue on every small re-render, 
             // but we might want to if the component unmounts.
         };
-    }, [activeDashboardId, selectedDataSourceId, initialGoogleToken, connections, reloadTrigger]);
+    }, [activeDashboardId, selectedDataSourceId, selectedDashboardDataSourceIds, initialGoogleToken, connections, reloadTrigger]);
+
+    const applyDashboardDataSourceSelection = (nextIds: string[], preferredId?: string | null) => {
+        if (!activeDashboard) return;
+
+        const uniqueIds = Array.from(new Set(nextIds.filter(Boolean)));
+        if (activeSelectionKey) {
+            setMultiSourceSelections((prev) => ({ ...prev, [activeSelectionKey]: uniqueIds }));
+        }
+
+        const nextPrimary = (preferredId && uniqueIds.includes(preferredId))
+            ? preferredId
+            : (uniqueIds[0] || null);
+
+        const selectedDs = nextPrimary ? dataSources.find((ds) => ds.id === nextPrimary) : undefined;
+        const dsName = selectedDs ? (selectedDs.tableName || selectedDs.name) : undefined;
+
+        if (activeDashboard.pages && activeDashboard.activePageId) {
+            const updatedPages = activeDashboard.pages.map((page) =>
+                page.id === activeDashboard.activePageId
+                    ? { ...page, dataSourceId: nextPrimary || undefined, dataSourceName: dsName }
+                    : page
+            );
+
+            updateDashboard(activeDashboard.id, {
+                pages: updatedPages,
+                dataSourceId: nextPrimary || undefined,
+                dataSourceName: dsName,
+            });
+        } else {
+            updateDashboard(activeDashboard.id, { dataSourceId: nextPrimary || undefined, dataSourceName: dsName });
+            if (nextPrimary) {
+                syncDashboardDataSource(activeDashboard.id, nextPrimary, dsName);
+            }
+        }
+
+        setSelectedDataSource(nextPrimary || null);
+    };
+
+    const handleToggleDashboardDataSource = (dsId: string, selected: boolean) => {
+        if (!activeDashboard) return;
+
+        const current = selectedDashboardDataSourceIds;
+        const next = selected
+            ? Array.from(new Set([...current, dsId]))
+            : current.filter((id) => id !== dsId);
+
+        const preferred = selected
+            ? dsId
+            : (selectedDataSourceId === dsId ? next[0] || null : selectedDataSourceId);
+
+        applyDashboardDataSourceSelection(next, preferred);
+    };
+
+    const handleActivateDashboardDataSource = (dsId: string) => {
+        if (!activeDashboard) return;
+        const current = selectedDashboardDataSourceIds;
+        const next = current.includes(dsId) ? current : [...current, dsId];
+        applyDashboardDataSourceSelection(next, dsId);
+        setActiveVisualTab('data');
+    };
 
     const handleCreateFolder = (name: string, parentId?: string) => {
         createFolder(name, parentId, currentUser.id);
@@ -1123,35 +1582,13 @@ const BIMain: React.FC<BIMainProps> = ({
     };
 
     const handleSelectDataSource = (dsId: string) => {
-        if (activeDashboard) {
-            // Sync to active page if exists, otherwise to dashboard
-            if (activeDashboard.pages && activeDashboard.activePageId) {
-                const updatedPages = activeDashboard.pages.map(p =>
-                    p.id === activeDashboard.activePageId ? { ...p, dataSourceId: dsId } : p
-                );
-                updateDashboard(activeDashboard.id, { pages: updatedPages, dataSourceId: dsId });
-                syncPageDataSource(activeDashboard.id, activeDashboard.activePageId, dsId);
-            } else {
-                updateDashboard(activeDashboard.id, { dataSourceId: dsId });
-                syncDashboardDataSource(activeDashboard.id, dsId);
-            }
-            setSelectedDataSource(dsId);
-            setActiveVisualTab('data');
-        }
+        if (!activeDashboard) return;
+        applyDashboardDataSourceSelection([dsId], dsId);
+        setActiveVisualTab('data');
     };
 
     const handleClearDataSource = () => {
-        if (activeDashboard) {
-            if (activeDashboard.pages && activeDashboard.activePageId) {
-                const updatedPages = activeDashboard.pages.map(p =>
-                    p.id === activeDashboard.activePageId ? { ...p, dataSourceId: undefined } : p
-                );
-                updateDashboard(activeDashboard.id, { pages: updatedPages, dataSourceId: undefined });
-            } else {
-                updateDashboard(activeDashboard.id, { dataSourceId: undefined });
-            }
-            setSelectedDataSource(null);
-        }
+        applyDashboardDataSourceSelection([], null);
     };
 
     const handleAddWidget = (type: string) => {
@@ -1191,6 +1628,7 @@ const BIMain: React.FC<BIMainProps> = ({
         // Data source inheritance is handled by the dashboardStore.addWidget method
 
         addWidget(activeDashboard.id, newWidget);
+        setDataPanelOpen(true);
         setRightPanelOpen(true);
         setActiveVisualTab('data');
     };
@@ -1211,6 +1649,15 @@ const BIMain: React.FC<BIMainProps> = ({
     const isHydrated = useDashboardStore(state => state.isHydrated);
     const isDataHydrated = useDataStore(state => state.isHydrated);
 
+    const getDragFieldIcon = (type: Field['type']) => {
+        switch (type) {
+            case 'number': return 'fa-hashtag';
+            case 'date': return 'fa-calendar';
+            case 'boolean': return 'fa-toggle-on';
+            default: return 'fa-font';
+        }
+    };
+
     if (domain && (!isHydrated || !isDataHydrated)) {
         return (
             <div className="flex h-screen items-center justify-center bg-white dark:bg-[#020617] text-slate-900 dark:text-white transition-colors duration-300">
@@ -1226,6 +1673,8 @@ const BIMain: React.FC<BIMainProps> = ({
         <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragCancel={handleDragCancel}
             onDragEnd={handleDragEnd}
         >
             <div className="flex h-screen bg-white dark:bg-[#020617] text-slate-900 dark:text-white transition-colors duration-300">
@@ -1234,16 +1683,16 @@ const BIMain: React.FC<BIMainProps> = ({
                     <div style={{ width: leftPanelWidth }} className="border-r border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear">
                         {/* Resizer */}
                         <div
-                            className="absolute top-0 -right-1 w-2 h-full cursor-col-resize z-[100] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                            className="absolute top-0 -right-1 w-2 h-full cursor-col-resize z-[90] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
                             onMouseDown={startResizing('left')}
                         />
                         {/* Visual Separator */}
-                        <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
+                        <div className="absolute top-0 right-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors pointer-events-none" />
 
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setLeftPanelOpen(false)}
-                            className="absolute -right-3 bottom-6 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-50 shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 font-black"
+                            className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 font-black"
                             title={t('bi.collapse_left_panel')}
                         >
                             <i className="fas fa-chevron-left text-[10px]"></i>
@@ -1269,7 +1718,7 @@ const BIMain: React.FC<BIMainProps> = ({
                     <div className="w-0 relative">
                         <button
                             onClick={() => setLeftPanelOpen(true)}
-                            className="absolute left-6 bottom-6 w-10 h-10 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 rounded-2xl flex items-center justify-center text-indigo-400 shadow-2xl transition-all z-[60] hover:scale-110 active:scale-95"
+                            className="absolute left-6 bottom-16 w-10 h-10 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 rounded-2xl flex items-center justify-center text-indigo-400 shadow-2xl transition-all z-[120] hover:scale-110 active:scale-95"
                             title={t('bi.expand_left_panel')}
                         >
                             <i className="fas fa-folder-open"></i>
@@ -1325,8 +1774,9 @@ const BIMain: React.FC<BIMainProps> = ({
 
                                 <div className="flex-1 relative overflow-hidden flex flex-col">
 
-                                    <div id="bi-canvas-export" className="flex-1 w-full overflow-auto custom-scrollbar relative">
+                                    <div id="bi-canvas-export" data-export-name={activeDashboard.title} className="flex-1 w-full overflow-auto custom-scrollbar relative">
                                         <div
+                                            data-export-content="true"
                                             style={{
                                                 transform: `scale(${zoom})`,
                                                 transformOrigin: 'top left',
@@ -1374,21 +1824,65 @@ const BIMain: React.FC<BIMainProps> = ({
                     )}
                 </div>
 
+                {/* Right Data Panel: Multi-table selection + drag fields */}
+                {dataPanelOpen ? (
+                    <div
+                        style={{ width: dataPanelWidth }}
+                        className="border-l border-slate-200 dark:border-white/5 bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear"
+                    >
+                        <div
+                            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-[90] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                            onMouseDown={startResizing('data-right')}
+                        />
+                        <div className="absolute top-0 left-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors pointer-events-none" />
+
+                        <button
+                            onClick={() => setDataPanelOpen(false)}
+                            className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
+                            title="Collapse data sidebar"
+                        >
+                            <i className="fas fa-chevron-right text-[10px]"></i>
+                        </button>
+
+                        <RightDataSidebar
+                            dataSources={dataSources}
+                            connections={connections}
+                            selectedDataSourceIds={selectedDashboardDataSourceIds}
+                            activeDataSourceId={selectedDataSourceId}
+                            onToggleDataSource={handleToggleDashboardDataSource}
+                            onActivateDataSource={handleActivateDashboardDataSource}
+                            onReloadDataSource={handleReloadDataSource}
+                            onStopDataSource={handleStopSync}
+                        />
+                    </div>
+                ) : (
+                    <div className="w-0 relative">
+                        <button
+                            onClick={() => setDataPanelOpen(true)}
+                            style={{ right: rightPanelOpen ? `${rightPanelWidth + 52}px` : '56px' }}
+                            className="absolute bottom-16 w-10 h-10 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 rounded-2xl flex items-center justify-center text-indigo-300 shadow-2xl transition-all z-[120] hover:scale-110 active:scale-95"
+                            title="Expand data sidebar"
+                        >
+                            <i className="fas fa-database"></i>
+                        </button>
+                    </div>
+                )}
+
                 {/* Right Panel: Visual Builder */}
                 {rightPanelOpen ? (
                     <div style={{ width: rightPanelWidth }} className="border-l border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-950 flex flex-col relative group shrink-0 transition-[width] duration-0 ease-linear">
                         {/* Resizer */}
                         <div
-                            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-[100] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
+                            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-[90] transition-opacity bg-transparent hover:bg-indigo-500/50 dark:hover:bg-indigo-400/50"
                             onMouseDown={startResizing('right')}
                         />
                         {/* Visual Separator */}
-                        <div className="absolute top-0 left-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors" />
+                        <div className="absolute top-0 left-0 w-[1px] h-full bg-slate-200 dark:bg-white/10 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400 transition-colors pointer-events-none" />
 
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setRightPanelOpen(false)}
-                            className="absolute -left-3 bottom-6 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-50 shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
+                            className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
                             title={t('bi.collapse_right_panel')}
                         >
                             <i className="fas fa-chevron-right text-[10px]"></i>
@@ -1410,7 +1904,7 @@ const BIMain: React.FC<BIMainProps> = ({
                     <div className="w-0 relative">
                         <button
                             onClick={() => setRightPanelOpen(true)}
-                            className="absolute right-4 bottom-6 w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-2xl shadow-indigo-600/30 hover:scale-110 active:scale-95 transition-all z-[60]"
+                            className="absolute right-4 bottom-16 w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-2xl shadow-indigo-600/30 hover:scale-110 active:scale-95 transition-all z-[120]"
                             title={t('bi.expand_right_panel')}
                         >
                             <i className="fas fa-chart-bar"></i>
@@ -1421,6 +1915,21 @@ const BIMain: React.FC<BIMainProps> = ({
                 {/* AI Advisor Chat */}
                 {activeDashboard && <DashboardAIChat dashboard={activeDashboard} />}
             </div>
+            <DragOverlay dropAnimation={null}>
+                {dragFieldPreview ? (
+                    <div className="min-w-[180px] max-w-[280px] px-3 py-2 rounded-lg border border-indigo-400/50 bg-slate-900/95 shadow-2xl shadow-indigo-900/40">
+                        <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                                <i className={`fas ${getDragFieldIcon(dragFieldPreview.type)} text-[9px]`}></i>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <div className="text-[11px] font-black text-slate-100 truncate">{dragFieldPreview.name}</div>
+                                <div className="text-[9px] text-slate-400 truncate">{dragFieldPreview.sourceName || 'Data field'}</div>
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
+            </DragOverlay>
         </DndContext>
     );
 };

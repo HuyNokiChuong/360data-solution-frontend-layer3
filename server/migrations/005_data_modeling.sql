@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS model_relationships (
     to_column VARCHAR(255) NOT NULL,
     from_table_id UUID NOT NULL REFERENCES model_tables(id) ON DELETE CASCADE,
     to_table_id UUID NOT NULL REFERENCES model_tables(id) ON DELETE CASCADE,
-    relationship_type VARCHAR(10) NOT NULL CHECK (relationship_type IN ('1-1', '1-n', 'n-n')),
+    relationship_type VARCHAR(10) NOT NULL CHECK (relationship_type IN ('1-1', '1-n', 'n-1', 'n-n')),
     cross_filter_direction VARCHAR(10) NOT NULL CHECK (cross_filter_direction IN ('single', 'both')),
     validation_status VARCHAR(20) NOT NULL DEFAULT 'valid' CHECK (validation_status IN ('valid', 'invalid')),
     invalid_reason TEXT,

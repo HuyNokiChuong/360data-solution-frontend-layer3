@@ -3,11 +3,11 @@
 // ============================================
 
 import React, { useState } from 'react';
-import { BIWidget, ChartType, AggregationType, PivotValue, ConditionalFormat, DataSource } from './types';
+import { BIWidget, ChartType, AggregationType, PivotValue, ConditionalFormat, DataSource, TableColumn } from './types';
 import { useDataStore } from './store/dataStore';
 import { useDashboardStore } from './store/dashboardStore';
 import ColorPicker from './panels/ColorPicker';
-import { useDroppable } from '@dnd-kit/core';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { CHART_COLORS } from './utils/chartColors';
 import { getAutoTitle } from './utils/widgetUtils';
 import { useFilterStore } from './store/filterStore';
@@ -82,6 +82,191 @@ const FieldIcon: React.FC<{ field: any }> = ({ field }) => {
     }
 
     return <i className={`fas ${icon} ${color} w-3 text-center text-[10px]`}></i>;
+};
+
+const TableColumnInsertDropZone: React.FC<{ index: number }> = ({ index }) => {
+    const { setNodeRef, isOver } = useDroppable({
+        id: `table-columns-insert-${index}`,
+        data: { slot: 'table-columns-insert', insertIndex: index }
+    });
+
+    return (
+        <div
+            ref={setNodeRef}
+            className={`w-full rounded-md transition-all duration-150 ${isOver
+                ? 'h-3 my-1 bg-indigo-500/60 ring-1 ring-indigo-400/70'
+                : 'h-2 my-0.5 bg-transparent'
+                }`}
+        />
+    );
+};
+
+const DraggableTableColumnCard: React.FC<{
+    column: TableColumn;
+    index: number;
+    onRemove: () => void;
+    onHeaderChange: (header: string) => void;
+    onFormatChange: (format: string) => void;
+}> = ({ column, index, onRemove, onHeaderChange, onFormatChange }) => {
+    const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+        id: `table-column:${column.field}:${index}`,
+        data: {
+            type: 'table-column',
+            columnIndex: index,
+            columnField: column.field,
+        }
+    });
+
+    const style = transform
+        ? {
+            transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+            zIndex: 1000,
+        }
+        : undefined;
+
+    return (
+        <div
+            ref={setNodeRef}
+            style={style}
+            className={`bg-white dark:bg-slate-900 border rounded-lg p-3 transition-all ${isDragging
+                ? 'border-indigo-500/70 ring-2 ring-indigo-500/50 shadow-2xl opacity-90'
+                : 'border-slate-200 dark:border-white/5 hover:border-indigo-500/30'
+                }`}
+        >
+            <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                <div className="flex items-center gap-2 overflow-hidden">
+                    <button
+                        type="button"
+                        className="w-5 h-5 rounded bg-indigo-500/20 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400 cursor-grab active:cursor-grabbing hover:bg-indigo-500/30"
+                        {...attributes}
+                        {...listeners}
+                        title="Drag to reorder"
+                    >
+                        <i className="fas fa-grip-vertical text-[10px]"></i>
+                    </button>
+                    <span className="text-[10px] font-bold text-slate-900 dark:text-white truncate" title={column.field}>{column.field}</span>
+                </div>
+                <button
+                    onClick={onRemove}
+                    className="text-slate-400 dark:text-slate-500 hover:text-red-500 w-5 h-5 flex items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-white/5 transition-all"
+                    title="Remove column"
+                >
+                    <i className="fas fa-times text-[10px]"></i>
+                </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+                <div>
+                    <label className="text-[8px] text-slate-500 uppercase font-black block mb-1">Header</label>
+                    <input
+                        type="text"
+                        value={column.header || column.field}
+                        onChange={(e) => onHeaderChange(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-[10px] text-slate-900 dark:text-white focus:border-indigo-500/50 outline-none transition-colors"
+                        placeholder="Column Label"
+                    />
+                </div>
+                <div>
+                    <label className="text-[8px] text-slate-500 uppercase font-black block mb-1">Format</label>
+                    <select
+                        value={column.format || 'standard'}
+                        onChange={(e) => onFormatChange(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-[10px] text-slate-900 dark:text-white focus:border-indigo-500/50 outline-none transition-colors appearance-none"
+                    >
+                        <optgroup label="Standard">
+                            <option value="standard">Standard (1,234.56)</option>
+                            <option value="integer">Integer (1,234)</option>
+                        </optgroup>
+                        <optgroup label="Compact & Large">
+                            <option value="compact">Auto Compact (1.2K)</option>
+                            <option value="compact_long">Long Compact (1.2 thousand)</option>
+                            <option value="1k">Thousands (1K)</option>
+                            <option value="1m">Millions (1M)</option>
+                            <option value="1b">Billions (1B)</option>
+                        </optgroup>
+                        <optgroup label="Currency">
+                            <option value="currency">US Dollar ($)</option>
+                            <option value="currency_vnd">Vietnamese Dong (₫)</option>
+                            <option value="currency_eur">Euro (€)</option>
+                            <option value="currency_gbp">British Pound (£)</option>
+                            <option value="currency_jpy">Japanese Yen (¥)</option>
+                            <option value="accounting">Accounting ($1,234)</option>
+                        </optgroup>
+                        <optgroup label="Percentage">
+                            <option value="percentage">Percentage (12.3%)</option>
+                            <option value="percentage_0">Percentage (12%)</option>
+                            <option value="percentage_2">Percentage (12.34%)</option>
+                        </optgroup>
+                        <optgroup label="Scientific & Float">
+                            <option value="float_1">Float (1.2)</option>
+                            <option value="float_2">Float (1.23)</option>
+                            <option value="float_3">Float (1.234)</option>
+                            <option value="float_4">Float (1.2345)</option>
+                            <option value="scientific">Scientific (1.23E+4)</option>
+                        </optgroup>
+                        <optgroup label="Date">
+                            <option value="date:YYYY-MM-DD">YYYY-MM-DD</option>
+                            <option value="date:DD/MM/YYYY">DD/MM/YYYY</option>
+                            <option value="date:MM/DD/YYYY">MM/DD/YYYY</option>
+                            <option value="date:DD-MM-YYYY">DD-MM-YYYY</option>
+                            <option value="date:DD MMM YYYY">DD MMM YYYY</option>
+                            <option value="date:MMM DD, YYYY">MMM DD, YYYY</option>
+                        </optgroup>
+                        <optgroup label="Time">
+                            <option value="time:HH:mm">Time (HH:mm)</option>
+                            <option value="time:hh:mm A">Time (hh:mm AM/PM)</option>
+                            <option value="datetime:YYYY-MM-DD HH:mm:ss">Full DateTime</option>
+                        </optgroup>
+                    </select>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ConfigValueInsertDropZone: React.FC<{ slotId: string; index: number }> = ({ slotId, index }) => {
+    const { setNodeRef, isOver } = useDroppable({
+        id: `${slotId}-insert-${index}`,
+        data: { slot: `${slotId}-insert`, insertIndex: index, slotId }
+    });
+
+    return (
+        <div
+            ref={setNodeRef}
+            className={`w-full rounded-md transition-all duration-150 ${isOver
+                ? 'h-2.5 my-1 bg-indigo-500/60 ring-1 ring-indigo-400/70'
+                : 'h-1.5 my-0.5 bg-transparent'
+                }`}
+        />
+    );
+};
+
+const DraggableConfigValueCard: React.FC<{
+    slotId: string;
+    itemIndex: number;
+    itemField: string;
+    children: (drag: { attributes: any; listeners: any; isDragging: boolean }) => React.ReactNode;
+}> = ({ slotId, itemIndex, itemField, children }) => {
+    const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+        id: `pivot-value-item:${slotId}:${itemIndex}:${itemField}`,
+        data: {
+            type: 'pivot-value-item',
+            slotId,
+            valueIndex: itemIndex
+        }
+    });
+
+    const style = transform
+        ? {
+            transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+            zIndex: 1000,
+        }
+        : undefined;
+
+    return (
+        <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-90' : undefined}>
+            {children({ attributes, listeners, isDragging })}
+        </div>
+    );
 };
 
 const CustomFieldDropdown: React.FC<{
@@ -651,72 +836,92 @@ const PivotValueSelector: React.FC<{
     return (
         <div ref={setNodeRef} className={`space-y-2 p-2 rounded-lg transition-all ${isOver ? 'bg-indigo-50 dark:bg-indigo-600/20 ring-2 ring-indigo-500/50' : ''}`}>
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">{label}</label>
-            <div className="space-y-2">
+            <div className="space-y-1">
+                <ConfigValueInsertDropZone slotId={slotId} index={0} />
                 {values.map((v, idx) => (
-                    <div key={`${v.field}-${idx}`} className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded p-2">
-                        <div className="flex items-center gap-1.5 mb-1">
-                            <span className="flex-1 text-[11px] text-slate-900 dark:text-white truncate font-bold">{v.field}</span>
-                            <button
-                                onClick={() => setRulesModalIndex(idx)}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] uppercase font-black transition-all border ${(v.conditionalFormatting?.length ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:text-indigo-600')
-                                    }`}
-                            >
-                                <i className={`fas fa-paint-brush ${v.conditionalFormatting?.length ? 'animate-pulse' : ''}`}></i>
-                                Rules {v.conditionalFormatting?.length ? `(${v.conditionalFormatting.length})` : ''}
-                            </button>
-                            <button onClick={() => handleRemove(idx)} className="text-slate-400 dark:text-slate-600 hover:text-red-500 p-0.5 ml-1">
-                                <i className="fas fa-times text-[10px]"></i>
-                            </button>
-                        </div>
+                    <React.Fragment key={`${v.field}-${idx}`}>
+                        <DraggableConfigValueCard slotId={slotId} itemIndex={idx} itemField={v.field}>
+                            {({ attributes, listeners, isDragging }) => (
+                                <div className={`bg-slate-50 dark:bg-slate-900 border rounded p-2 transition-all ${isDragging
+                                    ? 'border-indigo-500/70 ring-2 ring-indigo-500/50 shadow-xl'
+                                    : 'border-slate-200 dark:border-white/5'
+                                    }`}>
+                                    <div className="flex items-center gap-1.5 mb-1">
+                                        <button
+                                            type="button"
+                                            {...attributes}
+                                            {...listeners}
+                                            className="w-5 h-5 rounded bg-indigo-500/20 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center cursor-grab active:cursor-grabbing hover:bg-indigo-500/30"
+                                            title="Drag to reorder"
+                                        >
+                                            <i className="fas fa-grip-vertical text-[10px]"></i>
+                                        </button>
+                                        <span className="flex-1 text-[11px] text-slate-900 dark:text-white truncate font-bold">{v.field}</span>
+                                        <button
+                                            onClick={() => setRulesModalIndex(idx)}
+                                            className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] uppercase font-black transition-all border ${(v.conditionalFormatting?.length ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' : 'bg-white dark:bg-slate-950 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:text-indigo-600')
+                                                }`}
+                                        >
+                                            <i className={`fas fa-paint-brush ${v.conditionalFormatting?.length ? 'animate-pulse' : ''}`}></i>
+                                            Rules {v.conditionalFormatting?.length ? `(${v.conditionalFormatting.length})` : ''}
+                                        </button>
+                                        <button onClick={() => handleRemove(idx)} className="text-slate-400 dark:text-slate-600 hover:text-red-500 p-0.5 ml-1">
+                                            <i className="fas fa-times text-[10px]"></i>
+                                        </button>
+                                    </div>
 
-                        <div className="flex items-center gap-1 mb-1">
-                            {!hideAxisSelector && (
-                                <div className="flex items-center gap-1 bg-white dark:bg-slate-950 rounded p-0.5 border border-slate-200 dark:border-white/10">
-                                    <button
-                                        onClick={() => handleUpdate(idx, { yAxisId: 'left' })}
-                                        className={`px-1.5 py-0.5 rounded text-[8px] font-black tracking-tighter transition-colors ${v.yAxisId === 'left' || !v.yAxisId ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                                    >
-                                        L
-                                    </button>
-                                    <button
-                                        onClick={() => handleUpdate(idx, { yAxisId: 'right' })}
-                                        className={`px-1.5 py-0.5 rounded text-[8px] font-black tracking-tighter transition-colors ${v.yAxisId === 'right' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                                    >
-                                        R
-                                    </button>
+                                    <div className="flex items-center gap-1 mb-1">
+                                        {!hideAxisSelector && (
+                                            <div className="flex items-center gap-1 bg-white dark:bg-slate-950 rounded p-0.5 border border-slate-200 dark:border-white/10">
+                                                <button
+                                                    onClick={() => handleUpdate(idx, { yAxisId: 'left' })}
+                                                    className={`px-1.5 py-0.5 rounded text-[8px] font-black tracking-tighter transition-colors ${v.yAxisId === 'left' || !v.yAxisId ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                                >
+                                                    L
+                                                </button>
+                                                <button
+                                                    onClick={() => handleUpdate(idx, { yAxisId: 'right' })}
+                                                    className={`px-1.5 py-0.5 rounded text-[8px] font-black tracking-tighter transition-colors ${v.yAxisId === 'right' ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                                >
+                                                    R
+                                                </button>
+                                            </div>
+                                        )}
+                                        <select
+                                            value={coerceAggregationForFieldType(v.aggregation, getFieldType(v.field))}
+                                            onChange={(e) => handleUpdate(idx, { aggregation: coerceAggregationForFieldType(e.target.value, getFieldType(v.field)) })}
+                                            className="flex-1 bg-white dark:bg-slate-950 text-[10px] text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-white/10 rounded px-1 outline-none py-0.5"
+                                        >
+                                            {getAggregationOptionsForFieldType(getFieldType(v.field)).map((option) => (
+                                                <option key={option.value} value={option.value}>{option.label}</option>
+                                            ))}
+                                        </select>
+                                        <select
+                                            value={v.format || ''}
+                                            onChange={(e) => handleUpdate(idx, { format: e.target.value || undefined })}
+                                            className={`flex-1 bg-white dark:bg-slate-950 text-[10px] ${v.format ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500'} border border-slate-200 dark:border-white/10 rounded px-1 outline-none py-0.5`}
+                                        >
+                                            <option value="">Auto</option>
+                                            <option value="standard">Std</option>
+                                            <option value="integer">Int</option>
+                                            <option value="compact">Cpt</option>
+                                            <option value="currency_vnd">VND</option>
+                                            <option value="currency_usd">USD</option>
+                                            <option value="percentage">%</option>
+                                            <option value="percentage_2">%.2f</option>
+                                        </select>
+                                    </div>
+
+                                    {!!v.conditionalFormatting?.length && (
+                                        <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/5 text-[10px] text-slate-500 dark:text-slate-400">
+                                            {v.conditionalFormatting.length} rule(s) configured
+                                        </div>
+                                    )}
                                 </div>
                             )}
-                            <select
-                                value={coerceAggregationForFieldType(v.aggregation, getFieldType(v.field))}
-                                onChange={(e) => handleUpdate(idx, { aggregation: coerceAggregationForFieldType(e.target.value, getFieldType(v.field)) })}
-                                className="flex-1 bg-white dark:bg-slate-950 text-[10px] text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-white/10 rounded px-1 outline-none py-0.5"
-                            >
-                                {getAggregationOptionsForFieldType(getFieldType(v.field)).map((option) => (
-                                    <option key={option.value} value={option.value}>{option.label}</option>
-                                ))}
-                            </select>
-                            <select
-                                value={v.format || ''}
-                                onChange={(e) => handleUpdate(idx, { format: e.target.value || undefined })}
-                                className={`flex-1 bg-white dark:bg-slate-950 text-[10px] ${v.format ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500'} border border-slate-200 dark:border-white/10 rounded px-1 outline-none py-0.5`}
-                            >
-                                <option value="">Auto</option>
-                                <option value="standard">Std</option>
-                                <option value="integer">Int</option>
-                                <option value="compact">Cpt</option>
-                                <option value="currency_vnd">VND</option>
-                                <option value="currency_usd">USD</option>
-                                <option value="percentage">%</option>
-                                <option value="percentage_2">%.2f</option>
-                            </select>
-                        </div>
-
-                        {!!v.conditionalFormatting?.length && (
-                            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/5 text-[10px] text-slate-500 dark:text-slate-400">
-                                {v.conditionalFormatting.length} rule(s) configured
-                            </div>
-                        )}
-                    </div>
+                        </DraggableConfigValueCard>
+                        <ConfigValueInsertDropZone slotId={slotId} index={idx + 1} />
+                    </React.Fragment>
                 ))}
             </div>
             <CustomFieldDropdown
@@ -1095,13 +1300,13 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 }) => {
     const { t } = useLanguageStore();
     const { dataSources, selectedDataSourceId, setSelectedDataSource, connections, updateDataSource } = useDataStore();
-    const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource, syncPageDataSource } = useDashboardStore();
+    const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource } = useDashboardStore();
 
 
 
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const activePage = activeDashboard?.pages?.find(p => p.id === (activeDashboard as any).activePageId);
-    const effectiveDataSourceId = activePage?.dataSourceId || activeWidget?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
+    const effectiveDataSourceId = activeWidget?.dataSourceId || activePage?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
 
     React.useEffect(() => {
         const ds = effectiveDataSourceId
@@ -1175,8 +1380,98 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
             updates.yAxis = [updates.yAxis as any];
         }
 
+        const activeWidgetSource = activeWidget.dataSourceId
+            ? dataSources.find((ds) => ds.id === activeWidget.dataSourceId)
+            : undefined;
+        const fallbackSource = effectiveDataSourceId
+            ? dataSources.find((ds) => ds.id === effectiveDataSourceId)
+            : undefined;
+        const sourceForResolution = updates.dataSourceId
+            ? dataSources.find((ds) => ds.id === updates.dataSourceId)
+            : (activeWidgetSource || fallbackSource);
+
+        let resolvedSemanticMeta: { sourceId: string; sourceName: string; pipelineName?: string } | null = null;
+        const mapFieldName = (fieldName?: string) => {
+            if (!fieldName) return fieldName;
+            const resolved = resolveSemanticFieldBinding(sourceForResolution, fieldName);
+            if (!resolved) return fieldName;
+
+            if (!resolvedSemanticMeta) {
+                resolvedSemanticMeta = {
+                    sourceId: resolved.sourceId,
+                    sourceName: resolved.sourceName,
+                    pipelineName: resolved.pipelineName,
+                };
+            }
+            return resolved.fieldName;
+        };
+
+        if (typeof updates.xAxis === 'string') updates.xAxis = mapFieldName(updates.xAxis);
+        if (typeof updates.legend === 'string') updates.legend = mapFieldName(updates.legend);
+        if (typeof updates.metric === 'string') updates.metric = mapFieldName(updates.metric);
+        if (typeof updates.comparisonValue === 'string') updates.comparisonValue = mapFieldName(updates.comparisonValue);
+        if (typeof updates.slicerField === 'string') updates.slicerField = mapFieldName(updates.slicerField);
+
+        if (Array.isArray(updates.drillDownHierarchy)) {
+            updates.drillDownHierarchy = updates.drillDownHierarchy.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.legendHierarchy)) {
+            updates.legendHierarchy = updates.legendHierarchy.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.yAxis)) {
+            updates.yAxis = updates.yAxis.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.values)) {
+            updates.values = updates.values.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.measures)) {
+            updates.measures = updates.measures.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.pivotRows)) {
+            updates.pivotRows = updates.pivotRows.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.pivotCols)) {
+            updates.pivotCols = updates.pivotCols.map((field) => mapFieldName(field) || field);
+        }
+        if (Array.isArray(updates.columns)) {
+            updates.columns = updates.columns.map((column) => ({
+                ...column,
+                field: mapFieldName(column.field) || column.field,
+            }));
+        }
+        if (Array.isArray(updates.yAxisConfigs)) {
+            updates.yAxisConfigs = updates.yAxisConfigs.map((item) => ({
+                ...item,
+                field: mapFieldName(item.field) || item.field,
+            }));
+        }
+        if (Array.isArray(updates.lineAxisConfigs)) {
+            updates.lineAxisConfigs = updates.lineAxisConfigs.map((item) => ({
+                ...item,
+                field: mapFieldName(item.field) || item.field,
+            }));
+        }
+        if (Array.isArray(updates.pivotValues)) {
+            updates.pivotValues = updates.pivotValues.map((item) => ({
+                ...item,
+                field: mapFieldName(item.field) || item.field,
+                conditionalFormatting: Array.isArray(item.conditionalFormatting)
+                    ? item.conditionalFormatting.map((rule: any) => ({
+                        ...rule,
+                        compareField: rule?.compareField ? (mapFieldName(rule.compareField) || rule.compareField) : rule?.compareField
+                    }))
+                    : item.conditionalFormatting,
+            }));
+        }
+
+        if (resolvedSemanticMeta && activeWidget.dataSourceId !== resolvedSemanticMeta.sourceId) {
+            updates.dataSourceId = resolvedSemanticMeta.sourceId;
+            updates.dataSourceName = resolvedSemanticMeta.sourceName;
+            updates.dataSourcePipelineName = resolvedSemanticMeta.pipelineName;
+        }
+
         // AUTO-BIND data source if widget doesn't have one but dashboard/editor does
-        if (!activeWidget.dataSourceId && effectiveDataSourceId) {
+        if (!updates.dataSourceId && !activeWidget.dataSourceId && effectiveDataSourceId) {
             updates.dataSourceId = effectiveDataSourceId as string;
         }
 
@@ -1363,9 +1658,17 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     // Get fields for selected data source
     // Get fields for selected data source + calculated fields
 
-    const availableFields = effectiveDataSourceId
-        ? dataSources.find(ds => ds.id === effectiveDataSourceId)?.schema || []
-        : [];
+    const selectedSidebarSource = selectedDataSourceId
+        ? dataSources.find((ds) => ds.id === selectedDataSourceId)
+        : undefined;
+    const selectedSidebarNonSemanticSource = selectedSidebarSource?.type === 'semantic_model'
+        ? undefined
+        : selectedSidebarSource;
+    const fallbackWidgetNonSemanticSource = effectiveDataSourceId
+        ? dataSources.find((ds) => ds.id === effectiveDataSourceId && ds.type !== 'semantic_model')
+        : undefined;
+    const fieldScopeSource = selectedSidebarNonSemanticSource || fallbackWidgetNonSemanticSource;
+    const availableFields = fieldScopeSource?.schema || [];
 
     const dashboardCalculatedFields = activeDashboard?.calculatedFields?.map(c => ({
         name: c.name,
@@ -1409,22 +1712,39 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     };
 
     React.useEffect(() => {
-        if (!activeDashboard?.activePageId || activePage?.dataSourceId || !activeWidget?.dataSourceId) return;
-        syncPageDataSource(
-            activeDashboard.id,
-            activeDashboard.activePageId,
-            activeWidget.dataSourceId,
-            activeWidget.dataSourceName,
-            activeWidget.dataSourcePipelineName
+        if (!activeDashboard?.id || !activeDashboard?.activePageId) return;
+        if (!activeWidget?.dataSourceId || !activePage) return;
+        if (activePage.dataSourceId) return;
+
+        const nextName = activeWidget.dataSourceName || activePage.dataSourceName;
+        if (activePage.dataSourceId === activeWidget.dataSourceId && activePage.dataSourceName === nextName) return;
+
+        const updatedPages = (activeDashboard.pages || []).map((page) =>
+            page.id === activeDashboard.activePageId
+                ? {
+                    ...page,
+                    dataSourceId: activeWidget.dataSourceId,
+                    dataSourceName: nextName
+                }
+                : page
         );
+
+        updateDashboard(activeDashboard.id, {
+            pages: updatedPages,
+            dataSourceId: activeDashboard.dataSourceId || activeWidget.dataSourceId,
+            dataSourceName: activeDashboard.dataSourceName || activeWidget.dataSourceName
+        });
     }, [
         activeDashboard?.id,
         activeDashboard?.activePageId,
+        activeDashboard?.dataSourceId,
+        activeDashboard?.dataSourceName,
+        activePage?.id,
         activePage?.dataSourceId,
+        activePage?.dataSourceName,
         activeWidget?.dataSourceId,
         activeWidget?.dataSourceName,
-        activeWidget?.dataSourcePipelineName,
-        syncPageDataSource
+        updateDashboard
     ]);
 
     const getSourceKey = (ds: DataSource) => {
@@ -1458,6 +1778,14 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const effectiveDataSource = effectiveDataSourceId
         ? dataSources.find(ds => ds.id === effectiveDataSourceId)
         : undefined;
+    const sidebarActiveDataSource = selectedSidebarNonSemanticSource;
+    const effectiveVisualDataSource = effectiveDataSource?.type === 'semantic_model'
+        ? undefined
+        : effectiveDataSource;
+    const dataTabActiveSource = sidebarActiveDataSource || effectiveVisualDataSource;
+    const dataTabActiveSourceName = dataTabActiveSource?.tableName
+        || dataTabActiveSource?.name
+        || 'None';
     const effectiveSourceKey = effectiveDataSource ? getSourceKey(effectiveDataSource) : '';
 
     React.useEffect(() => {
@@ -1490,6 +1818,99 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         ? effectiveDataSourceId
         : '';
 
+    const normalizeKey = (value: string | undefined | null) => String(value || '').trim().toLowerCase();
+
+    const resolveSemanticFieldBinding = (
+        source: DataSource | undefined,
+        rawFieldName: string
+    ): { fieldName: string; sourceId: string; sourceName: string; pipelineName?: string } | null => {
+        if (!rawFieldName) return null;
+
+        const hierarchyIdx = rawFieldName.indexOf('___');
+        const baseField = hierarchyIdx >= 0 ? rawFieldName.slice(0, hierarchyIdx) : rawFieldName;
+        const hierarchySuffix = hierarchyIdx >= 0 ? rawFieldName.slice(hierarchyIdx) : '';
+
+        const semanticSources = dataSources.filter((ds) => ds.type === 'semantic_model' && ds.semanticFieldMap);
+        if (semanticSources.length === 0) return null;
+
+        if (source?.type === 'semantic_model') {
+            return {
+                fieldName: rawFieldName,
+                sourceId: source.id,
+                sourceName: source.tableName || source.name,
+                pipelineName: source.connectionId
+                    ? connections.find((conn) => conn.id === source.connectionId)?.name
+                    : undefined,
+            };
+        }
+
+        const baseParts = baseField.split('.');
+        const baseColumn = baseParts[baseParts.length - 1];
+        const tableHint = baseParts.length >= 2 ? baseParts[baseParts.length - 2] : '';
+        const datasetHint = baseParts.length >= 3 ? baseParts[baseParts.length - 3] : '';
+
+        const baseColumnKey = normalizeKey(baseColumn);
+        const tableHintKey = normalizeKey(tableHint);
+        const datasetHintKey = normalizeKey(datasetHint);
+        const sourceTableKey = normalizeKey(source?.tableName || source?.name);
+        const sourceDatasetKey = normalizeKey(source?.datasetName);
+        const sourceConnectionKey = normalizeKey(source?.connectionId);
+        const sourceSyncedTableKey = normalizeKey(source?.syncedTableId);
+
+        let bestMatch: {
+            score: number;
+            semanticField: string;
+            sourceId: string;
+            sourceName: string;
+            pipelineName?: string;
+        } | null = null;
+
+        semanticSources.forEach((semanticSource) => {
+            const mapping = semanticSource.semanticFieldMap || {};
+            Object.entries(mapping).forEach(([semanticFieldName, binding]) => {
+                const bindingColumnKey = normalizeKey(binding?.column);
+                const semanticFieldKey = normalizeKey(semanticFieldName);
+
+                let score = 0;
+                if (semanticFieldKey === normalizeKey(baseField)) score += 1000;
+
+                const hasColumnMatch = bindingColumnKey === baseColumnKey || semanticFieldKey.endsWith(`.${baseColumnKey}`);
+                if (!hasColumnMatch && score < 1000) return;
+
+                if (sourceSyncedTableKey && normalizeKey(binding?.syncedTableId) === sourceSyncedTableKey) score += 220;
+                if (sourceConnectionKey && normalizeKey(binding?.sourceId) === sourceConnectionKey) score += 60;
+                if (sourceTableKey && normalizeKey(binding?.tableName) === sourceTableKey) score += 50;
+                if (sourceDatasetKey && normalizeKey(binding?.datasetName) === sourceDatasetKey) score += 25;
+
+                if (tableHintKey && normalizeKey(binding?.tableName) === tableHintKey) score += 45;
+                if (datasetHintKey && normalizeKey(binding?.datasetName) === datasetHintKey) score += 20;
+                if (tableHintKey && semanticFieldKey.includes(`${tableHintKey}.`)) score += 12;
+
+                if (score <= 0) return;
+
+                if (!bestMatch || score > bestMatch.score) {
+                    bestMatch = {
+                        score,
+                        semanticField: semanticFieldName,
+                        sourceId: semanticSource.id,
+                        sourceName: semanticSource.tableName || semanticSource.name,
+                        pipelineName: semanticSource.connectionId
+                            ? connections.find((conn) => conn.id === semanticSource.connectionId)?.name
+                            : undefined,
+                    };
+                }
+            });
+        });
+
+        if (!bestMatch) return null;
+        return {
+            fieldName: `${bestMatch.semanticField}${hierarchySuffix}`,
+            sourceId: bestMatch.sourceId,
+            sourceName: bestMatch.sourceName,
+            pipelineName: bestMatch.pipelineName,
+        };
+    };
+
     const handleSelectDataSource = (dsId: string) => {
         const selectedDs = dataSources.find(d => d.id === dsId);
         const dsName = selectedDs ? (selectedDs.tableName || selectedDs.name) : undefined;
@@ -1499,8 +1920,23 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
         const dashboard = getActiveDashboard();
         if (dashboard) {
-            if (dashboard.activePageId) {
-                syncPageDataSource(dashboard.id, dashboard.activePageId, dsId, dsName, dsPipelineName);
+            if (activeWidget?.id) {
+                updateWidget(dashboard.id, activeWidget.id, {
+                    dataSourceId: dsId,
+                    dataSourceName: dsName,
+                    dataSourcePipelineName: dsPipelineName
+                });
+            } else if (dashboard.activePageId) {
+                const updatedPages = (dashboard.pages || []).map((page) =>
+                    page.id === dashboard.activePageId
+                        ? { ...page, dataSourceId: dsId, dataSourceName: dsName }
+                        : page
+                );
+                updateDashboard(dashboard.id, {
+                    pages: updatedPages,
+                    dataSourceId: dashboard.dataSourceId || dsId,
+                    dataSourceName: dashboard.dataSourceName || dsName
+                });
             } else {
                 syncDashboardDataSource(dashboard.id, dsId, dsName, dsPipelineName);
             }
@@ -1514,7 +1950,6 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const supportsLabelsInFormat = activeWidget?.type === 'chart';
     const supportsPercentLabelMode = currentChartType === 'pie' || currentChartType === 'donut';
     const supportsChartColors = activeWidget?.type === 'chart';
-
     return (
         <div className="flex flex-col h-full bg-white dark:bg-slate-950 transition-colors duration-300">
             {/* Tabs */}
@@ -1663,156 +2098,24 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                 {/* Data Tab */}
                 {activeTab === 'data' && (
                     <div className="space-y-4">
-                        <div>
-                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
-                                Data Tables
-                            </label>
-                            <div className="relative mb-2">
-                                <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-[10px]"></i>
-                                <input
-                                    type="text"
-                                    value={dsSearchQuery}
-                                    onChange={(e) => setDsSearchQuery(e.target.value)}
-                                    placeholder="Tìm kiếm bảng..."
-                                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-lg pl-8 pr-3 py-1.5 text-[10px] text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-all"
-                                />
-                            </div>
-                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">
-                                Nguồn
-                            </label>
-                            <select
-                                value={selectedSourceKey || effectiveSourceKey || ''}
-                                onChange={(e) => setSelectedSourceKey(e.target.value)}
-                                className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none ${!dataSources.find(ds => ds.id === effectiveDataSourceId) && effectiveDataSourceId
-                                    ? 'border-red-500 text-red-500'
-                                    : 'border-slate-200 dark:border-white/10'
-                                    }`}
-                            >
-                                <option value="">Select source...</option>
-                                {sourceOptions.map(source => (
-                                    <option key={source.key} value={source.key}>{source.label}</option>
-                                ))}
-                            </select>
-
-                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mt-3 mb-1">
-                                Tên bảng
-                            </label>
-                            <select
-                                value={selectedTableId || ''}
-                                onChange={(e) => handleSelectDataSource(e.target.value)}
-                                className={`w-full bg-slate-50 dark:bg-slate-900 border rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none ${!dataSources.find(ds => ds.id === effectiveDataSourceId) && effectiveDataSourceId
-                                    ? 'border-red-500 text-red-500'
-                                    : 'border-slate-200 dark:border-white/10'
-                                    }`}
-                            >
-                                <option value="">Select table name...</option>
-                                {tableOptions.map(ds => (
-                                    <option key={ds.id} value={ds.id}>{getTableLabel(ds)}</option>
-                                ))}
-
-                                {/* SHOW MISSING TABLE OPTION IF ID EXISTS BUT NOT IN LIST */}
-                                {effectiveDataSourceId && !dataSources.find(ds => ds.id === effectiveDataSourceId) && (
-                                    <option value={effectiveDataSourceId} disabled>
-                                        ⚠️ Missing: {activePage?.dataSourceName || activeWidget?.dataSourceName || activeDashboard?.dataSourceName || 'Unknown Table'}
-                                    </option>
-                                )}
-                            </select>
-
-                            {/* AUTO RECOVERY LOGIC & STATUS */}
-                            {/* DATA SOURCE STATUS & AUTO-RECOVERY UI */}
-                            {(effectiveDataSourceId) && (() => {
-                                const ds = dataSources.find(ds => ds.id === effectiveDataSourceId);
-                                const savedName = activePage?.dataSourceName || activeWidget?.dataSourceName || activeDashboard?.dataSourceName;
-                                const isMissing = !ds;
-
-                                // --- UI: STATUS INDICATOR ---
-                                return (
-                                    <div className="space-y-2 mt-2">
-                                        <div className={`flex items-center justify-between text-[10px] border rounded p-1.5 px-2 transition-colors ${isMissing
-                                            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-500/30'
-                                            : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/5'
-                                            }`}>
-                                            <span className={`font-black uppercase tracking-tighter ${isMissing ? 'text-red-500' : 'text-slate-500 dark:text-slate-500'}`}>
-                                                {isMissing ? 'Connection Error' : 'Status'}
-                                            </span>
-
-                                            {isMissing ? (
-                                                <span className="text-red-500 font-bold flex items-center gap-1.5 animate-pulse">
-                                                    <i className="fas fa-exclamation-triangle"></i>
-                                                    Missing Source
-                                                </span>
-                                            ) : ds?.isLoaded ? (
-                                                <span className="text-emerald-400 font-black flex items-center gap-1.5 line-clamp-1">
-                                                    <i className="fas fa-check-circle text-[8px]"></i>
-                                                    Synced
-                                                </span>
-                                            ) : ds?.isLoadingPartial ? (
-                                                <span className="text-amber-400 font-black animate-pulse flex items-center gap-1.5 line-clamp-1">
-                                                    <i className="fas fa-spinner fa-spin text-[8px]"></i>
-                                                    Loading... ({ds?.totalRows ? Math.round(((ds.data?.length || 0) / ds.totalRows) * 100) : 0}%)
-                                                </span>
-                                            ) : (ds?.data?.length || 0) > 0 ? (
-                                                <span className="text-indigo-400 font-black flex items-center gap-1.5 line-clamp-1">
-                                                    <i className="fas fa-database text-[8px]"></i>
-                                                    {ds?.data?.length.toLocaleString()} Rows
-                                                </span>
-                                            ) : (
-                                                <span className="text-slate-500 font-black flex items-center gap-1.5">
-                                                    <i className="fas fa-circle-notch text-[8px] opacity-30"></i>
-                                                    Initialized
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        {/* MISSING SOURCE DETAILS & RECOVERY FEEDBACK */}
-                                        {isMissing && savedName && (
-                                            <div className="bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-500/20 rounded-lg p-3 space-y-2">
-                                                <div className="text-[10px] text-red-600 dark:text-red-400 leading-relaxed">
-                                                    The data table <span className="font-bold font-mono bg-red-100 dark:bg-red-900/40 px-1 rounded">{savedName}</span> cannot be found.
-                                                </div>
-
-                                                <div className="flex items-center gap-2 pt-1">
-                                                    <div className="flex-1 h-0.5 bg-red-200 dark:bg-red-900/30"></div>
-                                                    <span className="text-[9px] font-bold text-red-400 uppercase tracking-wider">Troubleshooting</span>
-                                                    <div className="flex-1 h-0.5 bg-red-200 dark:bg-red-900/30"></div>
-                                                </div>
-
-                                                <ul className="space-y-1.5">
-                                                    <li className="flex gap-2 text-[10px] text-slate-600 dark:text-slate-400">
-                                                        <i className="fas fa-1 text-[8px] mt-0.5 opacity-50"></i>
-                                                        <span>Did you delete the Data Warehouse?</span>
-                                                    </li>
-                                                    <li className="flex gap-2 text-[10px] text-slate-600 dark:text-slate-400">
-                                                        <i className="fas fa-2 text-[8px] mt-0.5 opacity-50"></i>
-                                                        <span>Add the table back with the exact name: <strong>{savedName}</strong></span>
-                                                    </li>
-                                                </ul>
-
-                                                <div className="pt-1 text-[9px] text-slate-400 italic text-center">
-                                                    <i className="fas fa-sync fa-spin mr-1"></i>
-                                                    Auto-scanning for match...
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {!isMissing && ds && !ds.isLoaded && (ds.totalRows || 0) > 0 && (ds.data?.length || 0) < (ds.totalRows || 0) && (
-                                            <div className="w-full h-1 bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden border border-slate-200 dark:border-white/5">
-                                                <div
-                                                    className="h-full bg-indigo-500 transition-all duration-500 ease-out shadow-[0_0_8px_rgba(99,102,241,0.5)]"
-                                                    style={{ width: `${(ds.totalRows ? Math.round(((ds.data?.length || 0) / ds.totalRows) * 100) : 0)}%` }}
-                                                />
-                                            </div>
-                                        )}
-                                    </div>
-                                );
-                            })()}
+                        <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-[10px] text-indigo-200 flex items-start gap-2">
+                            <i className="fas fa-database mt-0.5"></i>
+                            <span>Use the right Data Sidebar to pick multiple tables and drag fields into this widget.</span>
                         </div>
+                        {dataTabActiveSource && (
+                            <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 px-3 py-2">
+                                <div className="text-[9px] uppercase tracking-widest text-slate-500">Active table from sidebar</div>
+                                <div className="text-xs font-bold text-slate-900 dark:text-white mt-1 truncate">
+                                    {dataTabActiveSourceName}
+                                </div>
+                            </div>
+                        )}
 
                         {!activeWidget && (
                             <div className="flex flex-col items-center justify-center pt-10 text-center opacity-40">
                                 <i className="fas fa-mouse-pointer text-3xl mb-3 text-slate-600"></i>
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-6 leading-relaxed">
-                                    Selected table: <span className="text-indigo-400 italic">{(dataSources.find(ds => ds.id === effectiveDataSourceId)?.tableName || dataSources.find(ds => ds.id === effectiveDataSourceId)?.name || 'none')}</span>
+                                    Selected table: <span className="text-indigo-400 italic">{dataTabActiveSourceName || 'none'}</span>
                                     <br />
                                     Select a widget to bind fields
                                 </p>
@@ -2107,113 +2410,46 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                         return (
                                             <div className="space-y-4">
                                                 <div className="p-3 border border-dashed border-slate-200 dark:border-white/10 rounded-lg text-center bg-slate-50 dark:bg-slate-900/30">
-                                                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2">Drag fields from Sidebar or select below</p>
-                                                    <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar pr-1 mb-2">
-                                                        {activeWidget.columns?.map((col, idx) => (
-                                                            <div key={col.field} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/5 rounded-lg p-3 group hover:border-indigo-500/30 transition-all">
-                                                                <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-200 dark:border-white/5">
-                                                                    <div className="flex items-center gap-2 overflow-hidden">
-                                                                        <div className="w-5 h-5 rounded bg-indigo-500/20 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
-                                                                            <i className="fas fa-columns text-[10px]"></i>
-                                                                        </div>
-                                                                        <span className="text-[10px] font-bold text-slate-900 dark:text-white truncate" title={col.field}>{col.field}</span>
-                                                                    </div>
-                                                                    <button onClick={() => {
-                                                                        const newCols = activeWidget.columns?.filter(c => c.field !== col.field);
-                                                                        handleUpdateWidget({ columns: newCols });
-                                                                    }} className="text-slate-400 dark:text-slate-500 hover:text-red-500 w-5 h-5 flex items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-white/5 transition-all">
-                                                                        <i className="fas fa-times text-[10px]"></i>
-                                                                    </button>
-                                                                </div>
-                                                                <div className="grid grid-cols-2 gap-2">
-                                                                    <div>
-                                                                        <label className="text-[8px] text-slate-500 uppercase font-black block mb-1">Header</label>
-                                                                        <input
-                                                                            type="text"
-                                                                            value={col.header || col.field}
-                                                                            onChange={(e) => {
-                                                                                const newCols = [...(activeWidget.columns || [])];
-                                                                                newCols[idx] = { ...col, header: e.target.value };
-                                                                                handleUpdateWidget({ columns: newCols });
-                                                                            }}
-                                                                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-[10px] text-slate-900 dark:text-white focus:border-indigo-500/50 outline-none transition-colors"
-                                                                            placeholder="Column Label"
-                                                                        />
-                                                                    </div>
-                                                                    <div>
-                                                                        <label className="text-[8px] text-slate-500 uppercase font-black block mb-1">Format</label>
-                                                                        <select
-                                                                            value={col.format || 'standard'}
-                                                                            onChange={(e) => {
-                                                                                const newCols = [...(activeWidget.columns || [])];
-                                                                                newCols[idx] = { ...col, format: e.target.value };
-                                                                                handleUpdateWidget({ columns: newCols });
-                                                                            }}
-                                                                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-[10px] text-slate-900 dark:text-white focus:border-indigo-500/50 outline-none transition-colors appearance-none"
-                                                                        >
-                                                                            <optgroup label="Standard">
-                                                                                <option value="standard">Standard (1,234.56)</option>
-                                                                                <option value="integer">Integer (1,234)</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Compact & Large">
-                                                                                <option value="compact">Auto Compact (1.2K)</option>
-                                                                                <option value="compact_long">Long Compact (1.2 thousand)</option>
-                                                                                <option value="1k">Thousands (1K)</option>
-                                                                                <option value="1m">Millions (1M)</option>
-                                                                                <option value="1b">Billions (1B)</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Currency">
-                                                                                <option value="currency">US Dollar ($)</option>
-                                                                                <option value="currency_vnd">Vietnamese Dong (₫)</option>
-                                                                                <option value="currency_eur">Euro (€)</option>
-                                                                                <option value="currency_gbp">British Pound (£)</option>
-                                                                                <option value="currency_jpy">Japanese Yen (¥)</option>
-                                                                                <option value="accounting">Accounting ($1,234)</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Percentage">
-                                                                                <option value="percentage">Percentage (12.3%)</option>
-                                                                                <option value="percentage_0">Percentage (12%)</option>
-                                                                                <option value="percentage_2">Percentage (12.34%)</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Scientific & Float">
-                                                                                <option value="float_1">Float (1.2)</option>
-                                                                                <option value="float_2">Float (1.23)</option>
-                                                                                <option value="float_3">Float (1.234)</option>
-                                                                                <option value="float_4">Float (1.2345)</option>
-                                                                                <option value="scientific">Scientific (1.23E+4)</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Date">
-                                                                                <option value="date:YYYY-MM-DD">YYYY-MM-DD</option>
-                                                                                <option value="date:DD/MM/YYYY">DD/MM/YYYY</option>
-                                                                                <option value="date:MM/DD/YYYY">MM/DD/YYYY</option>
-                                                                                <option value="date:DD-MM-YYYY">DD-MM-YYYY</option>
-                                                                                <option value="date:DD MMM YYYY">DD MMM YYYY</option>
-                                                                                <option value="date:MMM DD, YYYY">MMM DD, YYYY</option>
-                                                                            </optgroup>
-                                                                            <optgroup label="Time">
-                                                                                <option value="time:HH:mm">Time (HH:mm)</option>
-                                                                                <option value="time:hh:mm A">Time (hh:mm AM/PM)</option>
-                                                                                <option value="datetime:YYYY-MM-DD HH:mm:ss">Full DateTime</option>
-                                                                            </optgroup>
-                                                                        </select>
-                                                                    </div>
-                                                                </div>
+                                                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2">Drag fields from Sidebar into this area</p>
+                                                    <div className="max-h-[360px] overflow-y-auto custom-scrollbar pr-1">
+                                                        {(activeWidget.columns || []).length === 0 ? (
+                                                            <div className="p-4 border border-white/10 rounded-lg bg-slate-900/20">
+                                                                <TableColumnInsertDropZone index={0} />
+                                                                <p className="text-[10px] text-slate-500 mt-2">
+                                                                    Drop a field to add first column
+                                                                </p>
                                                             </div>
-                                                        ))}
+                                                        ) : (
+                                                            <>
+                                                                <TableColumnInsertDropZone index={0} />
+                                                                {(activeWidget.columns || []).map((col, idx) => (
+                                                                    <React.Fragment key={`${col.field}-${idx}`}>
+                                                                        <DraggableTableColumnCard
+                                                                            column={col}
+                                                                            index={idx}
+                                                                            onRemove={() => {
+                                                                                const nextCols = [...(activeWidget.columns || [])];
+                                                                                nextCols.splice(idx, 1);
+                                                                                handleUpdateWidget({ columns: nextCols });
+                                                                            }}
+                                                                            onHeaderChange={(header) => {
+                                                                                const nextCols = [...(activeWidget.columns || [])];
+                                                                                nextCols[idx] = { ...col, header };
+                                                                                handleUpdateWidget({ columns: nextCols });
+                                                                            }}
+                                                                            onFormatChange={(format) => {
+                                                                                const nextCols = [...(activeWidget.columns || [])];
+                                                                                nextCols[idx] = { ...col, format };
+                                                                                handleUpdateWidget({ columns: nextCols });
+                                                                            }}
+                                                                        />
+                                                                        <TableColumnInsertDropZone index={idx + 1} />
+                                                                    </React.Fragment>
+                                                                ))}
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </div>
-                                                <FieldSelector
-                                                    label="Add Column"
-                                                    value=""
-                                                    fields={fields.filter(f => !activeWidget.columns?.find(c => c.field === f.name))}
-                                                    onChange={(val) => {
-                                                        if (!val) return;
-                                                        const newCol = { field: val, header: val };
-                                                        handleUpdateWidget({ columns: [...(activeWidget.columns || []), newCol] });
-                                                    }}
-                                                    placeholder="Select field to add..."
-                                                    slotId="table-columns"
-                                                />
                                             </div>
                                         );
                                     }

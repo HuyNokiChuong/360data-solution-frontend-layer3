@@ -2,7 +2,7 @@
 // Card Widget (KPI Display)
 // ============================================
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
@@ -14,6 +14,7 @@ import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
 import { CHART_COLORS } from '../utils/chartColors';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface CardWidgetProps {
     widget: BIWidget;
@@ -137,6 +138,25 @@ const CardWidget: React.FC<CardWidgetProps> = ({
         return (dataSource.data?.length || 0) / dataSource.totalRows * 100;
     }, [dataSource]);
 
+    const exportFields = useMemo(() => {
+        const metricField = widget.yAxis?.[0] || widget.metric || widget.values?.[0] || widget.measures?.[0];
+        const comparisonField = widget.comparisonValue;
+        const numericComparison = comparisonField !== undefined && comparisonField !== null && comparisonField !== '' && !Number.isNaN(Number(comparisonField));
+        const fields = [metricField];
+        if (comparisonField && !numericComparison) {
+            fields.push(comparisonField);
+        }
+        return Array.from(new Set(fields.filter(Boolean))).map((field) => ({ field: String(field) }));
+    }, [widget.yAxis, widget.metric, widget.values, widget.measures, widget.comparisonValue]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Card',
+            rows: widgetData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, widgetData, exportFields]);
+
     if (!dataSource) {
         return (
             <BaseWidget
@@ -147,6 +167,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
                 isSelected={isSelected}
                 error={directError || undefined}
                 onClick={onClick}
+                onExportExcel={handleExportExcel}
             >
                 <EmptyChartState type="card" message="Select data source" onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
@@ -164,6 +185,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
                 loading={dataSource?.isLoadingPartial}
                 loadingProgress={loadingProgress}
                 onClick={onClick}
+                onExportExcel={handleExportExcel}
             >
                 <EmptyChartState type="card" message="Select a metric" onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
@@ -181,6 +203,7 @@ const CardWidget: React.FC<CardWidgetProps> = ({
             loading={isLoading}
             error={directError || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="flex flex-col justify-center h-full">
                 <div className="text-center">

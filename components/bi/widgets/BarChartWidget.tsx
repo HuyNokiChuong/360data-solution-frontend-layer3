@@ -2,7 +2,7 @@
 // Bar Chart Widget
 // ============================================
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend, LabelList } from 'recharts';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
@@ -18,6 +18,7 @@ import { useChartColors } from '../utils/chartColors';
 import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '../engine/utils';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import ChartLegend from './ChartLegend';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface BarChartWidgetProps {
     widget: BIWidget;
@@ -163,6 +164,38 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const hasHierarchy = widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0;
     const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
 
+    const categoryFields = useMemo(() => {
+        const fromAxis = xFields.filter(Boolean);
+        const base = fromAxis.length > 0 ? fromAxis : (widget.xAxis ? [widget.xAxis] : []);
+        const withLegend = widget.legend ? [...base, widget.legend] : base;
+        return Array.from(new Set(withLegend.filter(Boolean)));
+    }, [xFields, widget.xAxis, widget.legend]);
+
+    const measureFields = useMemo(() => {
+        const configured = [
+            ...(widget.yAxisConfigs || []).map((config) => config.field),
+            ...(widget.yAxis || []),
+            ...(widget.values || []),
+            ...(widget.measures || []),
+            ...(widget.lineAxisConfigs || []).map((config) => config.field),
+            ...series,
+            ...lineSeries
+        ];
+        return Array.from(new Set(configured.filter(Boolean)));
+    }, [widget.yAxisConfigs, widget.yAxis, widget.values, widget.measures, widget.lineAxisConfigs, series, lineSeries]);
+
+    const exportFields = useMemo(() => {
+        return [...categoryFields, ...measureFields].map((field) => ({ field }));
+    }, [categoryFields, measureFields]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Bar Chart',
+            rows: effectiveChartData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, effectiveChartData, exportFields]);
+
     // Get current cross-filter selection for THIS widget
     const currentSelection = useMemo(() => {
         const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
@@ -293,6 +326,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                 loading={isLoading}
                 error={error || undefined}
                 onClick={onClick}
+                onExportExcel={handleExportExcel}
             >
                 <EmptyChartState type={widget.chartType || 'bar'} message={errorMsg} onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
@@ -310,6 +344,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
             loading={isLoading}
             error={error || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">

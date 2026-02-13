@@ -62,6 +62,18 @@ const Reports: React.FC<ReportsProps> = ({
     }
   }, [tables, domain]);
 
+  // Remove stale selections when available tables change (e.g. table disabled in Data Assets)
+  useEffect(() => {
+    const availableTableIds = new Set(tables.map((table) => table.id));
+    setSelectedTableIds((prev) => {
+      const next = prev.filter((id) => availableTableIds.has(id));
+      if (next.length === prev.length && next.every((id, index) => id === prev[index])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [tables]);
+
   // Proactively check token validity once on mount or when googleToken changes
   useEffect(() => {
     const checkAuth = async () => {

@@ -16,7 +16,7 @@ interface ListViewProps {
     fromColumn: string;
     toTableId: string;
     toColumn: string;
-    relationshipType: '1-1' | '1-n' | 'n-n';
+    relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
     crossFilterDirection: 'single' | 'both';
   }) => Promise<void>;
   onDeleteRelationship: (relationshipId: string) => Promise<void>;
@@ -46,7 +46,7 @@ const ListView: React.FC<ListViewProps> = ({
     fromColumn: '',
     toTableId: '',
     toColumn: '',
-    relationshipType: '1-n' as '1-1' | '1-n' | 'n-n',
+    relationshipType: '1-n' as '1-1' | '1-n' | 'n-1' | 'n-n',
     crossFilterDirection: 'single' as 'single' | 'both',
   });
   const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<string[]>([]);
@@ -73,11 +73,6 @@ const ListView: React.FC<ListViewProps> = ({
       if (rel.toTableId === selectedTable.id) set.add(rel.toColumn.toLowerCase());
     });
     return set;
-  }, [relationships, selectedTable]);
-
-  const selectedTableRelationships = useMemo(() => {
-    if (!selectedTable) return relationships;
-    return relationships.filter((rel) => rel.fromTableId === selectedTable.id || rel.toTableId === selectedTable.id);
   }, [relationships, selectedTable]);
 
   const fromColumns = useMemo(() => {
@@ -216,6 +211,7 @@ const ListView: React.FC<ListViewProps> = ({
                 >
                   <option value="1-1">1-1</option>
                   <option value="1-n">1-n</option>
+                  <option value="n-1">n-1</option>
                   <option value="n-n">n-n (saved as invalid)</option>
                 </select>
                 <select
@@ -337,37 +333,6 @@ const ListView: React.FC<ListViewProps> = ({
             </div>
           </div>
 
-          <div className="p-4 rounded-xl border border-slate-200 dark:border-white/10">
-            <div className="text-xs font-black text-slate-700 dark:text-slate-300 mb-2">{t('dm.relationships')}</div>
-            <div className="space-y-2">
-              {selectedTableRelationships.length === 0 && <div className="text-xs text-slate-500">{t('dm.no_relationships')}</div>}
-              {selectedTableRelationships.map((rel) => (
-                <div key={rel.id} className="p-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900">
-                  <div className="text-xs text-slate-800 dark:text-slate-200">
-                    {rel.fromTable}.{rel.fromColumn} {'->'} {rel.toTable}.{rel.toColumn}
-                  </div>
-                  <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2">
-                    <span>{rel.relationshipType}</span>
-                    <span>•</span>
-                    <span>{rel.crossFilterDirection}</span>
-                    <span>•</span>
-                    <span className={rel.validationStatus === 'invalid' ? 'text-red-500' : 'text-emerald-500'}>{rel.validationStatus}</span>
-                  </div>
-                  {rel.invalidReason && <div className="text-[10px] text-red-500 mt-1">{rel.invalidReason}</div>}
-                  {canEdit && (
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        onClick={() => onDeleteRelationship(rel.id)}
-                        className="px-2 py-1 text-[10px] font-black rounded border border-red-500/30 text-red-500"
-                      >
-                        {t('dm.delete')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       </section>
     </div>

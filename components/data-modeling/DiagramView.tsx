@@ -25,7 +25,7 @@ interface DiagramViewProps {
     fromColumn: string;
     toTableId: string;
     toColumn: string;
-    relationshipType: '1-1' | '1-n' | 'n-n';
+    relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
     crossFilterDirection: 'single' | 'both';
   }) => Promise<void>;
   onDeleteRelationship: (relationshipId: string) => Promise<void>;
@@ -79,7 +79,7 @@ interface EdgeContextMenuState {
   edgeId: string;
   x: number;
   y: number;
-  relationshipType: '1-1' | '1-n' | 'n-n';
+  relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
   crossFilterDirection: 'single' | 'both';
 }
 
@@ -379,11 +379,12 @@ const DiagramView: React.FC<DiagramViewProps> = ({
           <label className="block text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1">{t('dm.relationship_type')}</label>
           <select
             value={edgeContextMenu.relationshipType}
-            onChange={(e) => setEdgeContextMenu((prev) => prev ? { ...prev, relationshipType: e.target.value as '1-1' | '1-n' | 'n-n' } : prev)}
+            onChange={(e) => setEdgeContextMenu((prev) => prev ? { ...prev, relationshipType: e.target.value as '1-1' | '1-n' | 'n-1' | 'n-n' } : prev)}
             className="w-full mb-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-2 text-xs"
           >
             <option value="1-1">1-1</option>
             <option value="1-n">1-n</option>
+            <option value="n-1">n-1</option>
             <option value="n-n">n-n</option>
           </select>
 

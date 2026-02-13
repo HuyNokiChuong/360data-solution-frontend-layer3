@@ -20,7 +20,14 @@ export interface DataSource {
     datasetName?: string;
     syncedTableId?: string; // For Excel tables stored in backend
     dataModelId?: string;
-    semanticFieldMap?: Record<string, { tableId: string; column: string }>;
+    semanticFieldMap?: Record<string, {
+        tableId: string;
+        column: string;
+        tableName?: string;
+        datasetName?: string;
+        sourceId?: string;
+        syncedTableId?: string;
+    }>;
     semanticTableIds?: string[];
     semanticEngine?: 'bigquery' | 'postgres';
     isLoaded?: boolean;

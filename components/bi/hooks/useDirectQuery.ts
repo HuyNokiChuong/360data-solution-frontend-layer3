@@ -423,6 +423,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                     const semanticTableIds = new Set<string>();
                     const aliasToField = new Map<string, string>();
                     const numericAliases = new Set<string>();
+                    const shouldUseGroupBy = widget.type !== 'table';
 
                     const addGroupBy = (tableId: string, column: string) => {
                         if (semanticGroupBy.some(item => item.tableId === tableId && item.column === column)) return;
@@ -446,7 +447,9 @@ export const useDirectQuery = (widget: BIWidget) => {
                             aggregation: 'none',
                             alias,
                         });
-                        addGroupBy(binding.tableId, binding.column);
+                        if (shouldUseGroupBy) {
+                            addGroupBy(binding.tableId, binding.column);
+                        }
                         aliasToField.set(alias, dimension);
                     });
 
@@ -539,9 +542,9 @@ export const useDirectQuery = (widget: BIWidget) => {
                         tableIds: Array.from(semanticTableIds),
                         select: semanticSelect,
                         filters: semanticFiltersForPlanner,
-                        groupBy: semanticGroupBy.length > 0 ? semanticGroupBy : undefined,
+                        groupBy: shouldUseGroupBy && semanticGroupBy.length > 0 ? semanticGroupBy : undefined,
                         orderBy: semanticOrderBy.length > 0 ? semanticOrderBy : undefined,
-                        limit: widget.type === 'table' ? (widget.pageSize || 100) : 1000,
+                        limit: widget.type === 'table' ? 100 : 1000,
                     };
 
                     const planned = await planSemanticQuery(request);
@@ -953,7 +956,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                         filters: finalFilters,
                         sortBy: bqSortBy,
                         sortDir: bqSortDir,
-                        limit: widget.type === 'table' ? (widget.pageSize || 100) : 1000,
+                        limit: widget.type === 'table' ? 100 : 1000,
                         signal: abortController.signal
                     }
                 );

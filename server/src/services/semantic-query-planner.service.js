@@ -672,6 +672,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
 
     const selectParts = [];
     const groupByParts = [];
+    const defaultGroupByParts = [];
     const orderByParts = [];
     const params = [];
 
@@ -700,13 +701,12 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
         const aliasName = sanitizeAlias(item.alias || `${tableRef.tableName}_${item.column}_${agg}_${idx}`);
         selectParts.push(`${expr} AS ${engine === BIGQUERY_ENGINE ? quoteBigQueryIdent(aliasName) : quotePostgresIdent(aliasName)}`);
 
-        if (!hasAggregation || (agg === 'none' || agg === 'raw')) {
-            if (!isStar) groupByParts.push(baseExpr);
+        if (agg === 'none' || agg === 'raw') {
+            if (!isStar) defaultGroupByParts.push(baseExpr);
         }
     });
 
     if (groupByInput.length > 0) {
-        groupByParts.length = 0;
         groupByInput.forEach((item) => {
             const tableRef = resolveTableByInput(catalog.tables, item.tableId) || selectedTables.find((t) => t.id === item.tableId);
             if (!tableRef) return;
@@ -714,6 +714,9 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
             if (!alias || !item.column) return;
             groupByParts.push(quoteColumnRef(engine, alias, item.column));
         });
+    } else if (hasAggregation) {
+        const unique = new Set(defaultGroupByParts);
+        groupByParts.push(...Array.from(unique));
     }
 
     orderByInput.forEach((item) => {

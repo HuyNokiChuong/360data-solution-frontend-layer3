@@ -59,7 +59,7 @@ export const createRelationship = async (payload: {
   fromColumn: string;
   toTableId: string;
   toColumn: string;
-  relationshipType: '1-1' | '1-n' | 'n-n';
+  relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
   crossFilterDirection: 'single' | 'both';
 }): Promise<ModelRelationship> => {
   const response = await fetch(`${API_BASE}/data-modeling/relationships`, {
@@ -127,7 +127,7 @@ export interface SemanticQueryPlanResponse {
     toTableId: string;
     toTable: string;
     toColumn: string;
-    relationshipType: '1-1' | '1-n' | 'n-n';
+    relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
     crossFilterDirection: 'single' | 'both';
   }>;
 }

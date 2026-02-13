@@ -436,6 +436,7 @@ const App: React.FC = () => {
   }, [connections, tables, reportSessions, activeReportSessionId, users, domain, isReady]);
 
   const hasConnections = connections.length > 0;
+  const activeTablesForBuilder = tables.filter((table) => table.status === 'Active');
 
   // PERSISTENCE: Sync sessions to backend when they change
   const prevSessionsRef = React.useRef<ReportSession[]>([]);
@@ -856,10 +857,43 @@ const App: React.FC = () => {
     }
   };
 
-  const toggleTableStatus = (id: string) => {
-    setTables(prev => prev.map(t =>
-      t.id === id ? { ...t, status: t.status === 'Active' ? 'Disabled' : 'Active' } : t
-    ));
+  const toggleTableStatus = async (id: string) => {
+    const currentTable = tables.find((table) => table.id === id);
+    if (!currentTable) return;
+
+    const previousStatus = currentTable.status;
+    const nextStatus = previousStatus === 'Active' ? 'Disabled' : 'Active';
+
+    setTables((prev) => prev.map((table) => (
+      table.id === id ? { ...table, status: nextStatus } : table
+    )));
+
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/connections/tables/${id}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success || !data?.data) {
+        throw new Error(data?.message || 'Failed to update table status');
+      }
+
+      setTables((prev) => prev.map((table) => (
+        table.id === id ? normalizeSyncedTable(data.data as SyncedTable) : table
+      )));
+    } catch (err) {
+      console.error('Failed to update table status:', err);
+      setTables((prev) => prev.map((table) => (
+        table.id === id ? { ...table, status: previousStatus } : table
+      )));
+    }
   };
 
   // Confirmation State
@@ -1185,7 +1219,7 @@ const App: React.FC = () => {
               <Route path="/reports" element={
                 hasConnections ? (
                   <Reports
-                    tables={tables}
+                    tables={activeTablesForBuilder}
                     connections={connections}
                     sessions={reportSessions}
                     setSessions={setReportSessions}
@@ -1211,7 +1245,7 @@ const App: React.FC = () => {
               <Route path="/bi" element={
                 hasConnections ? (
                   <BIMain
-                    tables={tables}
+                    tables={activeTablesForBuilder}
                     connections={connections}
                     currentUser={currentUser || { id: 'current-user', name: 'User', role: 'Admin', email: '', status: 'Active', joinedAt: '' }}
                     googleToken={googleToken}

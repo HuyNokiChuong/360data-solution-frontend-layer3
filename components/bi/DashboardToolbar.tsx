@@ -54,10 +54,6 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
         folders,
         dashboards,
         updateDashboard,
-        undo,
-        redo,
-        canUndo,
-        canRedo,
         setActiveDashboard,
         autoReloadInterval,
         setAutoReloadInterval,
@@ -225,29 +221,6 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                         )}
                     </div>
                 </div>
-
-                <div className="h-6 w-px bg-slate-200 dark:bg-white/10 mx-2"></div>
-
-                <div className="flex items-center gap-1">
-                    <button
-                        onClick={undo}
-                        disabled={!canUndo()}
-                        className={`p-2 rounded text-slate-500 dark:text-slate-400 transition-colors ${canUndo() ? 'hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
-                        title={`${t('bi.undo')} (Cmd+Z)`}
-                    >
-                        <i className="fas fa-undo"></i>
-                    </button>
-                    <button
-                        onClick={redo}
-                        disabled={!canRedo()}
-                        className={`p-2 rounded text-slate-500 dark:text-slate-400 transition-colors ${canRedo() ? 'hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10' : 'opacity-30 cursor-not-allowed'}`}
-                        title={`${t('bi.redo')} (Cmd+Shift+Z)`}
-                    >
-                        <i className="fas fa-redo"></i>
-                    </button>
-                </div>
-
-
                 {/* Clear Filters Button */}
                 {hasActiveFilters && (
                     <>

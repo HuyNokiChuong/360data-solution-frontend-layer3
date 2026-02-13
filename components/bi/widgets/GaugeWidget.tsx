@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { aggregate, formatValue } from '../engine/calculations';
 import { formatBIValue, getAdaptiveNumericFormat } from '../engine/utils';
 import { applyFilters } from '../engine/dataProcessing';
@@ -11,6 +11,7 @@ import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import EmptyChartState from './EmptyChartState';
 import { useChartColors } from '../utils/chartColors';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface GaugeWidgetProps {
     widget: BIWidget;
@@ -122,6 +123,25 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
     const mainColor = getGaugeColor(percentage);
     const COLORS = [mainColor, isDark ? '#1e293b' : '#f1f5f9'];
 
+    const exportFields = useMemo(() => {
+        const metricField = widget.yAxis?.[0];
+        const comparisonField = widget.comparisonValue;
+        const numericComparison = comparisonField !== undefined && comparisonField !== null && comparisonField !== '' && !Number.isNaN(Number(comparisonField));
+        const fields = [metricField];
+        if (comparisonField && !numericComparison) {
+            fields.push(comparisonField);
+        }
+        return Array.from(new Set(fields.filter(Boolean))).map((field) => ({ field: String(field) }));
+    }, [widget.yAxis, widget.comparisonValue]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Gauge',
+            rows: widgetData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, widgetData, exportFields]);
+
     return (
         <BaseWidget
             widget={widget}
@@ -133,6 +153,7 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
             loading={isLoading}
             error={error && error !== 'Configure metric field' ? error : (directError || undefined)}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             {!widget.yAxis?.[0] ? (
                 <EmptyChartState type="gauge" message="Configure metric field" onClickDataTab={onClickDataTab} />

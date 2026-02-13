@@ -3,7 +3,7 @@
 // Slicer Widget - For Data Filtering
 // ============================================
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
 import { useFilterStore } from '../store/filterStore';
@@ -11,6 +11,7 @@ import { useDirectQuery } from '../hooks/useDirectQuery';
 import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import { formatBIValue } from '../engine/utils';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface SlicerWidgetProps {
     widget: BIWidget;
@@ -173,6 +174,19 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
     };
 
     const isAllSelected = uniqueValues.length > 0 && selectedValues.length === uniqueValues.length;
+
+    const exportFields = useMemo(() => {
+        if (!widget.slicerField) return [];
+        return [{ field: widget.slicerField, header: widget.slicerField }];
+    }, [widget.slicerField]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Slicer',
+            rows: directData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, directData, exportFields]);
 
     const renderList = () => {
         if (isDraggingOrResizing && uniqueValues.length > 50) {
@@ -358,6 +372,7 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                 color: 'text-orange-400 hover:text-orange-300'
             } : undefined}
             allowOverflow={widget.slicerMode === 'dropdown'}
+            onExportExcel={handleExportExcel}
         >
             {content}
         </BaseWidget>

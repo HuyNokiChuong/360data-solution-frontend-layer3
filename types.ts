@@ -223,7 +223,7 @@ export interface ModelRelationship {
   toColumn: string;
   fromTableId: string;
   toTableId: string;
-  relationshipType: '1-1' | '1-n' | 'n-n';
+  relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
   crossFilterDirection: 'single' | 'both';
   validationStatus: 'valid' | 'invalid';
   invalidReason?: string;
@@ -240,7 +240,7 @@ export interface RelationshipSuggestion {
   toTableId: string;
   toTable: string;
   toColumn: string;
-  relationshipType: '1-1' | '1-n' | 'n-n';
+  relationshipType: '1-1' | '1-n' | 'n-1' | 'n-n';
   crossFilterDirection: 'single' | 'both';
   confidence: number;
   validationStatus: 'valid' | 'invalid';

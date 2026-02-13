@@ -1,5 +1,5 @@
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ZAxis, LabelList, Cell } from 'recharts';
 import { BIWidget, DrillDownState } from '../types';
 import { useDataStore } from '../store/dataStore';
@@ -14,6 +14,7 @@ import { DrillDownService } from '../engine/DrillDownService';
 import EmptyChartState from './EmptyChartState';
 import { useChartColors } from '../utils/chartColors';
 import ChartLegend from './ChartLegend';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface ScatterChartWidgetProps {
     widget: BIWidget;
@@ -52,6 +53,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     const xField = (drillDownState?.mode === 'expand' && xFields.length > 1)
         ? '_combinedAxis'
         : (xFields[0] || '_autoCategory');
+    const rawXAxisField = xFields[0] || widget.xAxis || '';
     const { chartColors } = useChartColors();
 
     // NEW: Centralized Aggregation Hook
@@ -159,6 +161,19 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
         return cf.filters.find(f => f.field === xField)?.value;
     }, [allDashboardFilters, widget.id, xField]);
 
+    const exportFields = useMemo(() => {
+        const fieldOrder = [rawXAxisField, ...(widget.yAxis || [])].filter(Boolean);
+        return Array.from(new Set(fieldOrder)).map((field) => ({ field }));
+    }, [rawXAxisField, widget.yAxis]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Scatter Chart',
+            rows: chartData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, chartData, exportFields]);
+
     return (
         <BaseWidget
             widget={widget}
@@ -171,6 +186,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
             loadingProgress={loadingProgress}
             error={error}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 {chartData.length === 0 && !error ? (

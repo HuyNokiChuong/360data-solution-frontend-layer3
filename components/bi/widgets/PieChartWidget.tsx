@@ -2,7 +2,7 @@
 // Pie Chart Widget
 // ============================================
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { BIWidget } from '../types';
 import { useDataStore } from '../store/dataStore';
@@ -18,6 +18,7 @@ import { DrillDownService } from '../engine/DrillDownService';
 import { DrillDownState } from '../types';
 import { useChartColors } from '../utils/chartColors';
 import ChartLegend from './ChartLegend';
+import { exportRowsToExcel } from '../utils/widgetExcelExport';
 
 interface PieChartWidgetProps {
     widget: BIWidget;
@@ -131,6 +132,20 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
         });
     }, [rawChartData, categoryField, valueField, widget.legendAliases]);
 
+    const exportFields = useMemo(() => {
+        const categoryFields = xFields.length > 0 ? xFields : (widget.xAxis ? [widget.xAxis] : []);
+        const fieldOrder = [...categoryFields, valueField].filter(Boolean);
+        return Array.from(new Set(fieldOrder)).map((field) => ({ field }));
+    }, [xFields, widget.xAxis, valueField]);
+
+    const handleExportExcel = useCallback(() => {
+        exportRowsToExcel({
+            title: widget.title || 'Pie Chart',
+            rows: rawChartData as Record<string, any>[],
+            fields: exportFields
+        });
+    }, [widget.title, rawChartData, exportFields]);
+
     const { piePalette } = useChartColors();
     const colors = widget.colors || piePalette;
 
@@ -178,6 +193,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                 loading={isLoading}
                 error={error || undefined}
                 onClick={onClick}
+                onExportExcel={handleExportExcel}
             >
                 <EmptyChartState type={widget.chartType || 'pie'} message={errorMsg} onClickDataTab={onClickDataTab} onClick={onClick} />
             </BaseWidget>
@@ -195,6 +211,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
             loading={isLoading}
             error={error || undefined}
             onClick={onClick}
+            onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%">

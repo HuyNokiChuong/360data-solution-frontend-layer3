@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 import { BIDashboard, BIFolder, BIWidget, GlobalFilter, DashboardPage, SharePermission } from '../types';
 import { API_BASE } from '../../../services/api';
+import { isUUID } from '../../../utils/id';
 
 interface DashboardState {
     // Data
@@ -122,8 +123,34 @@ const sanitizeFolder = (folder: BIFolder): BIFolder => ({
     sharedWith: sanitizeSharePermissions(folder?.sharedWith),
 });
 
+const ensureDashboardPages = (dashboard: BIDashboard): BIDashboard => {
+    const pages = Array.isArray(dashboard?.pages) ? dashboard.pages : [];
+    if (pages.length === 0) {
+        const pageId = `pg-default-${dashboard.id}`;
+        const fallbackWidgets = Array.isArray(dashboard?.widgets) ? dashboard.widgets : [];
+        return {
+            ...dashboard,
+            pages: [{ id: pageId, title: 'Page 1', widgets: fallbackWidgets }],
+            activePageId: pageId,
+            widgets: fallbackWidgets
+        };
+    }
+
+    const activePageId = pages.some((p) => p.id === dashboard.activePageId)
+        ? dashboard.activePageId
+        : pages[0].id;
+    const activeWidgets = pages.find((p) => p.id === activePageId)?.widgets || [];
+
+    return {
+        ...dashboard,
+        pages,
+        activePageId,
+        widgets: activeWidgets
+    };
+};
+
 const sanitizeDashboard = (dashboard: BIDashboard): BIDashboard => ({
-    ...dashboard,
+    ...ensureDashboardPages(dashboard),
     sharedWith: sanitizeSharePermissions(dashboard?.sharedWith),
 });
 
@@ -533,7 +560,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         }));
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
-        if (token) {
+        if (token && isUUID(id)) {
             fetch(`${API_BASE}/dashboards/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -554,7 +581,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         });
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
-        if (token) {
+        if (token && isUUID(id)) {
             fetch(`${API_BASE}/dashboards/${id}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -573,7 +600,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         }));
         // Sync to Backend
         const token = localStorage.getItem('auth_token');
-        if (token) {
+        if (token && isUUID(id)) {
             fetch(`${API_BASE}/dashboards/${id}/share`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },

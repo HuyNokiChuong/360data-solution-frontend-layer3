@@ -2175,6 +2175,50 @@ router.post('/:id/tables', async (req, res) => {
 });
 
 /**
+ * PATCH /api/connections/tables/:id/status — Toggle or set synced table status
+ */
+router.patch('/tables/:id/status', async (req, res) => {
+    try {
+        const rawStatus = typeof req.body?.status === 'string' ? req.body.status.trim().toLowerCase() : '';
+        let nextStatus = null;
+
+        if (rawStatus) {
+            if (rawStatus === 'active') nextStatus = 'Active';
+            else if (rawStatus === 'disabled') nextStatus = 'Disabled';
+            else {
+                return res.status(400).json({
+                    success: false,
+                    message: "status must be either 'Active' or 'Disabled'",
+                });
+            }
+        }
+
+        const result = await query(
+            `UPDATE synced_tables st
+             SET status = COALESCE($3, CASE WHEN st.status = 'Active' THEN 'Disabled' ELSE 'Active' END),
+                 updated_at = NOW()
+             FROM connections c
+             WHERE st.id = $1
+               AND st.connection_id = c.id
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             RETURNING st.*`,
+            [req.params.id, req.user.workspace_id, nextStatus]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        res.json({ success: true, data: formatTable(result.rows[0]) });
+    } catch (err) {
+        console.error('Update table status error:', err);
+        res.status(500).json({ success: false, message: 'Failed to update table status' });
+    }
+});
+
+/**
  * DELETE /api/connections/tables/:id — Soft delete a synced table
  */
 router.delete('/tables/:id', async (req, res) => {

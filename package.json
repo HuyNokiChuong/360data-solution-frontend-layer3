@@ -4,8 +4,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite",
-    "start": "vite preview --host --port 8080",
+    "dev": "sh -c 'npm --prefix server run dev & vite'",
+    "dev:ui": "vite",
+    "dev:api": "npm --prefix server run dev",
+    "start": "sh -c 'npm --prefix server run start & vite preview --host --port 8080'",
+    "start:ui": "vite preview --host --port 8080",
+    "start:api": "npm --prefix server run start",
     "build": "vite build"
   },
   "dependencies": {
