@@ -1907,8 +1907,8 @@ const BIMain: React.FC<BIMainProps> = ({
                     <div className="w-0 relative">
                         <button
                             onClick={() => setDataPanelOpen(true)}
-                            style={{ right: rightPanelOpen ? `${rightPanelWidth + 52}px` : '56px' }}
-                            className="absolute bottom-16 w-10 h-10 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 rounded-2xl flex items-center justify-center text-indigo-300 shadow-2xl transition-all z-[120] hover:scale-110 active:scale-95"
+                            style={{ right: rightPanelOpen ? `${rightPanelWidth + 16}px` : '16px' }}
+                            className="fixed bottom-16 w-10 h-10 bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 rounded-2xl flex items-center justify-center text-indigo-300 shadow-2xl transition-all z-[120] hover:scale-110 active:scale-95"
                             title="Expand data sidebar"
                         >
                             <i className="fas fa-database"></i>

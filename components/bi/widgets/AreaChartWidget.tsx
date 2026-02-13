@@ -96,7 +96,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                 widget.title || "Biểu đồ",
                 xField,
                 chartData,
-                series,
+                effectiveSeries,
                 context,
                 { provider, modelId }
             );
@@ -126,11 +126,113 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         }));
     }, [chartData, xField]);
 
+    const configuredMeasureKeys = useMemo(() => {
+        const keys = new Set<string>();
+        const add = (value?: string) => {
+            const normalized = String(value || '').trim();
+            if (normalized) keys.add(normalized);
+        };
+
+        (widget.yAxisConfigs || []).forEach((config) => add(config.field));
+        (widget.yAxis || []).forEach((field) => add(field));
+        (widget.values || []).forEach((field) => add(field));
+        (widget.measures || []).forEach((field) => add(field));
+        (series || []).forEach((field) => add(field));
+
+        return keys;
+    }, [widget.yAxisConfigs, widget.yAxis, widget.values, widget.measures, series]);
+
+    const detectedLegendSeries = useMemo(() => {
+        if (!widget.legend || effectiveChartData.length === 0) return [];
+
+        const blockedKeys = new Set<string>([
+            '_formattedAxis',
+            '_combinedAxis',
+            '_rawAxisValue',
+            '_autoCategory',
+            String(widget.legend || '').trim(),
+            String(xField || '').trim(),
+            String(xFieldDisplay || '').trim(),
+            ...xFields.map((field) => String(field || '').trim()).filter(Boolean)
+        ]);
+
+        const stats = new Map<string, { hasNonZero: boolean; absTotal: number }>();
+        effectiveChartData.forEach((row) => {
+            Object.entries(row || {}).forEach(([key, rawValue]) => {
+                const normalizedKey = String(key || '').trim();
+                if (!normalizedKey) return;
+                if (normalizedKey.startsWith('_')) return;
+                if (blockedKeys.has(normalizedKey)) return;
+                if (configuredMeasureKeys.has(normalizedKey)) return;
+
+                const numeric = Number(rawValue);
+                if (!Number.isFinite(numeric)) return;
+
+                const current = stats.get(normalizedKey) || { hasNonZero: false, absTotal: 0 };
+                if (numeric !== 0) current.hasNonZero = true;
+                current.absTotal += Math.abs(numeric);
+                stats.set(normalizedKey, current);
+            });
+        });
+
+        return Array.from(stats.entries())
+            .filter(([, stat]) => stat.hasNonZero && stat.absTotal > 0)
+            .sort((a, b) => b[1].absTotal - a[1].absTotal)
+            .map(([key]) => key);
+    }, [widget.legend, effectiveChartData, configuredMeasureKeys, xField, xFieldDisplay, xFields]);
+
+    const effectiveSeries = useMemo(() => {
+        const sanitize = (items: string[]) =>
+            items
+                .map((item) => String(item || '').trim())
+                .filter((item) => item.length > 0 && !item.startsWith('_'));
+
+        if (widget.legend && detectedLegendSeries.length > 0) {
+            return sanitize(detectedLegendSeries);
+        }
+
+        return sanitize(series || []);
+    }, [widget.legend, detectedLegendSeries, series]);
+
+    const renderChartData = useMemo(() => {
+        const shouldFallbackAggregate =
+            !!widget.legend &&
+            detectedLegendSeries.length === 0 &&
+            effectiveSeries.length === 1 &&
+            effectiveChartData.length > 0;
+
+        if (!shouldFallbackAggregate) return effectiveChartData;
+
+        const axisKey = xFieldDisplay || xField || '_autoCategory';
+        const seriesKey = effectiveSeries[0];
+        const grouped = new Map<string, any>();
+
+        effectiveChartData.forEach((row) => {
+            const axisValue = row?.[axisKey] ?? row?.[xField] ?? row?._autoCategory ?? '(Blank)';
+            const mapKey = String(axisValue);
+            const currentValue = Number(row?.[seriesKey]) || 0;
+
+            if (!grouped.has(mapKey)) {
+                grouped.set(mapKey, {
+                    ...row,
+                    [axisKey]: axisValue,
+                    [seriesKey]: currentValue
+                });
+                return;
+            }
+
+            const existing = grouped.get(mapKey);
+            existing[seriesKey] = (Number(existing?.[seriesKey]) || 0) + currentValue;
+        });
+
+        return Array.from(grouped.values());
+    }, [widget.legend, detectedLegendSeries.length, effectiveSeries, effectiveChartData, xFieldDisplay, xField]);
+
     // Colors
     const { chartColors } = useChartColors();
     const colors = widget.colors || chartColors;
     const isFiltered = isWidgetFiltered(widget.id) || (drillDownState && drillDownState.currentLevel > 0);
-    const shouldRenderDataLabels = widget.showLabels !== false && effectiveChartData.length <= 40;
+    const shouldRenderDataLabels = widget.showLabels !== false && renderChartData.length <= 40;
 
     const categoryFields = useMemo(() => {
         const fromAxis = xFields.filter(Boolean);
@@ -145,10 +247,10 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
             ...(widget.yAxis || []),
             ...(widget.values || []),
             ...(widget.measures || []),
-            ...series
+            ...effectiveSeries
         ];
         return Array.from(new Set(configured.filter(Boolean)));
-    }, [widget.yAxisConfigs, widget.yAxis, widget.values, widget.measures, series]);
+    }, [widget.yAxisConfigs, widget.yAxis, widget.values, widget.measures, effectiveSeries]);
 
     const exportFields = useMemo(() => {
         return [...categoryFields, ...measureFields].map((field) => ({ field }));
@@ -157,10 +259,10 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
     const handleExportExcel = useCallback(() => {
         exportRowsToExcel({
             title: widget.title || 'Area Chart',
-            rows: effectiveChartData as Record<string, any>[],
+            rows: renderChartData as Record<string, any>[],
             fields: exportFields
         });
-    }, [widget.title, effectiveChartData, exportFields]);
+    }, [widget.title, renderChartData, exportFields]);
 
     const handleAreaClick = (data: any) => {
         if (onDataClick && widget.enableCrossFilter !== false) {
@@ -202,16 +304,16 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
 
     const hierarchyDepth = useMemo(() => {
         if (drillDownState?.mode !== 'expand') return 1;
-        return effectiveChartData.reduce((maxDepth, row) => {
+        return renderChartData.reduce((maxDepth, row) => {
             const raw = row?._combinedAxis || row?._formattedAxis || row?.[xFieldDisplay] || '';
             const depth = String(raw).split('\n').filter(Boolean).length || 1;
             return Math.max(maxDepth, depth);
         }, 1);
-    }, [drillDownState?.mode, effectiveChartData, xFieldDisplay]);
+    }, [drillDownState?.mode, renderChartData, xFieldDisplay]);
 
     const hasBottomLegend = widget.showLegend !== false && (!widget.legendPosition || widget.legendPosition === 'bottom');
     const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(72, 16 + hierarchyDepth * 12);
-    const legendItemCount = useMemo(() => Math.max(1, series.length || 1), [series]);
+    const legendItemCount = useMemo(() => Math.max(1, effectiveSeries.length || 1), [effectiveSeries]);
     const legendRows = hasBottomLegend ? Math.max(1, Math.ceil(legendItemCount / 4)) : 0;
     const legendHeight = hasBottomLegend ? (legendRows * 18 + 8) : 0;
     const bottomMargin = hasBottomLegend
@@ -219,17 +321,17 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         : Math.max(14, xAxisHeight - 10);
 
     const hasBlankCategory = useMemo(() => {
-        return effectiveChartData.some((row) => {
+        return renderChartData.some((row) => {
             const raw = row?.[xFieldDisplay];
             if (raw === null || raw === undefined) return true;
             const text = String(raw).trim().toLowerCase();
             return text === '' || text === '(blank)' || text === 'null' || text === 'undefined' || text === 'nan';
         });
-    }, [effectiveChartData, xFieldDisplay]);
+    }, [renderChartData, xFieldDisplay]);
 
     const xAxisInterval = ((drillDownState?.mode === 'expand' || hasBlankCategory) ? 0 : 'auto') as any;
 
-    if (series.length === 0) {
+    if (effectiveSeries.length === 0) {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="area" message="Select Y-Axis field" onClickDataTab={onClickDataTab} onClick={onClick} />
@@ -237,7 +339,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         );
     }
 
-    if (effectiveChartData.length === 0) {
+    if (renderChartData.length === 0) {
         return (
             <BaseWidget widget={widget} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} isSelected={isSelected} loading={isLoading} error={error || undefined} onClick={onClick} onExportExcel={handleExportExcel}>
                 <EmptyChartState type="area" message="No data available" onClickDataTab={onClickDataTab} onClick={onClick} />
@@ -261,12 +363,12 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
                 <ResponsiveContainer width="100%" height="100%" minWidth={10} minHeight={10}>
                     <AreaChart
-                        data={effectiveChartData}
+                        data={renderChartData}
                         margin={{ top: 20, right: 30, left: 0, bottom: bottomMargin }}
                         onClick={(e: any) => e && e.activePayload && handleAreaClick(e.activePayload[0].payload)}
                     >
                         <defs>
-                            {series.map((s, i) => {
+                            {effectiveSeries.map((s, i) => {
                                 const safeId = `color-${s.replace(/[^a-zA-Z0-9]/g, '_')}`;
                                 return (
                                     <linearGradient key={`gradient-${i}`} id={safeId} x1="0" y1="0" x2="0" y2="1">
@@ -284,7 +386,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             tickLine={false}
                             axisLine={false}
                             interval={xAxisInterval}
-                            tick={<HierarchicalAxisTick data={effectiveChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
+                            tick={<HierarchicalAxisTick data={renderChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
                             height={xAxisHeight}
                             fontFamily={widget.fontFamily || 'Outfit'}
                         />
@@ -330,7 +432,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             />
                         )}
 
-                        {series.map((sField, idx) => {
+                        {effectiveSeries.map((sField, idx) => {
                             const safeId = `color-${sField.replace(/[^a-zA-Z0-9]/g, '_')}`;
                             const color = colors[idx % colors.length];
 
@@ -391,10 +493,10 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
 
                         {/* Render Highlights */}
                         {widget.insight?.highlight?.map((hl, i) => {
-                            const dataPoint = effectiveChartData[hl.index];
+                            const dataPoint = renderChartData[hl.index];
                             if (!dataPoint) return null;
                             const xValue = dataPoint[selectionField];
-                            const yValue = hl.value || dataPoint[series[0]];
+                            const yValue = hl.value || dataPoint[effectiveSeries[0]];
                             let hlColor = '#facc15';
                             if (hl.type === 'peak') hlColor = '#10b981';
                             if (hl.type === 'drop') hlColor = '#ef4444';

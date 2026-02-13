@@ -129,12 +129,72 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
         return rawChartData.map(item => {
             const originalName = item[categoryField];
             const alias = widget.legendAliases?.[originalName];
+            const rawValue = item[valueField];
+            const numericValue = typeof rawValue === 'number'
+                ? rawValue
+                : Number.parseFloat(String(rawValue ?? ''));
             return {
                 name: alias || originalName || 'Total',
-                value: item[valueField]
+                value: Number.isFinite(numericValue) ? numericValue : 0
             };
         });
     }, [rawChartData, categoryField, valueField, widget.legendAliases]);
+
+    const labelVisibleIndices = useMemo(() => {
+        const positiveEntries = chartData
+            .map((item, index) => ({
+                index,
+                value: Number(item.value) || 0
+            }))
+            .filter((item) => item.value > 0);
+
+        if (positiveEntries.length === 0) return new Set<number>();
+
+        const total = positiveEntries.reduce((sum, item) => sum + item.value, 0);
+        if (!Number.isFinite(total) || total <= 0) return new Set<number>();
+
+        const positiveCount = positiveEntries.length;
+        const minVisibleShare =
+            positiveCount > 20 ? 0.06 :
+                positiveCount > 12 ? 0.04 :
+                    positiveCount > 8 ? 0.025 : 0.015;
+        const maxLabelCount =
+            positiveCount > 24 ? 6 :
+                positiveCount > 16 ? 8 :
+                    positiveCount > 10 ? 10 : 14;
+
+        const prioritized = positiveEntries
+            .map((item) => ({ ...item, share: item.value / total }))
+            .filter((item) => item.share >= minVisibleShare)
+            .sort((a, b) => b.value - a.value)
+            .slice(0, maxLabelCount);
+
+        const selected = new Set<number>(prioritized.map((item) => item.index));
+        const minGuaranteed = Math.min(3, positiveCount, maxLabelCount);
+        if (selected.size < minGuaranteed) {
+            const topEntries = [...positiveEntries]
+                .sort((a, b) => b.value - a.value)
+                .slice(0, minGuaranteed);
+            topEntries.forEach((entry) => selected.add(entry.index));
+        }
+
+        return selected;
+    }, [chartData]);
+
+    const formatSmartPercent = useCallback((rawPercent: number) => {
+        if (!Number.isFinite(rawPercent) || rawPercent <= 0) return '';
+        const pct = rawPercent * 100;
+        if (pct < 0.1) return '<0.1%';
+        if (pct < 10) return `${pct.toFixed(1)}%`;
+        return `${pct.toFixed(1).replace(/\.0$/, '')}%`;
+    }, []);
+
+    const compactCategoryName = useCallback((rawName: any) => {
+        const text = String(rawName ?? '').trim();
+        if (!text) return '(Blank)';
+        if (text.length <= 16) return text;
+        return `${text.slice(0, 13)}...`;
+    }, []);
 
     const exportFields = useMemo(() => {
         const categoryFields = xFields.length > 0 ? xFields : (widget.xAxis ? [widget.xAxis] : []);
@@ -225,19 +285,24 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                             cx="50%"
                             cy="50%"
                             isAnimationActive={false}
-                            labelLine={widget.showLabels !== false}
+                            labelLine={widget.showLabels !== false && labelVisibleIndices.size <= 8}
                             label={widget.showLabels !== false ? (props: any) => {
-                                const { name, value, percent } = props;
+                                const { name, value, percent, index } = props;
+                                if (!labelVisibleIndices.has(index)) return null;
                                 if (value === undefined || value === null) return null;
-                                const pVal = percent ? (percent * 100).toFixed(1) + '%' : '0%';
+                                const pVal = formatSmartPercent(Number(percent) || 0);
+                                if (!pVal && widget.labelMode !== 'value' && widget.labelMode !== 'category' && widget.labelMode !== 'categoricalValue') {
+                                    return null;
+                                }
                                 const formattedValue = formatSmartDataLabel(value, widget.labelFormat || getAdaptiveNumericFormat(widget.valueFormat), { maxLength: 10 });
+                                const compactName = compactCategoryName(name);
                                 switch (widget.labelMode) {
                                     case 'value': return formattedValue;
                                     case 'percent': return pVal;
-                                    case 'category': return name;
-                                    case 'categoricalPercent': return `${name}: ${pVal}`;
+                                    case 'category': return compactName;
+                                    case 'categoricalPercent': return pVal ? `${compactName}: ${pVal}` : compactName;
                                     case 'categoricalValue':
-                                    default: return `${name}: ${formattedValue}`;
+                                    default: return `${compactName}: ${formattedValue}`;
                                 }
                             } : undefined}
                             outerRadius="70%"

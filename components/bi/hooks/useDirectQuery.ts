@@ -873,14 +873,22 @@ export const useDirectQuery = (widget: BIWidget) => {
                     if (widget.type !== 'chart') {
                         setData(normalizedData);
                     } else {
+                        let processedData = normalizedData;
+
+                        if (dimensions.length === 0 && measures.length > 0) {
+                            processedData = normalizedData.map((row) => ({
+                                ...row,
+                                _autoCategory: row._autoCategory || 'Total',
+                            }));
+                        }
+
                         const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
                         const axisKey = (currentDrillDownState?.mode === 'expand' && axisFields.length > 1)
                             ? '_combinedAxis'
                             : '_formattedAxis';
 
-                        let processedData = normalizedData;
                         if (axisFields.length > 0) {
-                            processedData = normalizedData.map((row) => {
+                            processedData = processedData.map((row) => {
                                 let label = '';
                                 const rawAxisValue = row[axisFields[Math.max(0, axisFields.length - 1)]];
                                 if (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) {
@@ -895,6 +903,111 @@ export const useDirectQuery = (widget: BIWidget) => {
                                 };
                             });
                         }
+
+                        const willPivot = widget.legend && dimensions.includes(widget.legend);
+                        if (axisFields.length > 0 && !willPivot) {
+                            const groupedMap = new Map<string, any>();
+                            processedData.forEach((row) => {
+                                const label = row[axisKey];
+                                if (!groupedMap.has(label)) {
+                                    groupedMap.set(label, { ...row });
+                                } else {
+                                    const existing = groupedMap.get(label);
+                                    measures.forEach((m) => {
+                                        const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                        existing[outputField] = (existing[outputField] || 0) + (row[outputField] || 0);
+                                    });
+                                }
+                            });
+                            processedData = Array.from(groupedMap.values());
+                        }
+
+                        const legendFields = new Set<string>();
+                        if (widget.legend && dimensions.includes(widget.legend)) {
+                            const xFieldKey = axisKey;
+                            const legendField = widget.legend;
+                            const legendMeasureField = measures[0]
+                                ? getMeasureOutputField(measures[0].field, measures[0].aggregation)
+                                : undefined;
+                            const pivotMap = new Map<string, any>();
+
+                            if (legendMeasureField) {
+                                processedData.forEach((row) => {
+                                    const xValue = row[xFieldKey] ?? '(Blank)';
+                                    const legendValue = resolveLegendLabel(row, legendField);
+                                    legendFields.add(legendValue);
+
+                                    if (!pivotMap.has(xValue)) {
+                                        pivotMap.set(xValue, { ...row });
+                                    }
+                                    const pivotRow = pivotMap.get(xValue);
+                                    const prevVal = Number(pivotRow[legendValue]) || 0;
+                                    const incomingVal = Number(row[legendMeasureField]) || 0;
+                                    pivotRow[legendValue] = prevVal + incomingVal;
+                                });
+                                processedData = Array.from(pivotMap.values());
+                            }
+                        }
+
+                        if (widget.sortBy && widget.sortBy !== 'none') {
+                            const [type, dir] = widget.sortBy.split('_');
+                            const isDesc = dir === 'desc';
+
+                            processedData.sort((a, b) => {
+                                let valA: any;
+                                let valB: any;
+
+                                if (type === 'category') {
+                                    valA = a[axisKey] || '';
+                                    valB = b[axisKey] || '';
+                                    if (!isNaN(Date.parse(valA)) && !isNaN(Date.parse(valB))) {
+                                        valA = new Date(valA).getTime();
+                                        valB = new Date(valB).getTime();
+                                    }
+                                } else {
+                                    const calcTotal = (row: any) => {
+                                        if (legendFields.size > 0) {
+                                            return Array.from(legendFields).reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
+                                        }
+                                        return measures.reduce((sum, m) => {
+                                            const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                            return sum + (Number(row[outputField]) || 0);
+                                        }, 0);
+                                    };
+                                    valA = calcTotal(a);
+                                    valB = calcTotal(b);
+                                }
+
+                                if (valA < valB) return isDesc ? 1 : -1;
+                                if (valA > valB) return isDesc ? -1 : 1;
+                                return 0;
+                            });
+                        }
+
+                        const activeQuickMeasures = measures.filter((m) => m.isQuickMeasure);
+                        if (activeQuickMeasures.length > 0) {
+                            const finalData = [...processedData];
+                            const totalMap = new Map<string, number>();
+
+                            activeQuickMeasures.forEach((qm) => {
+                                if (qm.qmType === 'percentOfTotal') {
+                                    const total = finalData.reduce((sum, row) => sum + (Number(row[qm.field]) || 0), 0);
+                                    totalMap.set(qm.field, total);
+                                }
+                            });
+
+                            finalData.forEach((row) => {
+                                activeQuickMeasures.forEach((qm) => {
+                                    const val = Number(row[qm.field]) || 0;
+                                    if (qm.qmType === 'percentOfTotal') {
+                                        const total = totalMap.get(qm.field) || 1;
+                                        row[(qm as any).originalLabel] = total === 0 ? 0 : (val / total);
+                                    }
+                                });
+                            });
+                            processedData = finalData;
+                        }
+
                         setData(processedData);
                     }
                 } catch (err: any) {
@@ -1470,31 +1583,66 @@ export const useDirectQuery = (widget: BIWidget) => {
     // Update pivoted series when data changes
     useEffect(() => {
         if (widget.legend && data.length > 0) {
-            const fields = new Set<string>();
-            const xFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
-            const xField = xFields[0];
-            data.forEach(row => {
-                Object.keys(row).forEach(key => {
-                    // Filter out X-Axis, formatting keys, the legend field itself, and the original measure fields
-                    // detailed condition: key is not an axis field, not a system field, not the legend field, and not in the list of measures
-                    if (key !== xField && key !== '_formattedAxis' && key !== '_combinedAxis' && key !== widget.legend && !measures.map(m => m.field).includes(key)) {
-                        fields.add(key);
+            const systemKeys = new Set(['_formattedAxis', '_combinedAxis', '_rawAxisValue', '_autoCategory']);
+            const normalizeKey = (value: string | undefined) => String(value || '').trim().toLowerCase();
+
+            const xFields = DrillDownService.getCurrentFields(widget, currentDrillDownState).filter(Boolean);
+            const normalizedDimensions = new Set((dimensions || []).map((dim) => normalizeKey(dim)));
+            const normalizedXFields = new Set(xFields.map((field) => normalizeKey(field)));
+            const normalizedMeasureFields = new Set((measures || []).map((measure) => normalizeKey(measure.field)));
+            const normalizedMeasureOutputs = new Set(
+                (measures || []).map((measure) => normalizeKey(getMeasureOutputField(measure.field, measure.aggregation)))
+            );
+            const normalizedLegendField = normalizeKey(widget.legend);
+
+            const stats = new Map<string, { hasFinite: boolean; hasNonZero: boolean; absTotal: number }>();
+
+            data.forEach((row) => {
+                Object.entries(row || {}).forEach(([key, rawValue]) => {
+                    const normalizedKey = normalizeKey(key);
+                    if (!normalizedKey) return;
+                    if (key.startsWith('_') || systemKeys.has(key)) return;
+                    if (normalizedLegendField && normalizedKey === normalizedLegendField) return;
+                    if (normalizedDimensions.has(normalizedKey) || normalizedXFields.has(normalizedKey)) return;
+                    if (normalizedMeasureFields.has(normalizedKey) || normalizedMeasureOutputs.has(normalizedKey)) return;
+
+                    const stat = stats.get(key) || { hasFinite: false, hasNonZero: false, absTotal: 0 };
+                    const numeric = Number(rawValue);
+                    if (Number.isFinite(numeric)) {
+                        stat.hasFinite = true;
+                        if (numeric !== 0) stat.hasNonZero = true;
+                        stat.absTotal += Math.abs(numeric);
                     }
+                    stats.set(key, stat);
                 });
             });
-            setPivotedSeries(Array.from(fields));
+
+            const nextSeries = Array.from(stats.entries())
+                .filter(([, stat]) => stat.hasFinite && stat.hasNonZero)
+                .sort((a, b) => b[1].absTotal - a[1].absTotal)
+                .map(([key]) => key);
+
+            setPivotedSeries(nextSeries);
         } else {
             setPivotedSeries([]);
         }
     }, [
         data,
         widget.legend,
+        JSON.stringify(dimensions),
         JSON.stringify(currentDrillDownState),
-        JSON.stringify(measures)
+        JSON.stringify(measures),
+        getMeasureOutputField
     ]);
 
     const seriesList = useMemo(() => {
-        if (pivotedSeries.length > 0) return pivotedSeries;
+        const sanitizeSeries = (items: string[]) =>
+            items.filter((item) => {
+                const key = String(item || '').trim();
+                return key.length > 0 && !key.startsWith('_');
+            });
+
+        if (pivotedSeries.length > 0) return sanitizeSeries(pivotedSeries);
 
         const mapConfiguredField = (field: string) => {
             const matchedMeasure = measures.find((m) => m.field === field);
@@ -1503,24 +1651,24 @@ export const useDirectQuery = (widget: BIWidget) => {
         };
 
         if (widget.yAxisConfigs && widget.yAxisConfigs.length > 0) {
-            return widget.yAxisConfigs.map(c => mapConfiguredField(c.field));
+            return sanitizeSeries(widget.yAxisConfigs.map(c => mapConfiguredField(c.field)));
         }
 
         if (widget.yAxis && widget.yAxis.length > 0) {
-            return widget.yAxis.map((field) => mapConfiguredField(field));
+            return sanitizeSeries(widget.yAxis.map((field) => mapConfiguredField(field)));
         }
 
         if (widget.measures && widget.measures.length > 0) {
-            return widget.measures.map((field) => mapConfiguredField(field));
+            return sanitizeSeries(widget.measures.map((field) => mapConfiguredField(field)));
         }
 
-        return Array.from(
+        return sanitizeSeries(Array.from(
             new Set(
                 measures
                     .map((m) => getMeasureOutputField(m.field, m.aggregation))
                     .filter(Boolean)
             )
-        );
+        ));
     }, [widget.yAxisConfigs, widget.yAxis, widget.measures, pivotedSeries, measures, getMeasureOutputField]);
 
     const lineSeriesList = useMemo(() => {
