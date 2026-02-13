@@ -668,36 +668,57 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 sharedAt: new Date().toISOString()
             }] : []
         };
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+            alert('Bạn cần đăng nhập để tạo dashboard và lưu lên server.');
+            return;
+        }
+
         set((state) => ({
             dashboards: [...state.dashboards, newDashboard],
             activeDashboardId: newDashboard.id
         }));
 
         // Sync to Backend
-        const token = localStorage.getItem('auth_token');
-        if (token) {
-            fetch(`${API_BASE}/dashboards`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({
-                    title: dashboard.title,
-                    description: dashboard.description,
-                    folderId: dashboard.folderId,
-                    dataSourceId: dashboard.dataSourceId,
-                    dataSourceName: dashboard.dataSourceName
-                })
+        fetch(`${API_BASE}/dashboards`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({
+                title: dashboard.title,
+                description: dashboard.description,
+                folderId: dashboard.folderId,
+                dataSourceId: dashboard.dataSourceId,
+                dataSourceName: dashboard.dataSourceName
             })
-                .then(res => res.json())
-                .then(resData => {
-                    if (resData.success) {
-                        // Update with real backend data (including real ID)
-                        set((state) => ({
-                            dashboards: state.dashboards.map(d => d.id === newDashboard.id ? resData.data : d),
-                            activeDashboardId: state.activeDashboardId === newDashboard.id ? resData.data.id : state.activeDashboardId
-                        }));
-                    }
-                }).catch(console.error);
-        }
+        })
+            .then(async (res) => {
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok || !payload?.success || !payload?.data?.id) {
+                    throw new Error(payload?.message || `Failed to create dashboard (${res.status})`);
+                }
+
+                // Update with real backend data (including real ID)
+                set((state) => ({
+                    dashboards: state.dashboards.map(d => d.id === newDashboard.id ? payload.data : d),
+                    activeDashboardId: state.activeDashboardId === newDashboard.id ? payload.data.id : state.activeDashboardId
+                }));
+                saveToStorage(get());
+            })
+            .catch((err) => {
+                console.error('Failed to create dashboard on backend:', err);
+                set((state) => {
+                    const remaining = state.dashboards.filter((d) => d.id !== newDashboard.id);
+                    const nextActive = state.activeDashboardId === newDashboard.id
+                        ? (remaining[0]?.id || null)
+                        : state.activeDashboardId;
+                    return {
+                        dashboards: remaining,
+                        activeDashboardId: nextActive
+                    };
+                });
+                alert(err?.message || 'Không thể tạo dashboard trên server.');
+                saveToStorage(get());
+            });
         saveToStorage(get());
     },
 
@@ -774,35 +795,97 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         const state = get();
         const original = state.dashboards.find(d => d.id === id);
         if (!original) return;
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+            alert('Bạn cần đăng nhập để nhân bản dashboard.');
+            return;
+        }
 
-        const suffix = Math.random().toString(36).substring(2, 7);
+        const suffix = Math.random().toString(36).substring(2, 8);
         const originalPages = original.pages && original.pages.length > 0
             ? original.pages
             : [{ id: `pg-default-${original.id}`, title: 'Page 1', widgets: original.widgets || [] }];
 
-        const duplicate: BIDashboard = {
-            ...original,
-            id: `d-${Date.now()}-${suffix}`,
-            title: `${original.title} (Copy)`,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            pages: originalPages.map(p => ({
-                ...p,
-                id: `pg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-                widgets: p.widgets.map(w => ({
-                    ...w,
-                    id: `w-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
-                }))
-            }))
-        };
-        duplicate.activePageId = duplicate.pages[0].id;
-        duplicate.widgets = duplicate.pages[0].widgets;
+        const pageIdMap = new Map<string, string>();
+        const timestampBase = Date.now();
 
-        set((state) => ({
-            dashboards: [...state.dashboards, duplicate],
-            activeDashboardId: duplicate.id
-        }));
-        saveToStorage(get());
+        const duplicatedPages: DashboardPage[] = originalPages.map((page, pageIdx) => {
+            const nextPageId = `pg-${timestampBase}-${pageIdx}-${Math.random().toString(36).substring(2, 7)}`;
+            pageIdMap.set(page.id, nextPageId);
+
+            const duplicatedWidgets = (page.widgets || []).map((widget, widgetIdx) => {
+                const nextWidgetId = `w-${timestampBase}-${pageIdx}-${widgetIdx}-${Math.random().toString(36).substring(2, 8)}`;
+                return {
+                    ...widget,
+                    id: nextWidgetId
+                };
+            });
+
+            return {
+                ...page,
+                id: nextPageId,
+                widgets: duplicatedWidgets
+            };
+        });
+
+        const duplicatedActivePageId = pageIdMap.get(original.activePageId || '') || duplicatedPages[0]?.id || '';
+        const duplicatedActiveWidgets = duplicatedPages.find((page) => page.id === duplicatedActivePageId)?.widgets || [];
+
+        fetch(`${API_BASE}/dashboards`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({
+                title: `${original.title} (Copy)`,
+                description: original.description,
+                folderId: original.folderId,
+                dataSourceId: original.dataSourceId,
+                dataSourceName: original.dataSourceName,
+                enableCrossFilter: original.enableCrossFilter ?? true,
+                pages: duplicatedPages,
+                widgets: duplicatedActiveWidgets,
+                activePageId: duplicatedActivePageId,
+            })
+        })
+            .then(async (res) => {
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok || !payload?.success || !payload?.data?.id) {
+                    throw new Error(payload?.message || `Failed to duplicate dashboard (${res.status})`);
+                }
+
+                const duplicatedDashboard: BIDashboard = {
+                    ...payload.data,
+                    globalFilters: Array.isArray(original.globalFilters) ? original.globalFilters : [],
+                    calculatedFields: Array.isArray(original.calculatedFields) ? original.calculatedFields : [],
+                    quickMeasures: Array.isArray(original.quickMeasures) ? original.quickMeasures : [],
+                    layout: original.layout || {},
+                    theme: original.theme || {},
+                };
+
+                set((current) => ({
+                    dashboards: [...current.dashboards, duplicatedDashboard],
+                    activeDashboardId: duplicatedDashboard.id
+                }));
+                saveToStorage(get());
+
+                // Persist the remaining dashboard-level settings that are not part of POST /dashboards payload.
+                fetch(`${API_BASE}/dashboards/${payload.data.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({
+                        globalFilters: duplicatedDashboard.globalFilters,
+                        calculatedFields: duplicatedDashboard.calculatedFields,
+                        quickMeasures: duplicatedDashboard.quickMeasures,
+                        layout: duplicatedDashboard.layout,
+                        theme: duplicatedDashboard.theme,
+                    })
+                }).catch((persistErr) => {
+                    console.error('Failed to persist duplicated dashboard settings:', persistErr);
+                });
+            })
+            .catch((err) => {
+                console.error('Failed to duplicate dashboard:', err);
+                alert(err?.message || 'Không thể nhân bản dashboard.');
+            });
     },
 
     addWidget: (dashboardId, widget) => {
@@ -1222,7 +1305,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                         const nextFolders = (folderRes.data || []).map(sanitizeFolder);
                         const nextDashboards = (dashboardRes.data || []).map(sanitizeDashboard);
                         set((state) => {
-                            const mergedDashboards = mergeDashboardsPreferNewestLocal(state.dashboards || [], nextDashboards);
+                            // Once backend sync succeeds, keep only UUID-backed locals to avoid ghost local-only dashboards.
+                            const localDashboards = (state.dashboards || []).filter((dashboard) => isUUID(dashboard.id));
+                            const mergedDashboards = mergeDashboardsPreferNewestLocal(localDashboards, nextDashboards);
                             const activeFromState = state.activeDashboardId;
                             const activeDashboardId = mergedDashboards.some((d) => d.id === activeFromState)
                                 ? activeFromState

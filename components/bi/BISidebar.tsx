@@ -82,12 +82,14 @@ const DraggableDashboard: React.FC<{
     onSave: () => void;
     onStartRename: () => void;
     onCancelRename: () => void;
+    onDuplicate: () => void;
     depth: number;
     onDeleteRequest: (e: React.MouseEvent) => void;
     onShareRequest: (e: React.MouseEvent) => void;
     canEdit: boolean;
     canShare: boolean;
-}> = ({ dashboard, isActive, isEditing, editValue, onSelect, onEdit, onSave, onDeleteRequest, onShareRequest, onStartRename, onCancelRename, depth, canEdit, canShare }) => {
+}> = ({ dashboard, isActive, isEditing, editValue, onSelect, onEdit, onSave, onDeleteRequest, onShareRequest, onStartRename, onCancelRename, onDuplicate, depth, canEdit, canShare }) => {
+    const { t } = useLanguageStore();
     const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
         id: dashboard.id,
         data: { type: 'dashboard', dashboard }
@@ -135,6 +137,15 @@ const DraggableDashboard: React.FC<{
                     {canEdit && (
                         <button onClick={(e) => { e.stopPropagation(); onStartRename(); }} className="text-[10px] hover:text-indigo-400 p-1">
                             <i className="fas fa-edit"></i>
+                        </button>
+                    )}
+                    {canEdit && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+                            className="text-[10px] hover:text-emerald-400 p-1"
+                            title={t('bi.duplicate_dashboard')}
+                        >
+                            <i className="fas fa-copy"></i>
                         </button>
                     )}
                     {canShare && (
@@ -285,7 +296,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
     onSelectDataSource,
 }) => {
     const { t } = useLanguageStore();
-    const { updateDashboard, deleteDashboard, updateFolder, deleteFolder, clearAll, shareFolder, shareDashboard } = useDashboardStore();
+    const { updateDashboard, deleteDashboard, updateFolder, deleteFolder, clearAll, shareFolder, shareDashboard, duplicateDashboard } = useDashboardStore();
 
     const [activeTab, setActiveTab] = useState<SidebarTab>('dashboards');
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -372,6 +383,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
                         onSelect={() => onSelectDashboard(d.id)}
                         onEdit={(val) => setEditValue(val)}
                         onSave={() => { updateDashboard(d.id, { title: editValue }); setEditingDashboardId(null); }}
+                        onDuplicate={() => duplicateDashboard(d.id)}
                         onDeleteRequest={(e) => {
                             setDeleteRequest({
                                 id: d.id,
@@ -495,6 +507,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
                                                 onSelect={() => onSelectDashboard(d.id)}
                                                 onEdit={(val) => setEditValue(val)}
                                                 onSave={() => { updateDashboard(d.id, { title: editValue }); setEditingDashboardId(null); }}
+                                                onDuplicate={() => duplicateDashboard(d.id)}
                                                 onDeleteRequest={(e) => {
                                                     setDeleteRequest({
                                                         id: d.id,
