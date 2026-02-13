@@ -54,7 +54,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const drillDowns = useFilterStore(state => state.drillDowns);
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
-    const drillDownState = drillDowns[widget.id];
+    const drillDownState = useMemo(() => {
+        const runtimeState = drillDowns[widget.id];
+        const persistedState = widget.drillDownState || null;
+        return DrillDownService.resolveStateForWidget(widget, runtimeState || persistedState || undefined);
+    }, [widget, drillDowns[widget.id], widget.drillDownState]);
     const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
     const xField = xFields[0] || '';
 
@@ -139,12 +143,29 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         }, 1);
     }, [drillDownState?.mode, effectiveChartData, xFieldDisplay]);
 
-    const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(96, 30 + hierarchyDepth * 16);
     const hasBottomLegend = widget.showLegend !== false && (!widget.legendPosition || widget.legendPosition === 'bottom');
-    const bottomMarginBase = hierarchyDepth <= 1 ? 10 : 18;
+    const xAxisHeight = hierarchyDepth <= 1 ? 30 : Math.min(72, 16 + hierarchyDepth * 12);
+    const legendItemCount = useMemo(() => {
+        const count = Array.from(new Set([...series, ...lineSeries].filter(Boolean))).length;
+        return Math.max(1, count);
+    }, [series, lineSeries]);
+    const legendRows = hasBottomLegend ? Math.max(1, Math.ceil(legendItemCount / 4)) : 0;
+    const legendHeight = hasBottomLegend ? (legendRows * 18 + 8) : 0;
+    const bottomMarginBase = hierarchyDepth <= 1 ? 10 : 14;
     const bottomMargin = hasBottomLegend
-        ? Math.max(bottomMarginBase + 24, xAxisHeight + 26)
-        : bottomMarginBase;
+        ? Math.max(xAxisHeight + legendHeight + 6, bottomMarginBase + legendHeight)
+        : Math.max(bottomMarginBase, xAxisHeight - 10);
+
+    const hasBlankCategory = useMemo(() => {
+        return effectiveChartData.some((row) => {
+            const raw = row?.[xFieldDisplay];
+            if (raw === null || raw === undefined) return true;
+            const text = String(raw).trim().toLowerCase();
+            return text === '' || text === '(blank)' || text === 'null' || text === 'undefined' || text === 'nan';
+        });
+    }, [effectiveChartData, xFieldDisplay]);
+
+    const xAxisInterval = ((drillDownState?.mode === 'expand' || hasBlankCategory) ? 0 : 'auto') as any;
 
     const yField = series[0] || '';
 
@@ -347,7 +368,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
             onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={10} minHeight={10}>
                     <ComposedChart
                         data={effectiveChartData}
                         layout={isHorizontal ? 'vertical' : 'horizontal'}
@@ -448,7 +469,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                             fontSize={10}
                                             tickLine={false}
                                             axisLine={false}
-                                            interval={(drillDownState?.mode === 'expand' ? 0 : 'auto') as any}
+                                            interval={xAxisInterval}
                                             tick={<HierarchicalAxisTick data={effectiveChartData} fontFamily={widget.fontFamily || 'Outfit'} />}
                                             height={xAxisHeight}
                                             fontFamily={widget.fontFamily || 'Outfit'}
@@ -488,7 +509,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                     align={widget.legendPosition === 'left' ? 'left' : (widget.legendPosition === 'right' ? 'right' : 'center')}
                                     fontSize={widget.legendFontSize ? `${widget.legendFontSize}px` : (widget.fontSize ? `${Math.max(7, widget.fontSize - 3)}px` : '10px')}
                                 />}
-                                wrapperStyle={hasBottomLegend ? { paddingTop: 8 } : undefined}
+                                wrapperStyle={hasBottomLegend ? { paddingTop: legendRows > 1 ? 8 : 4 } : undefined}
                             />
                         )}
 

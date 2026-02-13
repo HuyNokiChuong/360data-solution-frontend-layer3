@@ -3,7 +3,11 @@ import { Field } from './types';
 import { CalculationEngine } from './engine/calculationEngine';
 import { useLanguageStore } from '../../store/languageStore';
 import { AI_MODELS } from '../../constants';
-import { generateCalculatedFieldFormula } from '../../services/ai';
+import {
+    FormulaRecommendation,
+    generateCalculatedFieldFormula,
+    generateCalculatedFieldRecommendations
+} from '../../services/ai';
 
 interface FormulaEditorModalProps {
     isOpen: boolean;
@@ -12,6 +16,7 @@ interface FormulaEditorModalProps {
     initialName?: string;
     initialFormula?: string;
     availableFields: Field[];
+    sampleRows?: Record<string, any>[];
     existingFieldNames?: string[];
     editingFieldName?: string;
 }
@@ -40,6 +45,25 @@ const SUPPORTED_FUNCTIONS: FunctionDoc[] = [
     { name: 'LEN', syntax: 'LEN(text)', description: 'Text length', example: 'LEN([OrderCode])' },
 ];
 
+const normalizeFormulaFieldType = (rawType: any): 'string' | 'number' | 'date' | 'boolean' => {
+    const token = String(rawType || '').toLowerCase().trim();
+    if (token.includes('num') || token.includes('int') || token.includes('float') || token.includes('double') || token.includes('decimal')) return 'number';
+    if (token.includes('date') || token.includes('time')) return 'date';
+    if (token.includes('bool')) return 'boolean';
+    return 'string';
+};
+
+const resolveFormulaTemplateWithBindings = (
+    formulaTemplate: string,
+    bindings: Record<string, string>
+): string => {
+    return String(formulaTemplate || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+        const chosenField = bindings[String(key || '').trim()];
+        if (!chosenField) return '';
+        return `[${chosenField}]`;
+    });
+};
+
 const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
     isOpen,
     onClose,
@@ -47,6 +71,7 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
     initialName = '',
     initialFormula = '',
     availableFields,
+    sampleRows = [],
     existingFieldNames = [],
     editingFieldName = '',
 }) => {
@@ -61,6 +86,11 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
     const [isGeneratingAI, setIsGeneratingAI] = useState(false);
     const [aiError, setAiError] = useState('');
     const [aiExplanation, setAiExplanation] = useState('');
+    const [recommendations, setRecommendations] = useState<FormulaRecommendation[]>([]);
+    const [recommendationBindings, setRecommendationBindings] = useState<Record<string, Record<string, string>>>({});
+    const [isLoadingRecommendations, setIsLoadingRecommendations] = useState(false);
+    const [recommendationError, setRecommendationError] = useState('');
+    const [recommendationInfo, setRecommendationInfo] = useState('');
     const [aiModelId, setAiModelId] = useState(() => {
         if (typeof localStorage === 'undefined') return 'gpt-5.1';
         return localStorage.getItem('preferred_ai_model') || 'gpt-5.1';
@@ -91,6 +121,10 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
         setAiPrompt('');
         setAiError('');
         setAiExplanation('');
+        setRecommendations([]);
+        setRecommendationBindings({});
+        setRecommendationError('');
+        setRecommendationInfo('');
         if (typeof localStorage !== 'undefined') {
             setAiModelId(localStorage.getItem('preferred_ai_model') || 'gpt-5.1');
         }
@@ -155,7 +189,23 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
         [aiModelId, aiModelOptions]
     );
 
-    if (!isOpen) return null;
+    const getFieldOptionsForVariable = (acceptedTypes?: string[]) => {
+        const normalizedAccepted = Array.isArray(acceptedTypes) && acceptedTypes.length > 0
+            ? acceptedTypes.map(normalizeFormulaFieldType)
+            : [];
+
+        if (normalizedAccepted.length === 0) return availableFields;
+
+        const filtered = availableFields.filter((field) =>
+            normalizedAccepted.includes(normalizeFormulaFieldType(field.type))
+        );
+        return filtered.length > 0 ? filtered : availableFields;
+    };
+
+    const getResolvedRecommendationFormula = (recommendation: FormulaRecommendation) => {
+        const bindings = recommendationBindings[recommendation.id] || {};
+        return resolveFormulaTemplateWithBindings(recommendation.formulaTemplate, bindings).trim();
+    };
 
     const insertText = (text: string) => {
         const textarea = textareaRef.current;
@@ -216,6 +266,89 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
             setIsGeneratingAI(false);
         }
     };
+
+    const handleLoadRecommendations = async () => {
+        if (!availableFields.length) {
+            setRecommendationError(isVi ? 'Không có trường dữ liệu để gợi ý.' : 'No available fields to build recommendations.');
+            return;
+        }
+
+        setRecommendationError('');
+        setRecommendationInfo('');
+        setIsLoadingRecommendations(true);
+        try {
+            const result = await generateCalculatedFieldRecommendations({
+                modelId: selectedAiModel?.id,
+                provider: selectedAiModel?.provider as 'Google' | 'OpenAI' | 'Anthropic',
+                availableFields: availableFields.map((f) => ({ name: f.name, type: f.type })),
+                sampleRows: sampleRows.slice(0, 20),
+                contextHint: aiPrompt.trim() || undefined,
+            });
+
+            const nextBindings: Record<string, Record<string, string>> = {};
+            result.recommendations.forEach((recommendation) => {
+                const variableMap: Record<string, string> = {};
+                recommendation.variables.forEach((variable) => {
+                    const candidates = getFieldOptionsForVariable(variable.acceptedTypes);
+                    const hasSuggested = candidates.some((field) => field.name === variable.suggestedField);
+                    variableMap[variable.key] = hasSuggested
+                        ? variable.suggestedField
+                        : (candidates[0]?.name || '');
+                });
+                nextBindings[recommendation.id] = variableMap;
+            });
+
+            setRecommendations(result.recommendations);
+            setRecommendationBindings(nextBindings);
+            setRecommendationInfo(
+                isVi
+                    ? `Gợi ý bởi ${result.provider} • ${result.modelId}`
+                    : `Recommendations by ${result.provider} • ${result.modelId}`
+            );
+        } catch (error: any) {
+            setRecommendationError(error?.message || (isVi ? 'Không thể lấy gợi ý công thức.' : 'Failed to load formula recommendations.'));
+        } finally {
+            setIsLoadingRecommendations(false);
+        }
+    };
+
+    const handleRecommendationBindingChange = (recommendationId: string, variableKey: string, value: string) => {
+        setRecommendationBindings((prev) => ({
+            ...prev,
+            [recommendationId]: {
+                ...(prev[recommendationId] || {}),
+                [variableKey]: value,
+            }
+        }));
+    };
+
+    const handleApplyRecommendation = (recommendation: FormulaRecommendation) => {
+        const resolvedFormula = getResolvedRecommendationFormula(recommendation);
+        if (!resolvedFormula) {
+            setRecommendationError(isVi ? 'Thiếu biến trong công thức. Hãy chọn đủ biến trước khi áp dụng.' : 'Missing variable bindings. Select fields for all variables before applying.');
+            return;
+        }
+
+        setFormula(resolvedFormula);
+        if (!name.trim()) {
+            setName(recommendation.suggestedName);
+        }
+        setRecommendationError('');
+        setAiExplanation(
+            isVi
+                ? `Đã áp dụng: ${recommendation.title}`
+                : `Applied recommendation: ${recommendation.title}`
+        );
+    };
+
+    useEffect(() => {
+        if (!isOpen) return;
+        if (availableFields.length === 0) return;
+        if (recommendations.length > 0 || isLoadingRecommendations) return;
+        handleLoadRecommendations();
+    }, [isOpen, aiModelId, availableFields, recommendations.length, isLoadingRecommendations]);
+
+    if (!isOpen) return null;
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -285,9 +418,85 @@ const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
                                     : (isVi ? 'Generate AI' : 'Generate AI')}
                             </button>
                         </div>
+                        <div className="flex items-center justify-between gap-2">
+                            <button
+                                onClick={handleLoadRecommendations}
+                                disabled={isLoadingRecommendations}
+                                className="px-3 py-1.5 bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[11px] font-bold rounded-lg hover:bg-slate-300 dark:hover:bg-white/15 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {isLoadingRecommendations
+                                    ? (isVi ? 'Đang gợi ý...' : 'Generating ideas...')
+                                    : (isVi ? 'Gợi ý ví dụ' : 'Suggest Examples')}
+                            </button>
+                            <span className="text-[10px] text-slate-500">
+                                {recommendations.length > 0
+                                    ? (isVi
+                                        ? `${recommendations.length} gợi ý có thể chỉnh biến`
+                                        : `${recommendations.length} editable recommendations`)
+                                    : (isVi ? 'Dùng dữ liệu hiện có để gợi ý công thức' : 'Generate from current fields and sample data')}
+                            </span>
+                        </div>
+                        {recommendations.length > 0 && (
+                            <div className="max-h-52 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                                {recommendations.map((recommendation) => (
+                                    <div key={recommendation.id} className="border border-slate-200 dark:border-white/10 rounded-lg p-2.5 bg-white dark:bg-slate-900/80 space-y-2">
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="min-w-0">
+                                                <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">{recommendation.title}</div>
+                                                <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">{recommendation.description}</div>
+                                            </div>
+                                            <button
+                                                onClick={() => handleApplyRecommendation(recommendation)}
+                                                className="shrink-0 px-2.5 py-1 text-[10px] font-bold rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+                                            >
+                                                {isVi ? 'Áp dụng' : 'Apply'}
+                                            </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                            {recommendation.variables.map((variable) => {
+                                                const fieldOptions = getFieldOptionsForVariable(variable.acceptedTypes);
+                                                return (
+                                                    <div key={`${recommendation.id}:${variable.key}`} className="space-y-1">
+                                                        <label className="text-[10px] uppercase font-bold tracking-wide text-slate-500">
+                                                            {variable.label}
+                                                        </label>
+                                                        <select
+                                                            value={recommendationBindings[recommendation.id]?.[variable.key] || ''}
+                                                            onChange={(e) => handleRecommendationBindingChange(recommendation.id, variable.key, e.target.value)}
+                                                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-[11px] text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                                        >
+                                                            {fieldOptions.map((field) => (
+                                                                <option key={`${recommendation.id}:${variable.key}:${field.name}`} value={field.name}>
+                                                                    {field.name}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+
+                                        <div className="text-[10px] font-mono bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded px-2 py-1.5 text-slate-700 dark:text-indigo-200 break-all">
+                                            {getResolvedRecommendationFormula(recommendation)}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         {!hasAnyAiKey && (
                             <div className="text-[11px] text-amber-500">
-                                {isVi ? 'Chưa có API Key. Vào AI Settings để thêm key trước khi generate.' : 'No API key found. Add one in AI Settings before generating.'}
+                                {isVi ? 'Chưa có API Key. Vào AI Settings để dùng AI model online; gợi ý fallback vẫn khả dụng.' : 'No API key found. Add one in AI Settings for online models; fallback suggestions still work.'}
+                            </div>
+                        )}
+                        {recommendationInfo && (
+                            <div className="text-[11px] text-indigo-600 dark:text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-2.5 py-2">
+                                {recommendationInfo}
+                            </div>
+                        )}
+                        {recommendationError && (
+                            <div className="text-[11px] text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-2">
+                                {recommendationError}
                             </div>
                         )}
                         {aiExplanation && (

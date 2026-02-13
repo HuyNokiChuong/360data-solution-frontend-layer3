@@ -251,6 +251,7 @@ export interface RelationshipSuggestion {
 export interface SemanticSelectItem {
   tableId: string;
   column: string;
+  hierarchyPart?: 'year' | 'quarter' | 'half' | 'month' | 'week' | 'day' | 'hour' | 'minute' | 'second';
   aggregation?: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'countDistinct' | 'none' | 'raw';
   alias?: string;
 }
@@ -258,6 +259,7 @@ export interface SemanticSelectItem {
 export interface SemanticFilterItem {
   tableId: string;
   column: string;
+  hierarchyPart?: 'year' | 'quarter' | 'half' | 'month' | 'week' | 'day' | 'hour' | 'minute' | 'second';
   operator:
     | 'equals'
     | 'notEquals'
@@ -285,8 +287,17 @@ export interface SemanticQuerySpec {
   pageId?: string;
   select: SemanticSelectItem[];
   filters?: SemanticFilterItem[];
-  groupBy?: Array<{ tableId: string; column: string }>;
-  orderBy?: Array<{ tableId: string; column: string; dir?: 'ASC' | 'DESC' }>;
+  groupBy?: Array<{
+    tableId: string;
+    column: string;
+    hierarchyPart?: 'year' | 'quarter' | 'half' | 'month' | 'week' | 'day' | 'hour' | 'minute' | 'second';
+  }>;
+  orderBy?: Array<{
+    tableId: string;
+    column: string;
+    hierarchyPart?: 'year' | 'quarter' | 'half' | 'month' | 'week' | 'day' | 'hour' | 'minute' | 'second';
+    dir?: 'ASC' | 'DESC';
+  }>;
   limit?: number;
 }
 

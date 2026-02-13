@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { BIWidget, PivotValue } from '../types';
+import { BIWidget } from '../types';
 import { useDashboardStore } from '../store/dashboardStore';
 
 interface ChartLegendProps {
@@ -10,6 +10,95 @@ interface ChartLegendProps {
     align?: 'left' | 'center' | 'right';
     fontSize?: string;
 }
+
+type MeasureConfig = NonNullable<BIWidget['yAxisConfigs']>[number];
+
+const normalizeToken = (value: string | null | undefined): string => {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[`"]/g, '');
+};
+
+const stripAggregationCall = (value: string): string => {
+    return value.replace(/^(sum|avg|min|max|count|countdistinct|none)\((.+)\)$/i, '$2');
+};
+
+const stripAggregationSuffix = (value: string): string => {
+    return value.replace(/__(sum|avg|min|max|count|countdistinct|none)$/i, '');
+};
+
+const getMatchScore = (candidate: string | null | undefined, target: string | null | undefined): number => {
+    const cNorm = normalizeToken(candidate);
+    const tNorm = normalizeToken(target);
+    if (!cNorm || !tNorm) return 0;
+    if (cNorm === tNorm) return 4;
+
+    const cWithoutCall = stripAggregationCall(cNorm);
+    const tWithoutCall = stripAggregationCall(tNorm);
+    if (cWithoutCall === tWithoutCall) return 3;
+
+    const cWithoutAgg = stripAggregationSuffix(cWithoutCall);
+    const tWithoutAgg = stripAggregationSuffix(tWithoutCall);
+    if (
+        cWithoutAgg === tWithoutAgg ||
+        cWithoutAgg.endsWith(`.${tWithoutAgg}`) ||
+        tWithoutAgg.endsWith(`.${cWithoutAgg}`)
+    ) {
+        return 2;
+    }
+
+    const cTail = cWithoutAgg.split('.').pop();
+    const tTail = tWithoutAgg.split('.').pop();
+    if (cTail && tTail && cTail === tTail) return 1;
+
+    return 0;
+};
+
+const getDefaultMeasureName = (
+    config: MeasureConfig,
+    currentConfigs?: MeasureConfig[],
+    oppositeConfigs?: MeasureConfig[]
+): string => {
+    const sameFieldCount =
+        (currentConfigs?.filter((entry) => entry.field === config.field).length || 0) +
+        (oppositeConfigs?.filter((entry) => entry.field === config.field).length || 0);
+
+    if (sameFieldCount > 1) {
+        return `${(config.aggregation || 'sum').toUpperCase()}(${config.field})`;
+    }
+    return config.field;
+};
+
+const getConfigCandidates = (
+    config: MeasureConfig,
+    currentConfigs?: MeasureConfig[],
+    oppositeConfigs?: MeasureConfig[]
+): string[] => {
+    const defaultName = getDefaultMeasureName(config, currentConfigs, oppositeConfigs);
+    const aggregation = String(config.aggregation || 'sum').toLowerCase();
+    const aggregationCall = `${String(config.aggregation || 'sum').toUpperCase()}(${config.field})`;
+
+    return [
+        config.alias || '',
+        config.field || '',
+        defaultName,
+        `${config.field}__${aggregation}`,
+        aggregationCall
+    ].filter(Boolean);
+};
+
+const configMatchesTarget = (
+    config: MeasureConfig,
+    targetId: string,
+    currentConfigs?: MeasureConfig[],
+    oppositeConfigs?: MeasureConfig[]
+): boolean => {
+    const candidates = getConfigCandidates(config, currentConfigs, oppositeConfigs);
+    return candidates.some((candidate) => getMatchScore(candidate, targetId) >= 2);
+};
+
+const resolveEntryId = (entry: any): string => String(entry?.dataKey ?? entry?.value ?? '');
 
 const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'horizontal', align = 'center', fontSize = '10px' }) => {
     const { updateWidget, activeDashboardId } = useDashboardStore();
@@ -24,86 +113,114 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
         }
     }, [editingId]);
 
+    const resolveDisplayValue = (entry: any): string => {
+        const entryId = resolveEntryId(entry);
+
+        const matchedBarConfig = (widget.yAxisConfigs || []).find((config) =>
+            configMatchesTarget(config, entryId, widget.yAxisConfigs, widget.lineAxisConfigs)
+        );
+        if (matchedBarConfig?.alias?.trim()) return matchedBarConfig.alias.trim();
+
+        const matchedLineConfig = (widget.lineAxisConfigs || []).find((config) =>
+            configMatchesTarget(config, entryId, widget.lineAxisConfigs, widget.yAxisConfigs)
+        );
+        if (matchedLineConfig?.alias?.trim()) return matchedLineConfig.alias.trim();
+
+        if (widget.legendAliases?.[entryId]) return widget.legendAliases[entryId];
+
+        const rawValue = String(entry?.value ?? entryId);
+        if (widget.legendAliases?.[rawValue]) return widget.legendAliases[rawValue];
+
+        return rawValue;
+    };
+
     if (!payload || payload.length === 0) return null;
 
     const handleDoubleClick = (item: any) => {
-        // item.value is the current display name
-        // item.dataKey is the data key
-        setEditingId(item.dataKey || item.value);
-        setEditValue(item.value);
+        const entryId = resolveEntryId(item);
+        setEditingId(entryId);
+        setEditValue(resolveDisplayValue(item));
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if ((e.nativeEvent as any)?.isComposing) return;
+
         if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
             saveEdit();
         } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
             setEditingId(null);
         }
     };
 
     const saveEdit = () => {
-        if (!activeDashboardId || !editingId) return;
-
-        const isLine = widget.lineAxisConfigs?.some(c => {
-            const defaultName = widget.lineAxisConfigs!.filter(f => f.field === c.field).length + (widget.yAxisConfigs?.filter(f => f.field === c.field).length || 0) > 1
-                ? `${c.aggregation.toUpperCase()}(${c.field})`
-                : c.field;
-            return c.alias === editingId || defaultName === editingId || c.field === editingId;
-        });
-
-        const isBar = widget.yAxisConfigs?.some(c => {
-            const defaultName = widget.yAxisConfigs!.filter(f => f.field === c.field).length + (widget.lineAxisConfigs?.filter(f => f.field === c.field).length || 0) > 1
-                ? `${c.aggregation.toUpperCase()}(${c.field})`
-                : c.field;
-            return c.alias === editingId || defaultName === editingId || c.field === editingId;
-        });
-
-        // Case 2: Multi-measures
-        if (isBar || isLine) {
-            if (isBar) {
-                const newConfigs = widget.yAxisConfigs?.map(c => {
-                    const count = widget.yAxisConfigs!.filter(f => f.field === c.field).length + (widget.lineAxisConfigs?.filter(f => f.field === c.field).length || 0);
-                    const defaultName = count > 1 ? `${c.aggregation.toUpperCase()}(${c.field})` : c.field;
-                    if (c.alias === editingId || defaultName === editingId || c.field === editingId) {
-                        return { ...c, alias: editValue };
-                    }
-                    return c;
-                });
-                updateWidget(activeDashboardId, widget.id, { yAxisConfigs: newConfigs });
-            } else {
-                const newConfigs = widget.lineAxisConfigs?.map(c => {
-                    const count = (widget.yAxisConfigs?.filter(f => f.field === c.field).length || 0) + widget.lineAxisConfigs!.filter(f => f.field === c.field).length;
-                    const defaultName = count > 1 ? `${c.aggregation.toUpperCase()}(${c.field})` : c.field;
-                    if (c.alias === editingId || defaultName === editingId || c.field === editingId) {
-                        return { ...c, alias: editValue };
-                    }
-                    return c;
-                });
-                updateWidget(activeDashboardId, widget.id, { lineAxisConfigs: newConfigs });
-            }
+        if (!activeDashboardId || !editingId) {
+            setEditingId(null);
+            return;
         }
-        // Fallback for single measure with no config object
-        else if ((widget.yAxis?.[0] || widget.measures?.[0]) === editingId) {
-            const field = widget.yAxis?.[0] || widget.measures?.[0];
+
+        const nextAlias = editValue.trim();
+        if (!nextAlias) {
+            setEditingId(null);
+            return;
+        }
+
+        const updatedBarConfigs = widget.yAxisConfigs?.map((config) => {
+            if (configMatchesTarget(config, editingId, widget.yAxisConfigs, widget.lineAxisConfigs)) {
+                return { ...config, alias: nextAlias };
+            }
+            return config;
+        });
+        const updatedLineConfigs = widget.lineAxisConfigs?.map((config) => {
+            if (configMatchesTarget(config, editingId, widget.lineAxisConfigs, widget.yAxisConfigs)) {
+                return { ...config, alias: nextAlias };
+            }
+            return config;
+        });
+
+        const hasBarConfigMatch = (updatedBarConfigs || []).some((config, index) => {
+            return config.alias !== widget.yAxisConfigs?.[index]?.alias;
+        });
+        const hasLineConfigMatch = (updatedLineConfigs || []).some((config, index) => {
+            return config.alias !== widget.lineAxisConfigs?.[index]?.alias;
+        });
+
+        if (hasBarConfigMatch || hasLineConfigMatch) {
+            updateWidget(activeDashboardId, widget.id, {
+                ...(hasBarConfigMatch ? { yAxisConfigs: updatedBarConfigs } : {}),
+                ...(hasLineConfigMatch ? { lineAxisConfigs: updatedLineConfigs } : {})
+            });
+            setEditingId(null);
+            return;
+        }
+
+        const singleMeasureField = widget.yAxis?.[0] || widget.measures?.[0];
+        if (singleMeasureField && getMatchScore(singleMeasureField, editingId) >= 2) {
             updateWidget(activeDashboardId, widget.id, {
                 yAxisConfigs: [{
-                    field: field!,
+                    field: singleMeasureField,
                     aggregation: widget.aggregation || 'sum',
-                    alias: editValue
+                    alias: nextAlias
                 }]
             });
-        }
-        // Case 1: Categorical Legend (or single dimension like Pie)
-        else {
-            const originalValue = Object.entries(widget.legendAliases || {}).find(([k, v]) => v === editingId)?.[0] || editingId;
-            updateWidget(activeDashboardId, widget.id, {
-                legendAliases: {
-                    ...(widget.legendAliases || {}),
-                    [originalValue]: editValue
-                }
-            });
+            setEditingId(null);
+            return;
         }
 
+        const originalLegendValue =
+            Object.entries(widget.legendAliases || {}).find(([key, value]) =>
+                getMatchScore(value, editingId) >= 2 || getMatchScore(key, editingId) >= 2
+            )?.[0] || editingId;
+
+        updateWidget(activeDashboardId, widget.id, {
+            legendAliases: {
+                ...(widget.legendAliases || {}),
+                [originalLegendValue]: nextAlias
+            }
+        });
         setEditingId(null);
     };
 
@@ -123,7 +240,9 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
     return (
         <div style={containerStyle} className="recharts-default-legend">
             {payload.map((entry, index) => {
-                const isEditing = editingId === (entry.dataKey || entry.value);
+                const entryId = resolveEntryId(entry);
+                const displayValue = resolveDisplayValue(entry);
+                const isEditing = editingId === entryId;
 
                 return (
                     <div
@@ -144,6 +263,7 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
                                 onChange={(e) => setEditValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 onBlur={saveEdit}
+                                onClick={(e) => e.stopPropagation()}
                                 className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-indigo-500 rounded px-1 py-0.5 outline-none w-24 h-5"
                                 style={{ fontSize }}
                             />
@@ -151,9 +271,9 @@ const ChartLegend: React.FC<ChartLegendProps> = ({ payload, widget, layout = 'ho
                             <span
                                 className="text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]"
                                 style={{ fontSize }}
-                                title={entry.value}
+                                title={displayValue}
                             >
-                                {entry.value}
+                                {displayValue}
                             </span>
                         )}
                     </div>

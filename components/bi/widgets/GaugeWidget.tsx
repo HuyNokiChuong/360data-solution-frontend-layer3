@@ -159,7 +159,7 @@ const GaugeWidget: React.FC<GaugeWidgetProps> = ({
                 <EmptyChartState type="gauge" message="Configure metric field" onClickDataTab={onClickDataTab} />
             ) : (
                 <div className="flex flex-col items-center justify-center h-full">
-                    <ResponsiveContainer width="100%" height="70%">
+                    <ResponsiveContainer width="100%" height="70%" minWidth={10} minHeight={10}>
                         <PieChart>
                             <Pie
                                 data={gaugeData}

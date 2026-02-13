@@ -1,6 +1,5 @@
 
 import { useDataStore } from '../store/dataStore';
-import { fetchTableData } from '../../../services/bigquery';
 import { Connection } from '../../../types';
 
 export interface SyncOptions {
@@ -21,12 +20,19 @@ export class DataAssetService {
         connection: Connection,
         options: SyncOptions = {}
     ): Promise<void> {
-        const { appendTableData, clearTableData, setTableLoadingState, getDataSource, updateDataSource, addLog } = useDataStore.getState();
+        const { clearTableData, setTableLoadingState, getDataSource, updateDataSource, addLog } = useDataStore.getState();
         const ds = getDataSource(dsId);
+        const { signal } = options;
+
+        const throwIfAborted = () => {
+            if (!signal?.aborted) return;
+            throw new DOMException('Sync aborted', 'AbortError');
+        };
 
         if (!ds || ds.type !== 'bigquery') return;
         if (this.activeSyncs.has(dsId)) return;
 
+        throwIfAborted();
         this.activeSyncs.add(dsId);
 
         const tableName = ds.tableName || ds.name;
@@ -55,6 +61,8 @@ export class DataAssetService {
         );
 
         try {
+            throwIfAborted();
+
             // ONLY clear if it's NOT a recovery (fresh start)
             if (!isRecovery) {
                 clearTableData(dsId);
@@ -76,19 +84,24 @@ export class DataAssetService {
                 token,
                 connection.projectId || '',
                 ds.datasetName || '',
-                ds.tableName || ''
+                ds.tableName || '',
+                signal
             );
+            throwIfAborted();
 
             // 2. Fetch Row Count (using aggregation query for speed)
             const { runQuery } = await import('../../../services/bigquery');
             let totalRows = 0;
             try {
                 const countQuery = `SELECT count(*) as count FROM \`${connection.projectId}.${ds.datasetName}.${ds.tableName}\``;
-                const countResult = await runQuery(token, connection.projectId || '', countQuery);
+                const countResult = await runQuery(token, connection.projectId || '', countQuery, signal);
                 if (countResult && countResult.length > 0) {
                     totalRows = countResult[0].count;
                 }
-            } catch (e) {
+            } catch (e: any) {
+                if (e?.name === 'AbortError' || signal?.aborted) {
+                    throw e;
+                }
                 console.warn("Could not fetch row count", e);
             }
 
@@ -132,6 +145,16 @@ export class DataAssetService {
             const { commitDataToStorage } = useDataStore.getState();
             commitDataToStorage(dsId).catch(err => console.error('Background save failed', err));
         } catch (error: any) {
+            if (error?.name === 'AbortError' || signal?.aborted) {
+                await logEntry(`Tiến trình đồng bộ bảng ${tableName} đã bị hủy`, 'info');
+                updateDataSource(dsId, {
+                    syncStatus: 'ready',
+                    syncError: null,
+                    isLoadingPartial: false
+                });
+                throw error?.name === 'AbortError' ? error : new DOMException('Sync aborted', 'AbortError');
+            }
+
             console.error(`Sync failed for ${ds.name}:`, error);
 
             await logEntry(`Lỗi kết nối bảng ${tableName}: ${error.message}`, 'error');

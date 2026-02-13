@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { Filter, CrossFilterState, DrillDownState } from '../types';
+import { DrillDownService } from '../engine/DrillDownService';
 
 interface FilterState {
     // Active cross-filters
@@ -49,7 +50,12 @@ export const useFilterStore = create<FilterState>((set, get) => ({
     setDrillDown: (widgetId, drillDownState) => set((state) => {
         const newDrillDowns = { ...state.drillDowns };
         if (drillDownState) {
-            newDrillDowns[widgetId] = drillDownState;
+            const sanitized = DrillDownService.sanitizeState(drillDownState);
+            if (sanitized) {
+                newDrillDowns[widgetId] = sanitized;
+            } else {
+                delete newDrillDowns[widgetId];
+            }
         } else {
             delete newDrillDowns[widgetId];
         }

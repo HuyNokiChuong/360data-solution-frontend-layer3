@@ -21,7 +21,7 @@ import DateRangeWidget from '../widgets/DateRangeWidget';
 import SearchWidget from '../widgets/SearchWidget';
 import PivotTableWidget from '../widgets/PivotTableWidget';
 import { DrillDownService } from '../engine/DrillDownService';
-import { Filter } from '../types';
+import { Filter, FilterOperator } from '../types';
 
 const GridLayout = WidthProvider(RGL);
 
@@ -65,7 +65,7 @@ const BICanvas: React.FC<BICanvasProps> = ({
         alignWidgets,
         clearSelection
     } = useDashboardStore();
-    const { addCrossFilter, drillDowns } = useFilterStore();
+    const { addCrossFilter, drillDowns, setDrillDown } = useFilterStore();
     const [isDragging, setIsDragging] = React.useState(false);
     const [sortConfig, setSortConfig] = useState<{ field: 'name' | 'rowCount', direction: 'asc' | 'desc' }>({
         field: 'name',
@@ -136,21 +136,52 @@ const BICanvas: React.FC<BICanvasProps> = ({
     const handleWidgetDataClick = (widget: BIWidget, data: any) => {
         if (widget.enableCrossFilter === false || readOnly) return;
 
+        const isNullLikeValue = (value: any) => {
+            if (value === null || value === undefined) return true;
+            if (typeof value !== 'string') return false;
+            const normalized = value.trim().toLowerCase();
+            return normalized === '' || normalized === '(blank)' || normalized === 'null' || normalized === 'undefined' || normalized === 'nan';
+        };
+
         // Get current fields from drill-down if applicable
-        const drillDownState = drillDowns[widget.id];
+        const drillDownState = DrillDownService.resolveStateForWidget(
+            widget,
+            drillDowns[widget.id] || widget.drillDownState || undefined
+        );
         const currentFields = DrillDownService.getCurrentFields(widget, drillDownState);
         const currentField = currentFields[currentFields.length - 1];
 
         if (!currentField) return;
 
-        const filterValue = data[currentField] || data.name;
-        if (!filterValue) return;
+        const hasCurrentField = Object.prototype.hasOwnProperty.call(data || {}, currentField);
+        const currentFieldValue = hasCurrentField ? data[currentField] : undefined;
+        const axisFallback = data?._rawAxisValue ?? data?._formattedAxis ?? data?._combinedAxis ?? data?.name;
+        const filterValue = currentFieldValue !== undefined ? currentFieldValue : axisFallback;
+        if (filterValue === undefined) return;
+
+        // Prioritize drill-down flow for hierarchical charts.
+        if (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) {
+            const currentState = drillDownState || DrillDownService.initDrillDown(widget);
+            if (currentState && currentState.currentLevel < currentState.hierarchy.length - 1) {
+                const drillResult = DrillDownService.drillDown(currentState, filterValue, data);
+                if (drillResult) {
+                    setDrillDown(widget.id, drillResult.newState);
+                    updateWidget(dashboard.id, widget.id, { drillDownState: drillResult.newState });
+                    return;
+                }
+            }
+        }
 
         const currentFilters = useFilterStore.getState().crossFilters;
         const existingFilter = currentFilters.find(cf => cf.sourceWidgetId === widget.id);
+        const currentOperator: FilterOperator = isNullLikeValue(filterValue) ? 'isNull' : 'equals';
 
         // If clicking the same value again (at the same level), remove the filter
-        if (existingFilter && existingFilter.filters.some(f => f.field === currentField && f.value === filterValue)) {
+        if (existingFilter && existingFilter.filters.some(f =>
+            f.field === currentField
+            && (f.operator || 'equals') === currentOperator
+            && (currentOperator === 'isNull' || f.value === filterValue)
+        )) {
             useFilterStore.getState().removeCrossFilter(widget.id);
             return;
         }
@@ -161,11 +192,15 @@ const BICanvas: React.FC<BICanvasProps> = ({
         // 1. Add breadcrumbs (parent levels)
         if (drillDownState && drillDownState.breadcrumbs) {
             drillDownState.breadcrumbs.forEach(bc => {
+                const breadcrumbField = drillDownState.hierarchy[bc.level];
+                if (!breadcrumbField) return;
+                const breadcrumbValue = bc.rawValue ?? bc.value;
+                const breadcrumbOperator: FilterOperator = isNullLikeValue(breadcrumbValue) ? 'isNull' : 'equals';
                 filters.push({
                     id: `cf-${widget.id}-p-${bc.level}-${Date.now()}`,
-                    field: drillDownState.hierarchy[bc.level],
-                    operator: 'equals' as const,
-                    value: bc.value,
+                    field: breadcrumbField,
+                    operator: breadcrumbOperator,
+                    value: breadcrumbValue,
                     enabled: true
                 });
             });
@@ -175,17 +210,16 @@ const BICanvas: React.FC<BICanvasProps> = ({
         filters.push({
             id: `cf-${widget.id}-c-${Date.now()}`,
             field: currentField,
-            operator: 'equals' as const,
+            operator: currentOperator,
             value: filterValue,
             enabled: true
         });
 
-        // Apply to all other widgets across all pages
-        const allDashboardWidgets = dashboard.pages
-            ? dashboard.pages.flatMap(p => p.widgets)
-            : (dashboard.widgets || []);
+        // Apply only within current active page.
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const currentPageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
 
-        const affectedWidgetIds = allDashboardWidgets
+        const affectedWidgetIds = currentPageWidgets
             .filter(w => w.id !== widget.id && w.enableCrossFilter !== false)
             .map(w => w.id);
 
@@ -335,7 +369,7 @@ const BICanvas: React.FC<BICanvasProps> = ({
 
                     <h2 className="text-4xl font-black text-slate-900 dark:text-white mb-4 uppercase tracking-tighter italic">Start Building</h2>
                     <p className="text-slate-600 dark:text-slate-400 text-sm mb-10 leading-relaxed font-medium">
-                        Your strategic workspace is ready. Select a <b>data table</b> from the left sidebar to unlock real-time analysis, then drag fields to create your first visualization.
+                        Your strategic workspace is ready. Select a <b>data table</b> from the right sidebar to unlock real-time analysis, then drag fields to create your first visualization.
                     </p>
 
                     <div className="flex flex-col gap-4 items-center">
@@ -349,8 +383,8 @@ const BICanvas: React.FC<BICanvasProps> = ({
 
                         {!dashboard.dataSourceId ? (
                             <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-800/50 rounded-full border border-slate-200 dark:border-white/5 animate-pulse">
-                                <i className="fas fa-arrow-left text-indigo-500 dark:text-indigo-400 text-xs"></i>
-                                <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">Select data source in sidebar</span>
+                                <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">Select data source in right sidebar</span>
+                                <i className="fas fa-arrow-right text-indigo-500 dark:text-indigo-400 text-xs"></i>
                             </div>
                         ) : (
                             <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 dark:bg-indigo-500/10 rounded-full border border-indigo-100 dark:border-indigo-500/20">

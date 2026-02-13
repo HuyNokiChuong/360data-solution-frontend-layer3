@@ -52,7 +52,11 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
     const drillDowns = useFilterStore(state => state.drillDowns);
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
-    const drillDownState = drillDowns[widget.id];
+    const drillDownState = useMemo(() => {
+        const runtimeState = drillDowns[widget.id];
+        const persistedState = widget.drillDownState || null;
+        return DrillDownService.resolveStateForWidget(widget, runtimeState || persistedState || undefined);
+    }, [widget, drillDowns[widget.id], widget.drillDownState]);
     const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
     const categoryFieldRaw = xFields[0] || '';
     const valueField = widget.values?.[0] || widget.yAxis?.[0] || widget.measures?.[0] || '';
@@ -214,7 +218,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
             onExportExcel={handleExportExcel}
         >
             <div className="w-full h-full" onContextMenu={handleContextMenu}>
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={10} minHeight={10}>
                     <PieChart>
                         <Pie
                             data={chartData}

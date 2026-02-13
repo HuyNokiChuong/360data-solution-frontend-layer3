@@ -8,9 +8,18 @@ import React from 'react';
  */
 export const HierarchicalAxisTick = (props: any) => {
     const { x, y, payload, index, data, fontFamily = 'Outfit' } = props;
-    if (!payload.value || !data) return null;
+    if (!payload || !data) return null;
 
-    const lines = String(payload.value).split('\n');
+    const normalizeLabel = (value: any) => {
+        if (value === null || value === undefined) return '(Blank)';
+        const text = String(value).trim();
+        if (!text) return '(Blank)';
+        const lowered = text.toLowerCase();
+        if (lowered === 'null' || lowered === 'undefined' || lowered === 'nan') return '(Blank)';
+        return text;
+    };
+
+    const lines = normalizeLabel(payload.value).split('\n');
     const isExpandMode = lines.length > 1;
     const dataLength = Array.isArray(data) ? data.length : 0;
 
@@ -26,8 +35,8 @@ export const HierarchicalAxisTick = (props: any) => {
     // Helper to get labels for a specific index
     const getLabelsAt = (idx: number) => {
         if (idx < 0 || idx >= data.length) return [];
-        const val = data[idx]._combinedAxis || data[idx]._formattedAxis || '';
-        return String(val).split('\n');
+        const val = data[idx]._combinedAxis ?? data[idx]._formattedAxis ?? '(Blank)';
+        return normalizeLabel(val).split('\n');
     };
 
     // Find the range of the same label at a given level

@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChatMessage as ChatMessageType, SyncedTable } from '../../types';
+import { ChatMessage as ChatMessageType, SyncedTable, Connection } from '../../types';
 import { ChatMessage } from './ChatMessage';
 import { AI_MODELS } from '../../constants';
 import { useLanguageStore } from '../../store/languageStore';
@@ -9,10 +9,12 @@ import { useLanguageStore } from '../../store/languageStore';
 interface ChatInterfaceProps {
     messages: ChatMessageType[];
     isLoading: boolean;
+    queuedCount?: number;
     onSend: (text: string, model?: any) => void;
     onUpdateChartSQL?: (messageId: string, chartIndex: number, newSQL: string) => void;
     onUpdateMainSQL?: (messageId: string, newSQL: string) => void;
     availableTables: SyncedTable[];
+    availableConnections: Connection[];
     selectedTableIds: string[];
     onToggleTable: (id: string) => void;
     onSelectAllTables: () => void;
@@ -26,10 +28,12 @@ interface ChatInterfaceProps {
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     messages,
     isLoading,
+    queuedCount = 0,
     onSend,
     onUpdateChartSQL,
     onUpdateMainSQL,
     availableTables,
+    availableConnections,
     selectedTableIds,
     onToggleTable,
     onSelectAllTables,
@@ -52,6 +56,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const endRef = useRef<HTMLDivElement>(null);
     const modelSelectorRef = useRef<HTMLDivElement>(null);
 
+    const connectionNameById = useMemo(() => {
+        const map = new Map<string, string>();
+        availableConnections.forEach((connection) => {
+            map.set(connection.id, connection.name);
+        });
+        return map;
+    }, [availableConnections]);
+
     const selectedModel = AI_MODELS.find(m => m.id === selectedModelId) || AI_MODELS[0];
     const filteredTables = useMemo(() => {
         const keyword = assetSearch.trim().toLowerCase();
@@ -59,9 +71,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
         return availableTables.filter((table) =>
             table.tableName.toLowerCase().includes(keyword) ||
-            table.datasetName.toLowerCase().includes(keyword)
+            table.datasetName.toLowerCase().includes(keyword) ||
+            String(connectionNameById.get(table.connectionId) || '').toLowerCase().includes(keyword)
         );
-    }, [availableTables, assetSearch]);
+    }, [availableTables, assetSearch, connectionNameById]);
 
     useEffect(() => {
         if (activeTab === 'analysis') {
@@ -90,7 +103,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!input.trim() || isLoading) return;
+        if (!input.trim()) return;
         onSend(input, selectedModel);
         setInput('');
     };
@@ -378,6 +391,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                                 <div className="text-[9px] font-bold text-slate-600 truncate">
                                                     {table.datasetName}
                                                 </div>
+                                                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-500 truncate mt-1">
+                                                    {isVi ? 'Pipeline: ' : 'Pipeline: '}
+                                                    {connectionNameById.get(table.connectionId) || 'Unknown'}
+                                                </div>
                                             </div>
 
                                             <div className="mt-4 pt-4 border-t border-slate-100 dark:border-white/5 flex items-center justify-between">
@@ -422,16 +439,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 type="text"
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
-                                placeholder={isLoading ? (isVi ? 'AI đang xử lý yêu cầu của bạn...' : 'AI is processing your request...') : (isVi ? `Hỏi ${selectedModel.name} để tạo báo cáo...` : `Ask ${selectedModel.name} for a report...`)}
-                                disabled={isLoading}
+                                placeholder={isLoading
+                                    ? (isVi
+                                        ? `AI đang xử lý, câu mới sẽ vào hàng đợi (${queuedCount}).`
+                                        : `AI is processing. New questions will be queued (${queuedCount}).`)
+                                    : (isVi ? `Hỏi ${selectedModel.name} để tạo báo cáo...` : `Ask ${selectedModel.name} for a report...`)}
                                 className="w-full bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-white/10 rounded-2xl pl-6 pr-20 py-5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all shadow-xl placeholder-slate-400 dark:placeholder-slate-600 font-medium"
                             />
                             <button
                                 type="submit"
-                                disabled={!input.trim() || isLoading || selectedTableIds.length === 0}
+                                disabled={!input.trim() || selectedTableIds.length === 0}
                                 className="absolute right-3 top-2.5 bg-indigo-600 w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-600/30 hover:bg-indigo-500 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
                             >
-                                {isLoading ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-paper-plane"></i>}
+                                <i className="fas fa-paper-plane"></i>
                             </button>
                         </form>
                         <div className="text-center mt-3">
@@ -446,6 +466,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                     <i className={selectedModel.brandIcon}></i>
                                     {isVi ? `${selectedModel.name} tối ưu` : `${selectedModel.name} Optimized`}
                                 </span>
+                                {queuedCount > 0 && (
+                                    <>
+                                        •
+                                        <span className="bg-amber-500/15 text-amber-500 px-2 py-0.5 rounded border border-amber-500/30">
+                                            {isVi ? `Hàng đợi: ${queuedCount}` : `Queue: ${queuedCount}`}
+                                        </span>
+                                    </>
+                                )}
                             </span>
                         </div>
                     </div>

@@ -69,11 +69,10 @@ const SearchWidget: React.FC<SearchWidgetProps> = ({
             enabled: true
         };
 
-        const allWidgets = dashboard.pages && dashboard.pages.length > 0
-            ? dashboard.pages.flatMap(p => p.widgets)
-            : dashboard.widgets;
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const pageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
 
-        const affectedIds = allWidgets
+        const affectedIds = pageWidgets
             .filter(w => w.id !== widget.id)
             .map(w => w.id);
 

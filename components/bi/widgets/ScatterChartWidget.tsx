@@ -47,9 +47,15 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
     const drillDowns = useFilterStore(state => state.drillDowns);
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
+    const updateWidget = useDashboardStore(state => state.updateWidget);
 
-    const drillDownState = drillDowns[widget.id];
+    const drillDownState = useMemo(() => {
+        const runtimeState = drillDowns[widget.id];
+        const persistedState = widget.drillDownState || null;
+        return DrillDownService.resolveStateForWidget(widget, runtimeState || persistedState || undefined);
+    }, [widget, drillDowns[widget.id], widget.drillDownState]);
     const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
+    const drillField = xFields[xFields.length - 1] || xFields[0] || '';
     const xField = (drillDownState?.mode === 'expand' && xFields.length > 1)
         ? '_combinedAxis'
         : (xFields[0] || '_autoCategory');
@@ -130,12 +136,16 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
 
         // 1. Check for drill-down
         if (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) {
-            const currentState = drillDownState || DrillDownService.initDrillDown(widget);
+            const currentState = DrillDownService.resolveStateForWidget(widget, drillDownState)
+                || DrillDownService.initDrillDown(widget);
             if (currentState) {
-                const clickedValue = payload[xField];
-                const result = DrillDownService.drillDown(currentState, clickedValue);
+                const clickedValue = payload[drillField] ?? payload._rawAxisValue ?? payload[xField];
+                const result = DrillDownService.drillDown(currentState, clickedValue, payload);
                 if (result) {
                     setDrillDown(widget.id, result.newState);
+                    if (activeDashboard?.id) {
+                        updateWidget(activeDashboard.id, widget.id, { drillDownState: result.newState });
+                    }
                     return;
                 }
             }
@@ -158,8 +168,8 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     const currentSelection = useMemo(() => {
         const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
         if (!cf) return undefined;
-        return cf.filters.find(f => f.field === xField)?.value;
-    }, [allDashboardFilters, widget.id, xField]);
+        return cf.filters.find(f => f.field === drillField || f.field === xField)?.value;
+    }, [allDashboardFilters, widget.id, xField, drillField]);
 
     const exportFields = useMemo(() => {
         const fieldOrder = [rawXAxisField, ...(widget.yAxis || [])].filter(Boolean);
@@ -192,7 +202,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                 {chartData.length === 0 && !error ? (
                     <EmptyChartState type="scatter" message={widget.yAxis?.[0] ? "No data available" : "Select Y-Axis field"} onClickDataTab={onClickDataTab} onClick={onClick} />
                 ) : (
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={10} minHeight={10}>
                         <ScatterChart
                             margin={{ top: 20, right: 30, left: 10, bottom: 10 }}
                             onClick={handleClick}

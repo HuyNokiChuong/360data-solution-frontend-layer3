@@ -16,12 +16,11 @@ const GlobalFilterBar: React.FC<GlobalFilterBarProps> = ({ dashboard }) => {
     const [openFilterId, setOpenFilterId] = useState<string | null>(null);
 
     const globalFilters = useMemo(() => {
-        const allWidgets = dashboard.pages && dashboard.pages.length > 0
-            ? dashboard.pages.flatMap(p => p.widgets)
-            : dashboard.widgets;
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const pageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
 
-        return allWidgets.filter(w => w.isGlobalFilter && ['slicer', 'date-range', 'search'].includes(w.type));
-    }, [dashboard.pages, dashboard.widgets]);
+        return pageWidgets.filter(w => w.isGlobalFilter && ['slicer', 'date-range', 'search'].includes(w.type));
+    }, [dashboard.pages, dashboard.widgets, dashboard.activePageId]);
 
     if (globalFilters.length === 0) return null;
 

@@ -622,7 +622,13 @@ export const fetchTableData = async (
 };
 
 
-export const fetchTableSchema = async (token: string, projectId: string, datasetId: string, tableId: string): Promise<{ name: string, type: string }[]> => {
+export const fetchTableSchema = async (
+    token: string,
+    projectId: string,
+    datasetId: string,
+    tableId: string,
+    signal?: AbortSignal
+): Promise<{ name: string, type: string }[]> => {
     try {
         const query = `SELECT column_name, data_type FROM \`${projectId}.${datasetId}.INFORMATION_SCHEMA.COLUMNS\` WHERE table_name = '${tableId}' ORDER BY ordinal_position`;
         const result = await fetchWithTokenRefresh(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
@@ -631,6 +637,7 @@ export const fetchTableSchema = async (token: string, projectId: string, dataset
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query, useLegacySql: false }),
+            signal
         }, token);
         const response = result.response;
 
@@ -641,6 +648,9 @@ export const fetchTableSchema = async (token: string, projectId: string, dataset
             type: row.f[1].v
         }));
     } catch (error) {
+        if ((error as any)?.name === 'AbortError') {
+            throw error;
+        }
         // console.error('Failed to fetch schema:', error);
         return [];
     }
@@ -688,7 +698,7 @@ export const fetchAggregatedData = async (
                 case 'month': return `EXTRACT(MONTH FROM ${colRef})`;
                 case 'day': return `EXTRACT(DAY FROM ${colRef})`;
                 case 'quarter': return `EXTRACT(QUARTER FROM ${colRef})`;
-                case 'half': return `IF(EXTRACT(MONTH FROM ${colRef}) <= 6, 1, 2)`;
+                case 'half': return `CASE WHEN ${colRef} IS NULL THEN NULL WHEN EXTRACT(MONTH FROM ${colRef}) <= 6 THEN 1 ELSE 2 END`;
                 case 'hour': return `EXTRACT(HOUR FROM ${colRef})`;
                 case 'minute': return `EXTRACT(MINUTE FROM ${colRef})`;
                 case 'second': return `EXTRACT(SECOND FROM ${colRef})`;
@@ -750,8 +760,12 @@ export const fetchAggregatedData = async (
             const notNullSuffix = isRangeOrComp ? ` AND ${field} IS NOT NULL` : '';
 
             switch (operator) {
-                case 'equals': return `${field} = ${formatVal(val)}`;
-                case 'notEquals': return `${field} != ${formatVal(val)}`;
+                case 'equals':
+                    if (val === null || val === undefined || val === '(Blank)') return `${field} IS NULL`;
+                    return `${field} = ${formatVal(val)}`;
+                case 'notEquals':
+                    if (val === null || val === undefined || val === '(Blank)') return `${field} IS NOT NULL`;
+                    return `${field} != ${formatVal(val)}`;
                 case 'contains': return `${field} LIKE '%${val}%'`;
                 case 'notContains': return `${field} NOT LIKE '%${val}%'`;
                 case 'startsWith': return `${field} LIKE '${val}%'`;

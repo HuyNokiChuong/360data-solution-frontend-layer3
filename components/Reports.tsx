@@ -12,6 +12,23 @@ import {
 import { useLanguageStore } from '../store/languageStore';
 import { generateUUID } from '../utils/id';
 
+interface PendingQuestion {
+  id: string;
+  text: string;
+  model?: any;
+  sessionId: string;
+}
+
+interface ResolvedSourceScope {
+  targetConnection: Connection | null;
+  scopedTables: SyncedTable[];
+}
+
+interface ScopedTableResolution {
+  canonical: string | null;
+  ambiguous: boolean;
+}
+
 interface ReportsProps {
   tables: SyncedTable[];
   connections: Connection[];
@@ -42,6 +59,7 @@ const Reports: React.FC<ReportsProps> = ({
   const domain = currentUser.email.split('@')[1] || 'default';
   const [isAuthRequired, setIsAuthRequired] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
 
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>(() => {
     const saved = localStorage.getItem(`report_selection_${domain}`);
@@ -110,21 +128,227 @@ const Reports: React.FC<ReportsProps> = ({
     checkAuth();
   }, [googleToken, connections]);
 
-  // Handle Send Message
-  const handleSend = async (text: string, model?: any, isRetry = false, providedToken?: string) => {
-    if (!text.trim() || (loading && !isRetry)) return;
+  const resolveSourceScopeForPrompt = (prompt: string): ResolvedSourceScope => {
+    const selectedTables = tables.filter((table) => selectedTableIds.includes(table.id));
+    if (selectedTables.length === 0) {
+      return {
+        targetConnection: connections.find((connection) => connection.type === 'BigQuery' && !!connection.projectId) || null,
+        scopedTables: []
+      };
+    }
 
-    const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
+    const byConnection = new Map<string, SyncedTable[]>();
+    selectedTables.forEach((table) => {
+      if (!table.connectionId) return;
+      const list = byConnection.get(table.connectionId) || [];
+      list.push(table);
+      byConnection.set(table.connectionId, list);
+    });
+
+    if (byConnection.size === 0) {
+      return {
+        targetConnection: connections.find((connection) => connection.type === 'BigQuery' && !!connection.projectId) || null,
+        scopedTables: selectedTables
+      };
+    }
+
+    if (byConnection.size === 1) {
+      const [connectionId, scopedTables] = Array.from(byConnection.entries())[0];
+      return {
+        targetConnection: connections.find((connection) => connection.id === connectionId) || null,
+        scopedTables
+      };
+    }
+
+    const normalizedPrompt = String(prompt || '').toLowerCase();
+    let bestConnectionId = Array.from(byConnection.keys())[0];
+    let bestScore = -1;
+    let bestFirstSelectedIndex = Number.MAX_SAFE_INTEGER;
+
+    byConnection.forEach((connectionTables, connectionId) => {
+      const conn = connections.find((connection) => connection.id === connectionId);
+      const connectionName = String(conn?.name || '').toLowerCase();
+      let score = 0;
+
+      if (connectionName && normalizedPrompt.includes(connectionName)) score += 5;
+
+      connectionTables.forEach((table) => {
+        const tableName = String(table.tableName || '').toLowerCase();
+        const datasetName = String(table.datasetName || '').toLowerCase();
+        if (tableName && normalizedPrompt.includes(tableName)) score += 9;
+        if (datasetName && normalizedPrompt.includes(datasetName)) score += 4;
+      });
+
+      const firstSelectedIndex = Math.min(
+        ...connectionTables.map((table) => selectedTableIds.indexOf(table.id)).filter((index) => index >= 0)
+      );
+
+      const shouldReplace =
+        score > bestScore
+        || (score === bestScore && firstSelectedIndex < bestFirstSelectedIndex);
+
+      if (shouldReplace) {
+        bestScore = score;
+        bestConnectionId = connectionId;
+        bestFirstSelectedIndex = Number.isFinite(firstSelectedIndex) ? firstSelectedIndex : Number.MAX_SAFE_INTEGER;
+      }
+    });
+
+    const scopedTables = byConnection.get(bestConnectionId) || selectedTables;
+    return {
+      targetConnection: connections.find((connection) => connection.id === bestConnectionId) || null,
+      scopedTables
+    };
+  };
+
+  const normalizeSqlIdentifier = (value: string): string => {
+    return String(value || '')
+      .trim()
+      .replace(/^`|`$/g, '')
+      .replace(/^"|"$/g, '')
+      .replace(/^\[|\]$/g, '')
+      .trim()
+      .toLowerCase();
+  };
+
+  const collectCteNames = (sql: string): Set<string> => {
+    const names = new Set<string>();
+    const cteRegex = /(?:\bWITH\b|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(/gi;
+    let match: RegExpExecArray | null;
+    while ((match = cteRegex.exec(sql)) !== null) {
+      names.add(normalizeSqlIdentifier(match[1]));
+    }
+    return names;
+  };
+
+  const buildBigQueryScopeLookup = (
+    scopeTables: SyncedTable[],
+    fallbackConnection: Connection | null
+  ): Map<string, Set<string>> => {
+    const lookup = new Map<string, Set<string>>();
+
+    const add = (key: string, canonical: string) => {
+      const normalized = normalizeSqlIdentifier(key);
+      if (!normalized) return;
+      const set = lookup.get(normalized) || new Set<string>();
+      set.add(canonical);
+      lookup.set(normalized, set);
+    };
+
+    scopeTables.forEach((table) => {
+      const tableConnection = connections.find((connection) => connection.id === table.connectionId) || fallbackConnection;
+      const projectId = String(tableConnection?.projectId || '').trim();
+      const datasetName = String(table.datasetName || '').trim();
+      const tableName = String(table.tableName || '').trim();
+      if (!projectId || !datasetName || !tableName) return;
+
+      const canonical = `${projectId}.${datasetName}.${tableName}`;
+      add(canonical, canonical);
+      add(`${datasetName}.${tableName}`, canonical);
+      add(tableName, canonical);
+    });
+
+    return lookup;
+  };
+
+  const resolveScopedTable = (
+    identifier: string,
+    lookup: Map<string, Set<string>>
+  ): ScopedTableResolution => {
+    const normalized = normalizeSqlIdentifier(identifier);
+    const candidates = lookup.get(normalized);
+    if (!candidates || candidates.size === 0) {
+      return { canonical: null, ambiguous: false };
+    }
+    if (candidates.size > 1) {
+      return { canonical: null, ambiguous: true };
+    }
+    return { canonical: Array.from(candidates)[0], ambiguous: false };
+  };
+
+  const enforceBigQueryRawScope = (
+    rawSql: string,
+    scopeTables: SyncedTable[],
+    fallbackConnection: Connection | null
+  ): string => {
+    const sql = String(rawSql || '');
+    if (!sql.trim() || scopeTables.length === 0) return sql;
+
+    const lookup = buildBigQueryScopeLookup(scopeTables, fallbackConnection);
+    if (lookup.size === 0) return sql;
+
+    const cteNames = collectCteNames(sql);
+    const blockedRefs = new Set<string>();
+    const ambiguousRefs = new Set<string>();
+
+    const tableRefRegex = /\b(FROM|JOIN|UPDATE|INTO|MERGE\s+INTO|DELETE\s+FROM)\s+(`[^`]+`|[A-Za-z_][A-Za-z0-9_.-]*)/gi;
+    const rewrittenSql = sql.replace(tableRefRegex, (full, keyword, identifier) => {
+      const originalRef = String(identifier || '').trim();
+      if (!originalRef || originalRef.startsWith('(')) return full;
+
+      const normalizedRef = normalizeSqlIdentifier(originalRef);
+      if (!normalizedRef || normalizedRef === 'unnest' || normalizedRef.startsWith('unnest(')) {
+        return full;
+      }
+      if (cteNames.has(normalizedRef)) return full;
+
+      const resolved = resolveScopedTable(originalRef, lookup);
+      if (resolved.ambiguous) {
+        ambiguousRefs.add(originalRef);
+        return full;
+      }
+      if (!resolved.canonical) {
+        blockedRefs.add(originalRef);
+        return full;
+      }
+
+      return `${keyword} \`${resolved.canonical}\``;
+    });
+
+    if (ambiguousRefs.size > 0) {
+      throw new Error(
+        `Ambiguous table reference: ${Array.from(ambiguousRefs).join(', ')}. Please use dataset.table or project.dataset.table.`
+      );
+    }
+    if (blockedRefs.size > 0) {
+      throw new Error(
+        `Query blocked: only selected raw tables are allowed. Invalid reference(s): ${Array.from(blockedRefs).join(', ')}.`
+      );
+    }
+
+    return rewrittenSql;
+  };
+
+  // Handle Send Message
+  const handleSend = async (text: string, model?: any, isRetry = false, providedToken?: string, forcedSessionId?: string) => {
+    if (!text.trim()) return;
+    if (loading && !isRetry) {
+      setPendingQuestions((prev) => [
+        ...prev,
+        {
+          id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text,
+          model,
+          sessionId: activeSessionId
+        }
+      ]);
+      return;
+    }
+
+    if (!isRetry) {
+      setLoading(true);
+    }
+
+    const { targetConnection, scopedTables } = resolveSourceScopeForPrompt(text);
+    const bqConn = (targetConnection && targetConnection.type === 'BigQuery' && targetConnection.projectId)
+      ? targetConnection
+      : (connections.find(c => c.type === 'BigQuery' && c.projectId) || null);
     const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
     const clientId = getGoogleClientId();
 
-    // Stop previous job if any
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
     abortControllerRef.current = new AbortController();
 
-    let targetSessionId = activeSessionId;
+    let targetSessionId = forcedSessionId || activeSessionId;
 
     // 1. Add User Message (only if not a retry)
     if (!isRetry) {
@@ -164,19 +388,18 @@ const Reports: React.FC<ReportsProps> = ({
             : s
         );
       });
-      setLoading(true);
     }
 
     try {
-      setLoading(true);
-      const activeTables = tables.filter(t => selectedTableIds.includes(t.id));
+      const activeTables = scopedTables.length > 0 ? scopedTables : tables.filter(t => selectedTableIds.includes(t.id));
       const tableNames = (activeTables || []).map(t => t.tableName);
 
       let schemaStr = "";
       if (activeTables && activeTables.length > 0) {
         schemaStr = activeTables.map(t => {
           const cols = (t.schema || []).map(s => `${s.name}(${s.type})`).join(',');
-          const prefix = bqConn?.projectId ? `${bqConn.projectId}.` : "";
+          const tableConn = connections.find((connection) => connection.id === t.connectionId);
+          const prefix = tableConn?.projectId ? `${tableConn.projectId}.` : "";
           return `${prefix}${t.datasetName}.${t.tableName}: [${cols}]`;
         }).join(' | ');
       }
@@ -269,9 +492,18 @@ const Reports: React.FC<ReportsProps> = ({
           return executed.rows || [];
         };
       } else if (bqConn && token) {
+        const scopedBigQueryTables = activeTables.filter((table) => {
+          const tableConnection = connections.find((connection) => connection.id === table.connectionId);
+          return tableConnection?.type === 'BigQuery' && !!tableConnection.projectId;
+        });
         options.semanticEngine = 'bigquery';
         options.token = token;
         options.projectId = bqConn.projectId;
+        options.executeSql = async (sql: string) => {
+          const { runQuery } = await import('../services/bigquery');
+          const scopedSql = enforceBigQueryRawScope(sql, scopedBigQueryTables, bqConn);
+          return runQuery(token, bqConn.projectId!, scopedSql, abortControllerRef.current?.signal);
+        };
       }
 
       // 3. Call AI Service
@@ -286,7 +518,7 @@ const Reports: React.FC<ReportsProps> = ({
         console.warn("Detected expired/invalid token. Attempting auto-reauth...");
         const newToken = await getGoogleToken(clientId);
         setGoogleToken(newToken);
-        return await handleSend(text, model, true, newToken);
+        return await handleSend(text, model, true, newToken, targetSessionId);
       }
 
       // 4. Add AI Response
@@ -320,7 +552,7 @@ const Reports: React.FC<ReportsProps> = ({
         try {
           const newToken = await getGoogleToken(clientId);
           setGoogleToken(newToken);
-          return await handleSend(text, model, true, newToken);
+          return await handleSend(text, model, true, newToken, targetSessionId);
         } catch (authErr) {
           console.error("Manual re-auth failed", authErr);
         }
@@ -347,6 +579,15 @@ const Reports: React.FC<ReportsProps> = ({
       }
     }
   };
+
+  useEffect(() => {
+    if (loading) return;
+    if (pendingQuestions.length === 0) return;
+
+    const [next, ...rest] = pendingQuestions;
+    setPendingQuestions(rest);
+    void handleSend(next.text, next.model, false, undefined, next.sessionId);
+  }, [loading, pendingQuestions]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -624,10 +865,12 @@ const Reports: React.FC<ReportsProps> = ({
         <ChatInterface
           messages={activeSession ? activeSession.messages : []}
           isLoading={loading}
+          queuedCount={pendingQuestions.length}
           onSend={handleSend}
           onUpdateChartSQL={handleUpdateChartSQL}
           onUpdateMainSQL={handleUpdateMainSQL}
           availableTables={tables}
+          availableConnections={connections}
           selectedTableIds={selectedTableIds}
           onToggleTable={(id) => {
             setSelectedTableIds(prev =>

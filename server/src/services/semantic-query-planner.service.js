@@ -37,6 +37,68 @@ const quoteColumnRef = (engine, alias, column) => {
     return `${alias}.${quotePostgresIdent(column)}`;
 };
 
+const normalizeHierarchyPart = (value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (['year', 'quarter', 'half', 'month', 'week', 'day', 'hour', 'minute', 'second'].includes(normalized)) {
+        return normalized;
+    }
+    return '';
+};
+
+const applyHierarchyPart = (engine, alias, column, hierarchyPart) => {
+    const baseRef = quoteColumnRef(engine, alias, column);
+    const part = normalizeHierarchyPart(hierarchyPart);
+    if (!part) return baseRef;
+
+    if (engine === BIGQUERY_ENGINE) {
+        switch (part) {
+            case 'year':
+                return `EXTRACT(YEAR FROM ${baseRef})`;
+            case 'quarter':
+                return `EXTRACT(QUARTER FROM ${baseRef})`;
+            case 'half':
+                return `CASE WHEN ${baseRef} IS NULL THEN NULL WHEN EXTRACT(MONTH FROM ${baseRef}) <= 6 THEN 1 ELSE 2 END`;
+            case 'month':
+                return `EXTRACT(MONTH FROM ${baseRef})`;
+            case 'week':
+                return `EXTRACT(ISOWEEK FROM ${baseRef})`;
+            case 'day':
+                return `EXTRACT(DAY FROM ${baseRef})`;
+            case 'hour':
+                return `EXTRACT(HOUR FROM ${baseRef})`;
+            case 'minute':
+                return `EXTRACT(MINUTE FROM ${baseRef})`;
+            case 'second':
+                return `EXTRACT(SECOND FROM ${baseRef})`;
+            default:
+                return baseRef;
+        }
+    }
+
+    switch (part) {
+        case 'year':
+            return `EXTRACT(YEAR FROM ${baseRef})`;
+        case 'quarter':
+            return `EXTRACT(QUARTER FROM ${baseRef})`;
+        case 'half':
+            return `CASE WHEN ${baseRef} IS NULL THEN NULL WHEN EXTRACT(MONTH FROM ${baseRef}) <= 6 THEN 1 ELSE 2 END`;
+        case 'month':
+            return `EXTRACT(MONTH FROM ${baseRef})`;
+        case 'week':
+            return `EXTRACT(WEEK FROM ${baseRef})`;
+        case 'day':
+            return `EXTRACT(DAY FROM ${baseRef})`;
+        case 'hour':
+            return `EXTRACT(HOUR FROM ${baseRef})`;
+        case 'minute':
+            return `EXTRACT(MINUTE FROM ${baseRef})`;
+        case 'second':
+            return `EXTRACT(SECOND FROM ${baseRef})`;
+        default:
+            return baseRef;
+    }
+};
+
 const sanitizeAlias = (value) => String(value || '')
     .replace(/[^a-zA-Z0-9_]/g, '_')
     .replace(/^_+|_+$/g, '')
@@ -258,14 +320,18 @@ const bfsPath = (adj, startId, targetId) => {
     return path.reverse();
 };
 
-const collectJoinEdges = (adj, rootId, targetIds) => {
+const collectJoinEdges = (adj, rootId, targetIds, tableById = null) => {
     const selected = new Map();
 
     targetIds.forEach((targetId) => {
         if (targetId === rootId) return;
         const path = bfsPath(adj, rootId, targetId);
         if (!path) {
-            const err = new Error(`No valid relationship path from root table to target table (${targetId})`);
+            const targetMeta = tableById ? tableById.get(targetId) : null;
+            const targetLabel = targetMeta
+                ? `${targetMeta.datasetName || 'dataset'}.${targetMeta.tableName || targetId}`
+                : targetId;
+            const err = new Error(`No valid relationship path from root table to target table (${targetLabel})`);
             err.code = 'NO_RELATIONSHIP_PATH';
             throw err;
         }
@@ -277,18 +343,12 @@ const collectJoinEdges = (adj, rootId, targetIds) => {
     return Array.from(selected.values());
 };
 
-const getFieldTableIds = (request) => {
-    const ids = new Set();
-    const collect = (arr, key = 'tableId') => {
-        (arr || []).forEach((item) => {
-            if (item && item[key]) ids.add(item[key]);
-        });
-    };
-    collect(request.select);
-    collect(request.groupBy);
-    collect(request.orderBy);
-    collect(request.filters);
-    return Array.from(ids);
+const collectTableIds = (items) => {
+    const ids = [];
+    (items || []).forEach((item) => {
+        if (item && item.tableId) ids.push(item.tableId);
+    });
+    return ids;
 };
 
 const combineLogicalClauses = (parts) => {
@@ -299,6 +359,13 @@ const combineLogicalClauses = (parts) => {
         expr = `(${expr} ${logical} (${parts[i].sql}))`;
     }
     return expr;
+};
+
+const isNullLikeFilterValue = (value) => {
+    if (value === null || value === undefined) return true;
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === '' || normalized === '(blank)' || normalized === 'null' || normalized === 'undefined' || normalized === 'nan';
 };
 
 const buildPostgresFilterClause = (aliasByTableId, filters, params) => {
@@ -313,28 +380,37 @@ const buildPostgresFilterClause = (aliasByTableId, filters, params) => {
         const alias = aliasByTableId.get(filter.tableId);
         if (!alias || !filter.column) return;
 
-        const colRef = `${alias}.${quotePostgresIdent(filter.column)}`;
+        const colRef = applyHierarchyPart(POSTGRES_ENGINE, alias, filter.column, filter.hierarchyPart);
+        const textRef = `CAST(${colRef} AS TEXT)`;
         const operator = String(filter.operator || 'equals');
         const value = filter.value;
 
         switch (operator) {
             case 'equals':
-                clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
+                }
                 break;
             case 'notEquals':
-                clauses.push({ logical: filter.logical, sql: `${colRef} != ${pushParam(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} != ${pushParam(value)}` });
+                }
                 break;
             case 'contains':
-                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`%${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} ILIKE ${pushParam(`%${value}%`)}` });
                 break;
             case 'notContains':
-                clauses.push({ logical: filter.logical, sql: `${colRef} NOT ILIKE ${pushParam(`%${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} NOT ILIKE ${pushParam(`%${value}%`)}` });
                 break;
             case 'startsWith':
-                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} ILIKE ${pushParam(`${value}%`)}` });
                 break;
             case 'endsWith':
-                clauses.push({ logical: filter.logical, sql: `${colRef} ILIKE ${pushParam(`%${value}`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} ILIKE ${pushParam(`%${value}`)}` });
                 break;
             case 'greaterThan':
                 clauses.push({ logical: filter.logical, sql: `${colRef} > ${pushParam(value)}` });
@@ -370,7 +446,11 @@ const buildPostgresFilterClause = (aliasByTableId, filters, params) => {
                 clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
                 break;
             default:
-                clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} = ${pushParam(value)}` });
+                }
                 break;
         }
     });
@@ -394,28 +474,37 @@ const buildBigQueryFilterClause = (aliasByTableId, filters) => {
         const alias = aliasByTableId.get(filter.tableId);
         if (!alias || !filter.column) return;
 
-        const colRef = `${alias}.${quoteBigQueryIdent(filter.column)}`;
+        const colRef = applyHierarchyPart(BIGQUERY_ENGINE, alias, filter.column, filter.hierarchyPart);
+        const textRef = `CAST(${colRef} AS STRING)`;
         const operator = String(filter.operator || 'equals');
         const value = filter.value;
 
         switch (operator) {
             case 'equals':
-                clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
+                }
                 break;
             case 'notEquals':
-                clauses.push({ logical: filter.logical, sql: `${colRef} != ${sanitizeBigQueryValue(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} != ${sanitizeBigQueryValue(value)}` });
+                }
                 break;
             case 'contains':
-                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
                 break;
             case 'notContains':
-                clauses.push({ logical: filter.logical, sql: `${colRef} NOT LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} NOT LIKE ${sanitizeBigQueryValue(`%${value}%`)}` });
                 break;
             case 'startsWith':
-                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`${value}%`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} LIKE ${sanitizeBigQueryValue(`${value}%`)}` });
                 break;
             case 'endsWith':
-                clauses.push({ logical: filter.logical, sql: `${colRef} LIKE ${sanitizeBigQueryValue(`%${value}`)}` });
+                clauses.push({ logical: filter.logical, sql: `${textRef} LIKE ${sanitizeBigQueryValue(`%${value}`)}` });
                 break;
             case 'greaterThan':
                 clauses.push({ logical: filter.logical, sql: `${colRef} > ${sanitizeBigQueryValue(value)}` });
@@ -451,7 +540,11 @@ const buildBigQueryFilterClause = (aliasByTableId, filters) => {
                 clauses.push({ logical: filter.logical, sql: `${colRef} IS NOT NULL` });
                 break;
             default:
-                clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
+                if (isNullLikeFilterValue(value)) {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} IS NULL` });
+                } else {
+                    clauses.push({ logical: filter.logical, sql: `${colRef} = ${sanitizeBigQueryValue(value)}` });
+                }
                 break;
         }
     });
@@ -526,9 +619,26 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
     const payload = request || {};
     const catalog = await loadModelCatalog(workspaceId, payload.dataModelId);
 
+    const select = Array.isArray(payload.select) ? payload.select : [];
+    const groupByInput = Array.isArray(payload.groupBy) ? payload.groupBy : [];
+    const orderByInput = Array.isArray(payload.orderBy) ? payload.orderBy : [];
+    const filters = Array.isArray(payload.filters) ? [...payload.filters] : [];
+    const explicitTableIds = Array.isArray(payload.tableIds) ? payload.tableIds : [];
+
+    const requiredTableIds = new Set([
+        ...explicitTableIds,
+        ...collectTableIds(select),
+        ...collectTableIds(groupByInput),
+        ...collectTableIds(orderByInput),
+    ]);
+    const optionalFilterTableIds = new Set(collectTableIds(filters));
+    if (requiredTableIds.size === 0) {
+        optionalFilterTableIds.forEach((tableId) => requiredTableIds.add(tableId));
+    }
+
     const requestTableIds = new Set([
-        ...(Array.isArray(payload.tableIds) ? payload.tableIds : []),
-        ...getFieldTableIds(payload),
+        ...requiredTableIds,
+        ...optionalFilterTableIds,
     ]);
 
     if (requestTableIds.size === 0) {
@@ -548,6 +658,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
     }
 
     const selectedTableMap = new Map(selectedTables.map((table) => [table.id, table]));
+    const catalogTableMap = new Map(catalog.tables.map((table) => [table.id, table]));
 
     const nonExecutable = selectedTables.find((table) => table.isExecutable === false || !table.runtimeRef);
     if (nonExecutable) {
@@ -567,13 +678,50 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
 
     const engine = Array.from(engines)[0];
     const adjacency = buildAdjacency(catalog.relationships);
-    const rootTable = selectedTables[0];
+    const rootCandidateIds = [
+        ...collectTableIds(select),
+        ...collectTableIds(groupByInput),
+        ...collectTableIds(orderByInput),
+        ...explicitTableIds,
+    ];
+    const rootTable = rootCandidateIds
+        .map((tableId) => resolveTableByInput(catalog.tables, tableId))
+        .find(Boolean) || selectedTables[0];
 
-    const joinRelationships = collectJoinEdges(
-        adjacency,
-        rootTable.id,
-        selectedTables.map((table) => table.id)
-    );
+    const toCanonicalTableIds = (ids) => {
+        const canonical = [];
+        ids.forEach((tableId) => {
+            const tableRef = resolveTableByInput(catalog.tables, tableId);
+            if (tableRef) canonical.push(tableRef.id);
+        });
+        return Array.from(new Set(canonical));
+    };
+
+    const requiredCanonicalIds = toCanonicalTableIds(Array.from(requiredTableIds));
+    const requiredCanonicalSet = new Set(requiredCanonicalIds);
+    const optionalFilterCanonicalIds = toCanonicalTableIds(Array.from(optionalFilterTableIds));
+    const skippedFilterTableIds = new Set();
+
+    const joinRelationshipMap = new Map();
+    collectJoinEdges(adjacency, rootTable.id, requiredCanonicalIds, catalogTableMap).forEach((rel) => {
+        joinRelationshipMap.set(rel.id, rel);
+    });
+
+    optionalFilterCanonicalIds.forEach((targetId) => {
+        if (targetId === rootTable.id) return;
+        if (requiredCanonicalSet.has(targetId)) return;
+
+        const path = bfsPath(adjacency, rootTable.id, targetId);
+        if (!path) {
+            skippedFilterTableIds.add(targetId);
+            return;
+        }
+        path.forEach((step) => {
+            joinRelationshipMap.set(step.relationship.id, step.relationship);
+        });
+    });
+
+    const joinRelationships = Array.from(joinRelationshipMap.values());
 
     const aliasByTableId = new Map();
     aliasByTableId.set(rootTable.id, 't1');
@@ -613,11 +761,6 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
             `INNER JOIN ${toTable.runtimeRef} ${toAlias} ON ${quoteColumnRef(engine, fromAlias, joinFromColumn)} = ${quoteColumnRef(engine, toAlias, joinToColumn)}`
         );
     }
-
-    const select = Array.isArray(payload.select) ? payload.select : [];
-    const groupByInput = Array.isArray(payload.groupBy) ? payload.groupBy : [];
-    const orderByInput = Array.isArray(payload.orderBy) ? payload.orderBy : [];
-    const filters = Array.isArray(payload.filters) ? [...payload.filters] : [];
 
     const shareContext = await loadDashboardShareRlsContext({
         workspaceId,
@@ -670,6 +813,15 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
         });
     }
 
+    const normalizedFilters = filters
+        .map((item) => {
+            const tableRef = resolveTableByInput(catalog.tables, item?.tableId);
+            if (!tableRef) return null;
+            return { ...item, tableId: tableRef.id };
+        })
+        .filter(Boolean)
+        .filter((item) => !skippedFilterTableIds.has(item.tableId));
+
     const selectParts = [];
     const groupByParts = [];
     const defaultGroupByParts = [];
@@ -690,19 +842,20 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
         const agg = normalizeAgg(item.aggregation);
         const isStar = item.column === '*';
         const baseExpr = isStar ? `${alias}.*` : quoteColumnRef(engine, alias, item.column);
+        const hierarchyExpr = isStar ? baseExpr : applyHierarchyPart(engine, alias, item.column, item.hierarchyPart);
 
-        let expr = baseExpr;
+        let expr = hierarchyExpr;
         if (agg !== 'none' && agg !== 'raw') {
             hasAggregation = true;
-            if (agg === 'countdistinct') expr = `COUNT(DISTINCT ${baseExpr})`;
-            else expr = `${agg.toUpperCase()}(${baseExpr})`;
+            if (agg === 'countdistinct') expr = `COUNT(DISTINCT ${hierarchyExpr})`;
+            else expr = `${agg.toUpperCase()}(${hierarchyExpr})`;
         }
 
         const aliasName = sanitizeAlias(item.alias || `${tableRef.tableName}_${item.column}_${agg}_${idx}`);
         selectParts.push(`${expr} AS ${engine === BIGQUERY_ENGINE ? quoteBigQueryIdent(aliasName) : quotePostgresIdent(aliasName)}`);
 
         if (agg === 'none' || agg === 'raw') {
-            if (!isStar) defaultGroupByParts.push(baseExpr);
+            if (!isStar) defaultGroupByParts.push(hierarchyExpr);
         }
     });
 
@@ -712,7 +865,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
             if (!tableRef) return;
             const alias = aliasByTableId.get(tableRef.id);
             if (!alias || !item.column) return;
-            groupByParts.push(quoteColumnRef(engine, alias, item.column));
+            groupByParts.push(applyHierarchyPart(engine, alias, item.column, item.hierarchyPart));
         });
     } else if (hasAggregation) {
         const unique = new Set(defaultGroupByParts);
@@ -724,12 +877,12 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
         if (!tableRef) return;
         const alias = aliasByTableId.get(tableRef.id);
         if (!alias || !item.column) return;
-        orderByParts.push(`${quoteColumnRef(engine, alias, item.column)} ${normalizeDir(item.dir)}`);
+        orderByParts.push(`${applyHierarchyPart(engine, alias, item.column, item.hierarchyPart)} ${normalizeDir(item.dir)}`);
     });
 
     const whereClauses = engine === BIGQUERY_ENGINE
-        ? buildBigQueryFilterClause(aliasByTableId, filters)
-        : buildPostgresFilterClause(aliasByTableId, filters, params);
+        ? buildBigQueryFilterClause(aliasByTableId, normalizedFilters)
+        : buildPostgresFilterClause(aliasByTableId, normalizedFilters, params);
 
     const limitRaw = Number(payload.limit);
     const limit = Number.isFinite(limitRaw)

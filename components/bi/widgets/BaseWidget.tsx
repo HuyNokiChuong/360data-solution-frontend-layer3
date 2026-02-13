@@ -64,7 +64,11 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
     };
 
     const setDrillDown = useFilterStore(state => state.setDrillDown);
-    const drillDownState = useFilterStore(state => state.drillDowns[widget.id]);
+    const rawDrillDownState = useFilterStore(state => state.drillDowns[widget.id]);
+    const drillDownState = React.useMemo(
+        () => DrillDownService.resolveStateForWidget(widget, rawDrillDownState || widget.drillDownState || undefined),
+        [widget, rawDrillDownState, widget.drillDownState]
+    );
 
     // Determine hierarchy
     const hierarchy = (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0)
@@ -80,6 +84,9 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
         if (drillDownState) {
             const newState = DrillDownService.drillUp(drillDownState);
             setDrillDown(widget.id, newState);
+            if (activeDashboardId) {
+                updateWidget(activeDashboardId, widget.id, { drillDownState: newState });
+            }
         }
     };
 
@@ -88,7 +95,12 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
         const currentState = drillDownState || DrillDownService.initDrillDown(widget);
         if (currentState) {
             const newState = DrillDownService.drillToNextLevel(currentState);
-            if (newState) setDrillDown(widget.id, newState);
+            if (newState) {
+                setDrillDown(widget.id, newState);
+                if (activeDashboardId) {
+                    updateWidget(activeDashboardId, widget.id, { drillDownState: newState });
+                }
+            }
         }
     };
 
@@ -97,7 +109,12 @@ const BaseWidget: React.FC<BaseWidgetProps> = ({
         const currentState = drillDownState || DrillDownService.initDrillDown(widget);
         if (currentState) {
             const newState = DrillDownService.expandNextLevel(currentState);
-            if (newState) setDrillDown(widget.id, newState);
+            if (newState) {
+                setDrillDown(widget.id, newState);
+                if (activeDashboardId) {
+                    updateWidget(activeDashboardId, widget.id, { drillDownState: newState });
+                }
+            }
         }
     };
 

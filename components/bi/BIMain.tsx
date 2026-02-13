@@ -34,6 +34,25 @@ import {
     closestCenter,
 } from '@dnd-kit/core';
 
+let abortRejectionGuardInstalled = false;
+const isAbortLikeRejection = (reason: any): boolean => {
+    const name = reason?.name;
+    const message = String(reason?.message || '').toLowerCase();
+    return name === 'AbortError'
+        || message.includes('signal is aborted without reason')
+        || message.includes('the operation was aborted')
+        || message.includes('user aborted a request');
+};
+
+if (typeof window !== 'undefined' && !abortRejectionGuardInstalled) {
+    abortRejectionGuardInstalled = true;
+    window.addEventListener('unhandledrejection', (event) => {
+        if (isAbortLikeRejection(event.reason)) {
+            event.preventDefault();
+        }
+    });
+}
+
 interface BIMainProps {
     tables: SyncedTable[];
     connections: Connection[];
@@ -317,6 +336,10 @@ const BIMain: React.FC<BIMainProps> = ({
                     await DataAssetService.syncTable(id, validToken, connection);
                     console.log(`✅ Manual sync completed for: ${ds.name}`);
                 } catch (e: any) {
+                    if (e?.name === 'AbortError') {
+                        console.log(`⏹️ Manual sync stopped for: ${ds?.name || id}`);
+                        return;
+                    }
                     console.error("Manual sync failed", e);
                     if (e.message === 'UNAUTHORIZED' && connection.authType === 'GoogleMail') {
                         setIsAuthRequired(true);
@@ -465,15 +488,14 @@ const BIMain: React.FC<BIMainProps> = ({
     // Proactively check token validity once on mount or when googleToken changes
     useEffect(() => {
         const checkAuth = async () => {
-            if (!bqConn) {
-                setIsAuthRequired(false);
-                return;
-            }
-
-            const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
-            const clientId = getGoogleClientId();
-
             try {
+                if (!bqConn) {
+                    setIsAuthRequired(false);
+                    return;
+                }
+
+                const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
+                const clientId = getGoogleClientId();
                 const tokenToTest = await getTokenForConnection(bqConn, clientId);
                 if (tokenToTest) {
                     // Only update global token if it's NOT a Service Account to avoid infinite loops
@@ -495,7 +517,10 @@ const BIMain: React.FC<BIMainProps> = ({
                 setIsAuthRequired(bqConn.authType === 'GoogleMail');
             }
         };
-        checkAuth();
+        checkAuth().catch((e: any) => {
+            if (e?.name === 'AbortError') return;
+            setIsAuthRequired(!!bqConn && bqConn.authType === 'GoogleMail');
+        });
     }, [googleToken, connections, bqConn]);
 
     // Canvas UI State
@@ -964,6 +989,15 @@ const BIMain: React.FC<BIMainProps> = ({
                     }
                 }
 
+                if (updates.drillDownHierarchy !== undefined) {
+                    const prevHierarchy = Array.isArray(activeWidget.drillDownHierarchy) ? activeWidget.drillDownHierarchy : [];
+                    const nextHierarchy = Array.isArray(updates.drillDownHierarchy) ? updates.drillDownHierarchy : [];
+                    if (JSON.stringify(prevHierarchy) !== JSON.stringify(nextHierarchy)) {
+                        updates.drillDownState = null;
+                        useFilterStore.getState().setDrillDown(activeWidget.id, null);
+                    }
+                }
+
                 if (Object.keys(updates).length > 0) {
                     updateWidget(activeDashboard!.id, activeWidget.id, updates);
                 }
@@ -1256,7 +1290,10 @@ const BIMain: React.FC<BIMainProps> = ({
             );
         };
 
-        loadTablesIntoBI();
+        loadTablesIntoBI().catch((error: any) => {
+            if (error?.name === 'AbortError') return;
+            console.error('Failed to load BI tables:', error);
+        });
     }, [tables, connections, initialGoogleToken, metadataReloadTrigger, dataSources]);
 
     const activeDashboard = dashboards.find(d => d.id === activeDashboardId);
@@ -1439,6 +1476,7 @@ const BIMain: React.FC<BIMainProps> = ({
 
                             while (attempt < MAX_RETRIES && !success && !signal.aborted) {
                                 attempt++;
+                                let abortHandler: (() => void) | null = null;
                                 try {
                                     const { getTokenForConnection, getGoogleClientId } = await import('../../services/googleAuth');
                                     const clientId = getGoogleClientId();
@@ -1458,7 +1496,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                     tableAbortControllers.current.set(dsId, tableController);
 
                                     // If main queue aborted, abort table sync too
-                                    const abortHandler = () => tableController.abort();
+                                    abortHandler = () => tableController.abort();
                                     signal.addEventListener('abort', abortHandler);
 
                                     console.log(`🚀 Starting sync for: ${ds.name} (Attempt ${attempt}/${MAX_RETRIES})`);
@@ -1469,7 +1507,6 @@ const BIMain: React.FC<BIMainProps> = ({
                                     success = true;
 
                                     tableAbortControllers.current.delete(dsId);
-                                    signal.removeEventListener('abort', abortHandler);
                                 } catch (e: any) {
                                     tableAbortControllers.current.delete(dsId);
                                     if (e.name === 'AbortError') {
@@ -1489,6 +1526,10 @@ const BIMain: React.FC<BIMainProps> = ({
                                             await new Promise(resolve => setTimeout(resolve, waitTime));
                                         }
                                     }
+                                } finally {
+                                    if (abortHandler) {
+                                        signal.removeEventListener('abort', abortHandler);
+                                    }
                                 }
                             }
                         }
@@ -1500,7 +1541,14 @@ const BIMain: React.FC<BIMainProps> = ({
             await runSyncQueue();
         };
 
-        const timer = setTimeout(loadAllRequiredData, 500);
+        const timer = setTimeout(() => {
+            loadAllRequiredData().catch((err: any) => {
+                if (err?.name === 'AbortError') {
+                    return;
+                }
+                console.error('Auto-sync queue failed:', err);
+            });
+        }, 500);
         return () => {
             clearTimeout(timer);
             // Don't abort the global queue on every small re-render, 
@@ -1692,7 +1740,7 @@ const BIMain: React.FC<BIMainProps> = ({
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setLeftPanelOpen(false)}
-                            className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 font-black"
+                            className="absolute -right-3 bottom-16 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 font-black"
                             title={t('bi.collapse_left_panel')}
                         >
                             <i className="fas fa-chevron-left text-[10px]"></i>
@@ -1838,7 +1886,7 @@ const BIMain: React.FC<BIMainProps> = ({
 
                         <button
                             onClick={() => setDataPanelOpen(false)}
-                            className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
+                            className="absolute -left-3 bottom-16 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
                             title="Collapse data sidebar"
                         >
                             <i className="fas fa-chevron-right text-[10px]"></i>
@@ -1882,7 +1930,7 @@ const BIMain: React.FC<BIMainProps> = ({
                         {/* Panel Toggle Button */}
                         <button
                             onClick={() => setRightPanelOpen(false)}
-                            className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
+                            className="absolute -left-3 bottom-16 w-6 h-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/20 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-all z-[130] shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700"
                             title={t('bi.collapse_right_panel')}
                         >
                             <i className="fas fa-chevron-right text-[10px]"></i>

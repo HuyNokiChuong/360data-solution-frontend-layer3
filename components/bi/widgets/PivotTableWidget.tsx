@@ -10,6 +10,7 @@ import EmptyChartState from './EmptyChartState';
 import { useChartColors } from '../utils/chartColors';
 import { formatBIValue } from '../engine/utils';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { DrillDownService } from '../engine/DrillDownService';
 
 interface PivotTableWidgetProps {
     widget: BIWidget;
@@ -129,7 +130,11 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 }) => {
     const { isDark } = useChartColors();
     const { isWidgetFiltered } = useFilterStore();
-    const drillDownState = useFilterStore(state => state.drillDowns[widget.id]);
+    const rawDrillDownState = useFilterStore(state => state.drillDowns[widget.id]);
+    const drillDownState = useMemo(
+        () => DrillDownService.resolveStateForWidget(widget, rawDrillDownState || widget.drillDownState || undefined),
+        [widget, rawDrillDownState, widget.drillDownState]
+    );
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     // Switch to useDirectQuery

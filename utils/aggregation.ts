@@ -13,7 +13,16 @@ const NON_NUMERIC_AGGREGATIONS: AggregationType[] = ['count', 'countDistinct', '
 const NUMERIC_AGGREGATIONS: AggregationType[] = ['sum', 'avg', 'count', 'countDistinct', 'min', 'max'];
 
 const isNumericFieldType = (fieldType?: string | null): boolean => {
-    return String(fieldType || '').toLowerCase() === 'number';
+    const normalized = String(fieldType || '').trim().toLowerCase();
+    if (!normalized) return false;
+    return normalized === 'number'
+        || normalized.includes('numeric')
+        || normalized.includes('decimal')
+        || normalized.includes('int')
+        || normalized.includes('float')
+        || normalized.includes('double')
+        || normalized.includes('real')
+        || normalized.includes('money');
 };
 
 export const getDefaultAggregationForFieldType = (fieldType?: string | null): AggregationType => {

@@ -25,13 +25,13 @@ export class WarehouseService {
             executeSql?: (sql: string) => Promise<any[]>;
         }
     ): Promise<any[][]> {
-        if (options?.semanticEngine === 'postgres' && options?.executeSql) {
+        if (options?.executeSql) {
             const promises = charts.map(async (chart, index) => {
                 if (!chart.sql) return [];
                 try {
                     return await options.executeSql!(chart.sql);
                 } catch (error: any) {
-                    console.warn(`[WarehouseService] Postgres chart ${index} ("${chart.title}") query failed:`, error.message);
+                    console.warn(`[WarehouseService] Chart ${index} ("${chart.title}") query failed:`, error.message);
                     return [{ _error: error.message || "Query execution failed" }];
                 }
             });

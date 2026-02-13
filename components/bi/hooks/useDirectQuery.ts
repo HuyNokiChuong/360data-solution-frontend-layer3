@@ -37,6 +37,11 @@ export const useDirectQuery = (widget: BIWidget) => {
         ...(activeDashboard?.quickMeasures || []),
         ...(widget.quickMeasures || [])
     ]), [activeDashboard?.quickMeasures, widget.quickMeasures]);
+    const currentDrillDownState = useMemo(() => {
+        const runtimeState = drillDowns[widget.id];
+        const persistedState = widget.drillDownState || null;
+        return DrillDownService.resolveStateForWidget(widget, runtimeState || persistedState || undefined);
+    }, [widget, drillDowns[widget.id], widget.drillDownState]);
 
     const dataSource = useMemo(() => {
         let ds = widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -167,8 +172,7 @@ export const useDirectQuery = (widget: BIWidget) => {
 
         switch (widget.type) {
             case 'chart':
-                const drillDownState = drillDowns[widget.id];
-                const xFields = DrillDownService.getCurrentFields(widget, drillDownState);
+                const xFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
                 if (xFields.length > 0) dims.push(...xFields);
 
                 if (widget.legend && !dims.includes(widget.legend)) {
@@ -213,11 +217,6 @@ export const useDirectQuery = (widget: BIWidget) => {
                     });
                 }
 
-                // If user only drags dimension(s) without any explicit measure,
-                // auto-create COUNT on the first dimension so chart still renders values.
-                if (dims.length > 0 && meass.length === 0) {
-                    meass.push({ field: dims[0], aggregation: 'count' });
-                }
                 break;
 
             case 'pivot':
@@ -310,7 +309,7 @@ export const useDirectQuery = (widget: BIWidget) => {
         });
 
         return { dimensions: [...new Set(dims)], measures: meass };
-    }, [widget, drillDowns, dataSource, allCalculatedFields, allQuickMeasures]);
+    }, [widget, currentDrillDownState, dataSource, allCalculatedFields, allQuickMeasures]);
 
     const normalizeSemanticAggregation = useCallback((aggregation: AggregationType | undefined) => {
         const normalized = String(aggregation || 'none').trim().toLowerCase();
@@ -321,13 +320,23 @@ export const useDirectQuery = (widget: BIWidget) => {
         return 'none';
     }, []);
 
-    const resolveSemanticFieldBinding = useCallback((fieldName: string) => {
+    const resolveSemanticFieldBinding = useCallback((
+        fieldName: string,
+        options?: {
+            preferredTableIds?: Iterable<string>;
+        }
+    ) => {
         if (!dataSource || dataSource.type !== 'semantic_model') return null;
         const semanticFieldMap = dataSource.semanticFieldMap || {};
 
         const hierarchyIdx = fieldName.indexOf('___');
         const baseField = hierarchyIdx >= 0 ? fieldName.slice(0, hierarchyIdx) : fieldName;
         const hierarchyPart = hierarchyIdx >= 0 ? fieldName.slice(hierarchyIdx + 3) : '';
+        const preferredTableIds = new Set(
+            Array.from(options?.preferredTableIds || [])
+                .map((tableId) => String(tableId || '').trim())
+                .filter(Boolean)
+        );
 
         const direct = semanticFieldMap[fieldName] || semanticFieldMap[baseField];
         if (direct) {
@@ -341,17 +350,61 @@ export const useDirectQuery = (widget: BIWidget) => {
         const parts = baseField.split('.');
         const column = parts[parts.length - 1];
         const tableHint = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
-        const fallbackKey = Object.keys(semanticFieldMap).find((key) => {
-            const binding = semanticFieldMap[key];
-            if (!binding || String(binding.column || '').toLowerCase() !== String(column || '').toLowerCase()) {
-                return false;
-            }
-            if (!tableHint) return true;
-            return key.toLowerCase().includes(`${tableHint}.`);
-        });
+        const datasetHint = parts.length >= 3 ? parts[parts.length - 3].toLowerCase() : '';
+        const columnKey = String(column || '').toLowerCase();
+        const candidates = Object.entries(semanticFieldMap)
+            .map(([key, binding]) => {
+                if (!binding) return null;
+                if (String(binding.column || '').toLowerCase() !== columnKey) return null;
 
-        if (!fallbackKey) return null;
-        const fallback = semanticFieldMap[fallbackKey];
+                let score = 0;
+                const bindingTableId = String(binding.tableId || '');
+                const bindingTableName = String(binding.tableName || '').toLowerCase();
+                const bindingDatasetName = String(binding.datasetName || '').toLowerCase();
+                const semanticKey = String(key || '').toLowerCase();
+
+                if (preferredTableIds.has(bindingTableId)) score += 500;
+                if (tableHint && bindingTableName === tableHint) score += 180;
+                if (datasetHint && bindingDatasetName === datasetHint) score += 80;
+                if (tableHint && semanticKey.includes(`${tableHint}.`)) score += 45;
+                if (datasetHint && tableHint && semanticKey.includes(`${datasetHint}.${tableHint}.`)) score += 20;
+
+                return {
+                    key,
+                    binding,
+                    score,
+                    tableId: bindingTableId,
+                };
+            })
+            .filter((item): item is {
+                key: string;
+                binding: NonNullable<typeof semanticFieldMap[string]>;
+                score: number;
+                tableId: string;
+            } => item !== null)
+            .sort((a, b) => {
+                if (b.score !== a.score) return b.score - a.score;
+                return a.key.localeCompare(b.key);
+            });
+
+        if (candidates.length === 0) return null;
+        const topScore = candidates[0].score;
+        const topCandidates = candidates.filter((candidate) => candidate.score === topScore);
+
+        if (topCandidates.length > 1) {
+            const preferredMatches = topCandidates.filter((candidate) => preferredTableIds.has(candidate.tableId));
+            if (preferredMatches.length === 1) {
+                const preferred = preferredMatches[0];
+                return {
+                    tableId: preferred.binding.tableId,
+                    column: preferred.binding.column,
+                    hierarchyPart,
+                };
+            }
+            return null;
+        }
+
+        const fallback = candidates[0].binding;
         return {
             tableId: fallback.tableId,
             column: fallback.column,
@@ -362,6 +415,71 @@ export const useDirectQuery = (widget: BIWidget) => {
     const normalizeFieldToken = useCallback((value: string) => {
         return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     }, []);
+
+    const schemaFieldKeys = useMemo(() => {
+        const keys = new Set<string>();
+        (dataSource?.schema || []).forEach((field) => {
+            const raw = String(field?.name || '').trim().toLowerCase();
+            if (!raw) return;
+            keys.add(raw);
+
+            const rawBase = raw.split('___')[0];
+            keys.add(rawBase);
+
+            const rawTail = rawBase.split('.').pop();
+            if (rawTail) keys.add(rawTail);
+        });
+        return keys;
+    }, [dataSource?.schema]);
+
+    const isFieldCompatibleWithCurrentSource = useCallback((fieldName: string) => {
+        const raw = String(fieldName || '').trim().toLowerCase();
+        if (!raw) return false;
+
+        const base = raw.split('___')[0];
+        const tail = base.split('.').pop() || base;
+
+        const calcMatched = allCalculatedFields.some((calc) => {
+            const calcRaw = String(calc?.name || '').trim().toLowerCase();
+            if (!calcRaw) return false;
+            const calcBase = calcRaw.split('___')[0];
+            const calcTail = calcBase.split('.').pop() || calcBase;
+            return (
+                calcRaw === raw
+                || calcBase === base
+                || calcTail === tail
+                || calcRaw.endsWith(`.${tail}`)
+            );
+        });
+        if (calcMatched) return true;
+
+        if (!dataSource) return false;
+        if (schemaFieldKeys.has(raw) || schemaFieldKeys.has(base) || schemaFieldKeys.has(tail)) return true;
+
+        for (const key of schemaFieldKeys) {
+            if (key.endsWith(`.${base}`) || key.endsWith(`.${tail}`)) {
+                return true;
+            }
+        }
+
+        return false;
+    }, [allCalculatedFields, dataSource, schemaFieldKeys]);
+
+    const scopeFiltersToCurrentSource = useCallback((filters: Filter[]) => {
+        return (filters || []).filter((filter) => {
+            if (!filter) return false;
+            if (filter.enabled === false) return true;
+            return isFieldCompatibleWithCurrentSource(filter.field);
+        });
+    }, [isFieldCompatibleWithCurrentSource]);
+
+    const getMeasureOutputField = useCallback((fieldName: string, aggregation?: AggregationType) => {
+        const normalizedAgg = normalizeAggregation(aggregation || 'none');
+        if (dimensions.includes(fieldName)) {
+            return `${fieldName}__${normalizedAgg}`;
+        }
+        return fieldName;
+    }, [dimensions]);
 
     const resolveLegendLabel = useCallback((row: Record<string, any>, legendField: string): string => {
         let rawLegend = getFieldValue(row, legendField);
@@ -382,6 +500,120 @@ export const useDirectQuery = (widget: BIWidget) => {
         }
         return String(rawLegend);
     }, [normalizeFieldToken]);
+
+    const formatHierarchyLevelValue = useCallback((val: any, field: string): string => {
+        const toBlank = () => '(Blank)';
+        const normalizePrimitive = (input: any): any => {
+            if (input === null || input === undefined) return null;
+            if (typeof input === 'number') return Number.isFinite(input) ? input : null;
+            if (typeof input === 'string') {
+                const trimmed = input.trim();
+                if (!trimmed) return null;
+                const lowered = trimmed.toLowerCase();
+                if (lowered === 'null' || lowered === 'undefined' || lowered === 'nan') return null;
+                return trimmed;
+            }
+            return input;
+        };
+
+        const normalized = normalizePrimitive(val);
+        if (normalized === null) return toBlank();
+
+        if (field.includes('___')) {
+            const part = field.split('___')[1];
+            const asNumber = Number(normalized);
+            const hasNumeric = Number.isFinite(asNumber);
+
+            const invalidIfNonPositive = ['year', 'quarter', 'half', 'month', 'day'];
+            if (invalidIfNonPositive.includes(part) && hasNumeric && asNumber <= 0) {
+                return toBlank();
+            }
+
+            switch (part) {
+                case 'year':
+                    return hasNumeric ? String(Math.trunc(asNumber)) : String(normalized);
+                case 'quarter':
+                    if (!hasNumeric || asNumber < 1 || asNumber > 4) return toBlank();
+                    return `Q${Math.trunc(asNumber)}`;
+                case 'half':
+                    if (!hasNumeric || asNumber < 1 || asNumber > 2) return toBlank();
+                    return `H${Math.trunc(asNumber)}`;
+                case 'month': {
+                    if (!hasNumeric || asNumber < 1 || asNumber > 12) return toBlank();
+                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    const mIdx = Math.trunc(asNumber) - 1;
+                    return months[mIdx] || toBlank();
+                }
+                case 'day':
+                    if (!hasNumeric || asNumber < 1 || asNumber > 31) return toBlank();
+                    return `Day ${Math.trunc(asNumber)}`;
+                case 'hour':
+                    if (!hasNumeric || asNumber < 0 || asNumber > 23) return toBlank();
+                    return `${String(Math.trunc(asNumber)).padStart(2, '0')}:00`;
+                case 'minute':
+                    if (!hasNumeric || asNumber < 0 || asNumber > 59) return toBlank();
+                    return `:${String(Math.trunc(asNumber)).padStart(2, '0')}`;
+                case 'second':
+                    if (!hasNumeric || asNumber < 0 || asNumber > 59) return toBlank();
+                    return `:${String(Math.trunc(asNumber)).padStart(2, '0')}s`;
+                default:
+                    return String(normalized);
+            }
+        }
+
+        return String(normalized);
+    }, []);
+
+    const isNullLikeFilterValue = useCallback((value: any) => {
+        if (value === null || value === undefined) return true;
+        if (typeof value !== 'string') return false;
+        const normalized = value.trim().toLowerCase();
+        return normalized === '' || normalized === '(blank)' || normalized === 'null' || normalized === 'undefined' || normalized === 'nan';
+    }, []);
+
+    const appendDrillDownFilters = useCallback((baseFilters: Filter[]): Filter[] => {
+        const nextFilters = [...(baseFilters || [])];
+        if (widget.type !== 'chart') return nextFilters;
+        if (!currentDrillDownState || currentDrillDownState.breadcrumbs.length === 0) return nextFilters;
+
+        currentDrillDownState.breadcrumbs.forEach((breadcrumb) => {
+            const field = currentDrillDownState.hierarchy[breadcrumb.level];
+            if (!field) return;
+            const rawValue = breadcrumb.rawValue ?? breadcrumb.value;
+            const operator: FilterOperator = isNullLikeFilterValue(rawValue) ? 'isNull' : 'equals';
+            nextFilters.push({
+                field,
+                operator,
+                value: rawValue,
+                enabled: true
+            });
+        });
+
+        return nextFilters;
+    }, [widget.type, currentDrillDownState, isNullLikeFilterValue]);
+
+    const isSelfSelectionPersistenceFilter = useCallback((filter: Filter) => {
+        if (!filter) return false;
+
+        if (widget.type === 'slicer') {
+            return filter.id === `slicer-${widget.id}`;
+        }
+
+        if (widget.type === 'search') {
+            return filter.id === `search-${widget.id}`;
+        }
+
+        if (widget.type === 'date-range') {
+            return filter.id === `date-${widget.id}`;
+        }
+
+        return false;
+    }, [widget.type, widget.id]);
+
+    const widgetIntrinsicFilters = useMemo(() => {
+        const candidate = Array.isArray(widget.filters) ? widget.filters : [];
+        return candidate.filter((filter) => !isSelfSelectionPersistenceFilter(filter));
+    }, [widget.filters, isSelfSelectionPersistenceFilter]);
 
     useEffect(() => {
         let isMounted = true;
@@ -408,7 +640,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                     }
 
                     const semanticFilters: Filter[] = [];
-                    if (widget.filters) semanticFilters.push(...widget.filters);
+                    if (widgetIntrinsicFilters.length > 0) semanticFilters.push(...widgetIntrinsicFilters);
                     globalFilters.forEach(gf => {
                         if (!gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)) {
                             semanticFilters.push({ field: gf.field, operator: gf.operator, value: gf.value, enabled: true });
@@ -416,39 +648,43 @@ export const useDirectQuery = (widget: BIWidget) => {
                     });
                     const activeCrossFilters = getFiltersForWidget(widget.id);
                     semanticFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
+                    const semanticFiltersWithDrill = appendDrillDownFilters(semanticFilters);
 
-                    const semanticSelect: Array<{ tableId: string; column: string; aggregation: any; alias: string }> = [];
-                    const semanticGroupBy: Array<{ tableId: string; column: string }> = [];
-                    const semanticOrderBy: Array<{ tableId: string; column: string; dir: 'ASC' | 'DESC' }> = [];
+                    const semanticSelect: Array<{ tableId: string; column: string; hierarchyPart?: string; aggregation: any; alias: string }> = [];
+                    const semanticGroupBy: Array<{ tableId: string; column: string; hierarchyPart?: string }> = [];
+                    const semanticOrderBy: Array<{ tableId: string; column: string; hierarchyPart?: string; dir: 'ASC' | 'DESC' }> = [];
                     const semanticTableIds = new Set<string>();
                     const aliasToField = new Map<string, string>();
                     const numericAliases = new Set<string>();
                     const shouldUseGroupBy = widget.type !== 'table';
 
-                    const addGroupBy = (tableId: string, column: string) => {
-                        if (semanticGroupBy.some(item => item.tableId === tableId && item.column === column)) return;
-                        semanticGroupBy.push({ tableId, column });
+                    const addGroupBy = (tableId: string, column: string, hierarchyPart?: string) => {
+                        if (semanticGroupBy.some(item =>
+                            item.tableId === tableId
+                            && item.column === column
+                            && item.hierarchyPart === hierarchyPart
+                        )) return;
+                        semanticGroupBy.push({ tableId, column, hierarchyPart });
                     };
 
                     dimensions.forEach((dimension, index) => {
-                        const binding = resolveSemanticFieldBinding(dimension);
+                        const binding = resolveSemanticFieldBinding(dimension, {
+                            preferredTableIds: semanticTableIds,
+                        });
                         if (!binding) {
                             throw new Error(`Field "${dimension}" is not mapped in semantic model`);
                         }
-                        if (binding.hierarchyPart) {
-                            throw new Error(`Hierarchy field "${dimension}" is not supported in semantic mode yet`);
-                        }
-
                         const alias = `d_${index}`;
                         semanticTableIds.add(binding.tableId);
                         semanticSelect.push({
                             tableId: binding.tableId,
                             column: binding.column,
+                            hierarchyPart: binding.hierarchyPart || undefined,
                             aggregation: 'none',
                             alias,
                         });
                         if (shouldUseGroupBy) {
-                            addGroupBy(binding.tableId, binding.column);
+                            addGroupBy(binding.tableId, binding.column, binding.hierarchyPart || undefined);
                         }
                         aliasToField.set(alias, dimension);
                     });
@@ -458,35 +694,36 @@ export const useDirectQuery = (widget: BIWidget) => {
                             throw new Error(`Calculated field "${measure.field}" is not supported in semantic model direct query`);
                         }
 
-                        const binding = resolveSemanticFieldBinding(measure.field);
+                        const binding = resolveSemanticFieldBinding(measure.field, {
+                            preferredTableIds: semanticTableIds,
+                        });
                         if (!binding) {
                             throw new Error(`Field "${measure.field}" is not mapped in semantic model`);
                         }
-                        if (binding.hierarchyPart) {
-                            throw new Error(`Hierarchy field "${measure.field}" is not supported in semantic mode yet`);
-                        }
-
                         const alias = `m_${index}`;
                         semanticTableIds.add(binding.tableId);
                         semanticSelect.push({
                             tableId: binding.tableId,
                             column: binding.column,
+                            hierarchyPart: binding.hierarchyPart || undefined,
                             aggregation: normalizeSemanticAggregation(measure.aggregation),
                             alias,
                         });
-                        aliasToField.set(alias, measure.field);
+                        aliasToField.set(alias, getMeasureOutputField(measure.field, measure.aggregation));
                         numericAliases.add(alias);
                     });
 
-                    const semanticFiltersForPlanner = semanticFilters
+                    const semanticFiltersForPlanner = semanticFiltersWithDrill
                         .filter(filter => filter?.enabled !== false)
                         .map((filter) => {
-                            const binding = resolveSemanticFieldBinding(filter.field);
-                            if (!binding || binding.hierarchyPart) return null;
-                            semanticTableIds.add(binding.tableId);
+                            const binding = resolveSemanticFieldBinding(filter.field, {
+                                preferredTableIds: semanticTableIds,
+                            });
+                            if (!binding) return null;
                             return {
                                 tableId: binding.tableId,
                                 column: binding.column,
+                                hierarchyPart: binding.hierarchyPart || undefined,
                                 operator: filter.operator,
                                 value: filter.value,
                                 value2: filter.value2,
@@ -495,6 +732,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                         .filter(Boolean) as Array<{
                             tableId: string;
                             column: string;
+                            hierarchyPart?: string;
                             operator: string;
                             value?: any;
                             value2?: any;
@@ -506,26 +744,64 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                         if (sortType === 'category') {
                             dimensions.forEach((dimension) => {
-                                const binding = resolveSemanticFieldBinding(dimension);
-                                if (!binding || binding.hierarchyPart) return;
+                                const binding = resolveSemanticFieldBinding(dimension, {
+                                    preferredTableIds: semanticTableIds,
+                                });
+                                if (!binding) return;
                                 semanticOrderBy.push({
                                     tableId: binding.tableId,
                                     column: binding.column,
+                                    hierarchyPart: binding.hierarchyPart || undefined,
                                     dir,
                                 });
                             });
                         } else if (sortType === 'value') {
                             const firstMeasure = measures[0];
                             if (firstMeasure) {
-                                const binding = resolveSemanticFieldBinding(firstMeasure.field);
-                                if (binding && !binding.hierarchyPart) {
+                                const binding = resolveSemanticFieldBinding(firstMeasure.field, {
+                                    preferredTableIds: semanticTableIds,
+                                });
+                                if (binding) {
                                     semanticOrderBy.push({
                                         tableId: binding.tableId,
                                         column: binding.column,
+                                        hierarchyPart: binding.hierarchyPart || undefined,
                                         dir,
                                     });
                                 }
                             }
+                        }
+                    } else if (dimensions.length > 0) {
+                        const isTemporalDimension = (dimension: string) => {
+                            if (dimension.includes('___')) return true;
+                            const baseField = dimension.split('___')[0];
+                            const parts = baseField.split('.');
+                            const columnOnly = parts[parts.length - 1] || baseField;
+                            const tail2 = parts.length >= 2 ? parts.slice(-2).join('.') : '';
+                            const candidates = [dimension, baseField, tail2, columnOnly]
+                                .map((item) => String(item || '').toLowerCase())
+                                .filter(Boolean);
+
+                            const fieldDef = (dataSource.schema || []).find((field) => {
+                                const key = String(field.name || '').toLowerCase();
+                                return candidates.some((candidate) => key === candidate || key.endsWith(`.${candidate}`));
+                            });
+                            return fieldDef?.type === 'date';
+                        };
+
+                        if (dimensions.some(isTemporalDimension)) {
+                            dimensions.forEach((dimension) => {
+                                const binding = resolveSemanticFieldBinding(dimension, {
+                                    preferredTableIds: semanticTableIds,
+                                });
+                                if (!binding) return;
+                                semanticOrderBy.push({
+                                    tableId: binding.tableId,
+                                    column: binding.column,
+                                    hierarchyPart: binding.hierarchyPart || undefined,
+                                    dir: 'ASC',
+                                });
+                            });
                         }
                     }
 
@@ -580,12 +856,12 @@ export const useDirectQuery = (widget: BIWidget) => {
                             const rawVal = row[alias];
                             if (numericAliases.has(alias)) {
                                 if (rawVal === null || rawVal === undefined || rawVal === '') {
-                                    nextRow[fieldName] = 0;
+                                    nextRow[fieldName] = null;
                                 } else if (typeof rawVal === 'number') {
                                     nextRow[fieldName] = rawVal;
                                 } else {
                                     const parsed = parseFloat(String(rawVal));
-                                    nextRow[fieldName] = Number.isNaN(parsed) ? 0 : parsed;
+                                    nextRow[fieldName] = Number.isNaN(parsed) ? null : parsed;
                                 }
                             } else {
                                 nextRow[fieldName] = rawVal;
@@ -594,7 +870,33 @@ export const useDirectQuery = (widget: BIWidget) => {
                         return nextRow;
                     });
 
-                    setData(normalizedData);
+                    if (widget.type !== 'chart') {
+                        setData(normalizedData);
+                    } else {
+                        const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
+                        const axisKey = (currentDrillDownState?.mode === 'expand' && axisFields.length > 1)
+                            ? '_combinedAxis'
+                            : '_formattedAxis';
+
+                        let processedData = normalizedData;
+                        if (axisFields.length > 0) {
+                            processedData = normalizedData.map((row) => {
+                                let label = '';
+                                const rawAxisValue = row[axisFields[Math.max(0, axisFields.length - 1)]];
+                                if (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) {
+                                    label = axisFields.map((field) => formatHierarchyLevelValue(row[field], field)).reverse().join('\n');
+                                } else {
+                                    label = formatHierarchyLevelValue(row[axisFields[0]], axisFields[0]);
+                                }
+                                return {
+                                    ...row,
+                                    [axisKey]: label,
+                                    _rawAxisValue: rawAxisValue,
+                                };
+                            });
+                        }
+                        setData(processedData);
+                    }
                 } catch (err: any) {
                     if (isMounted && err.name !== 'AbortError') {
                         console.error('Semantic Direct Query Error:', err);
@@ -611,7 +913,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 const processLocalData = (rawRows: any[]) => {
                     const localFilters: Filter[] = [];
 
-                    if (widget.filters) localFilters.push(...widget.filters);
+                    if (widgetIntrinsicFilters.length > 0) localFilters.push(...widgetIntrinsicFilters);
                     globalFilters.forEach(gf => {
                         if (!gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)) {
                             localFilters.push({ field: gf.field, operator: gf.operator, value: gf.value, enabled: true });
@@ -620,20 +922,12 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                     const activeCrossFilters = getFiltersForWidget(widget.id);
                     localFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
+                    const localFiltersWithDrill = appendDrillDownFilters(localFilters);
 
-                    const drillDownState = drillDowns[widget.id];
-                    if (widget.type === 'chart' && drillDownState && drillDownState.breadcrumbs.length > 0) {
-                        drillDownState.breadcrumbs.forEach(bc => {
-                            localFilters.push({
-                                field: drillDownState.hierarchy[bc.level],
-                                operator: 'equals',
-                                value: bc.value,
-                                enabled: true
-                            });
-                        });
-                    }
-
-                    const filteredRows = localFilters.length > 0 ? applyFilters(rawRows, localFilters) : rawRows;
+                    const compatibleLocalFilters = scopeFiltersToCurrentSource(localFiltersWithDrill);
+                    const filteredRows = compatibleLocalFilters.length > 0
+                        ? applyFilters(rawRows, compatibleLocalFilters)
+                        : rawRows;
 
                     if (widget.type !== 'chart') {
                         setData(filteredRows);
@@ -648,7 +942,8 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                         const totalRow: Record<string, any> = { _autoCategory: 'Total' };
                         measures.forEach((m) => {
-                            totalRow[m.field] = aggregateValues(filteredRows, m.field, m.aggregation);
+                            const outputField = getMeasureOutputField(m.field, m.aggregation);
+                            totalRow[outputField] = aggregateValues(filteredRows, m.field, m.aggregation);
                         });
                         setData([totalRow]);
                         return;
@@ -669,47 +964,26 @@ export const useDirectQuery = (widget: BIWidget) => {
                             nextRow[dim] = getFieldValue(first, dim);
                         });
                         measures.forEach(m => {
-                            nextRow[m.field] = aggregateValues(groupRows, m.field, m.aggregation);
+                            const outputField = getMeasureOutputField(m.field, m.aggregation);
+                            nextRow[outputField] = aggregateValues(groupRows, m.field, m.aggregation);
                         });
                         return nextRow;
                     });
 
-                    const axisFields = DrillDownService.getCurrentFields(widget, drillDownState);
-                    const formatLevelValue = (val: any, field: string) => {
-                        if (val === null || val === undefined) return '(Blank)';
-                        if (field.includes('___')) {
-                            const part = field.split('___')[1];
-                            switch (part) {
-                                case 'year': return String(val);
-                                case 'quarter': return `Q${val}`;
-                                case 'half': return `H${val}`;
-                                case 'month': {
-                                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                                    const mIdx = parseInt(val) - 1;
-                                    return months[mIdx] || `M${val}`;
-                                }
-                                case 'day': return `Day ${val}`;
-                                case 'hour': return `${String(val).padStart(2, '0')}:00`;
-                                case 'minute': return `:${String(val).padStart(2, '0')}`;
-                                case 'second': return `:${String(val).padStart(2, '0')}s`;
-                                default: return String(val);
-                            }
-                        }
-                        return String(val);
-                    };
-
+                    const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
                     let processedData = aggregatedRows;
-                    const axisKey = (drillDownState?.mode === 'expand' && axisFields.length > 1) ? '_combinedAxis' : '_formattedAxis';
+                    const axisKey = (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) ? '_combinedAxis' : '_formattedAxis';
 
                     if (axisFields.length > 0) {
                         processedData = processedData.map(row => {
                             let label = '';
-                            if (drillDownState?.mode === 'expand' && axisFields.length > 1) {
-                                label = axisFields.map(f => formatLevelValue(row[f], f)).reverse().join('\n');
+                            const rawAxisValue = row[axisFields[Math.max(0, axisFields.length - 1)]];
+                            if (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) {
+                                label = axisFields.map(f => formatHierarchyLevelValue(row[f], f)).reverse().join('\n');
                             } else {
-                                label = formatLevelValue(row[axisFields[0]], axisFields[0]);
+                                label = formatHierarchyLevelValue(row[axisFields[0]], axisFields[0]);
                             }
-                            return { ...row, [axisKey]: label };
+                            return { ...row, [axisKey]: label, _rawAxisValue: rawAxisValue };
                         });
                     }
 
@@ -723,7 +997,8 @@ export const useDirectQuery = (widget: BIWidget) => {
                             } else {
                                 const existing = groupedMap.get(label);
                                 measures.forEach(m => {
-                                    existing[m.field] = (existing[m.field] || 0) + (row[m.field] || 0);
+                                    const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                    existing[outputField] = (existing[outputField] || 0) + (row[outputField] || 0);
                                 });
                             }
                         });
@@ -734,7 +1009,9 @@ export const useDirectQuery = (widget: BIWidget) => {
                     if (widget.legend && dimensions.includes(widget.legend)) {
                         const xFieldKey = axisKey;
                         const legendField = widget.legend;
-                        const legendMeasureField = measures[0]?.field;
+                        const legendMeasureField = measures[0]
+                            ? getMeasureOutputField(measures[0].field, measures[0].aggregation)
+                            : undefined;
                         const pivotMap = new Map<string, any>();
 
                         if (legendMeasureField) {
@@ -775,7 +1052,10 @@ export const useDirectQuery = (widget: BIWidget) => {
                                     if (legendFields.size > 0) {
                                         return Array.from(legendFields).reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
                                     }
-                                    return measures.reduce((sum, m) => sum + (Number(row[m.field]) || 0), 0);
+                                    return measures.reduce((sum, m) => {
+                                        const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                        return sum + (Number(row[outputField]) || 0);
+                                    }, 0);
                                 };
                                 valA = calcTotal(a);
                                 valB = calcTotal(b);
@@ -870,7 +1150,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 }
 
                 const bqFilters: any[] = [];
-                if (widget.filters) bqFilters.push(...widget.filters);
+                if (widgetIntrinsicFilters.length > 0) bqFilters.push(...widgetIntrinsicFilters);
                 globalFilters.forEach(gf => {
                     if (!gf.appliedToWidgets || gf.appliedToWidgets.length === 0 || gf.appliedToWidgets.includes(widget.id)) {
                         bqFilters.push({ field: gf.field, operator: gf.operator, value: gf.value, enabled: true });
@@ -878,18 +1158,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                 });
                 const activeCrossFilters = getFiltersForWidget(widget.id);
                 bqFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
-
-                const drillDownState = drillDowns[widget.id];
-                if (widget.type === 'chart' && drillDownState && drillDownState.breadcrumbs.length > 0) {
-                    drillDownState.breadcrumbs.forEach(bc => {
-                        bqFilters.push({
-                            field: drillDownState.hierarchy[bc.level],
-                            operator: 'equals',
-                            value: bc.value,
-                            enabled: true
-                        });
-                    });
-                }
+                const bqFiltersWithDrill = appendDrillDownFilters(bqFilters);
 
                 if (dimensions.length === 0 && measures.length === 0) {
                     setData([]);
@@ -938,7 +1207,8 @@ export const useDirectQuery = (widget: BIWidget) => {
                     return d;
                 });
 
-                const finalFilters = bqFilters.map(f => {
+                const scopedBqFilters = scopeFiltersToCurrentSource(bqFiltersWithDrill as Filter[]);
+                const finalFilters = scopedBqFilters.map(f => {
                     const calcField = allCalculatedFields.find(c => c.name === f.field);
                     if (calcField) {
                         let expr = calcField.formula;
@@ -986,15 +1256,16 @@ export const useDirectQuery = (widget: BIWidget) => {
                             const matchedField = findKey(row, m.field);
 
                             let rawVal = matchedAlias ? row[matchedAlias] : (matchedField ? row[matchedField] : undefined);
-                            let val = 0;
+                            let val: number | null = null;
                             if (rawVal !== null && rawVal !== undefined) {
                                 if (typeof rawVal === 'number') val = rawVal;
                                 else {
                                     const parsed = parseFloat(String(rawVal));
-                                    val = isNaN(parsed) ? 0 : parsed;
+                                    val = isNaN(parsed) ? null : parsed;
                                 }
                             }
-                            newRow[m.field] = val;
+                            const outputField = getMeasureOutputField(m.field, m.aggregation);
+                            newRow[outputField] = val;
                         });
                         return newRow;
                     });
@@ -1011,46 +1282,23 @@ export const useDirectQuery = (widget: BIWidget) => {
                         }));
                     }
 
-                    const innerDrillDownState = drillDowns[widget.id];
-                    const axisFields = DrillDownService.getCurrentFields(widget, innerDrillDownState);
-
-                    const formatLevelValue = (val: any, field: string) => {
-                        if (val === null || val === undefined) return '(Blank)';
-                        if (field.includes('___')) {
-                            const part = field.split('___')[1];
-                            switch (part) {
-                                case 'year': return String(val);
-                                case 'quarter': return `Q${val}`;
-                                case 'half': return `H${val}`;
-                                case 'month': {
-                                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                                    const mIdx = parseInt(val) - 1;
-                                    return months[mIdx] || `M${val}`;
-                                }
-                                case 'day': return `Day ${val}`;
-                                case 'hour': return `${String(val).padStart(2, '0')}:00`;
-                                case 'minute': return `:${String(val).padStart(2, '0')}`;
-                                case 'second': return `:${String(val).padStart(2, '0')}s`;
-                                default: return String(val);
-                            }
-                        }
-                        return String(val);
-                    };
+                    const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
 
                     let processedData = normalizedData;
 
                     // 2. Add Axis Labels
-                    const axisKey = (innerDrillDownState?.mode === 'expand' && axisFields.length > 1) ? '_combinedAxis' : '_formattedAxis';
+                    const axisKey = (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) ? '_combinedAxis' : '_formattedAxis';
 
                     if (axisFields.length > 0) {
                         processedData = processedData.map(row => {
                             let label = '';
-                            if (innerDrillDownState?.mode === 'expand' && axisFields.length > 1) {
-                                label = axisFields.map(f => formatLevelValue(row[f], f)).reverse().join('\n');
+                            const rawAxisValue = row[axisFields[Math.max(0, axisFields.length - 1)]];
+                            if (currentDrillDownState?.mode === 'expand' && axisFields.length > 1) {
+                                label = axisFields.map(f => formatHierarchyLevelValue(row[f], f)).reverse().join('\n');
                             } else {
-                                label = formatLevelValue(row[axisFields[0]], axisFields[0]);
+                                label = formatHierarchyLevelValue(row[axisFields[0]], axisFields[0]);
                             }
-                            return { ...row, [axisKey]: label };
+                            return { ...row, [axisKey]: label, _rawAxisValue: rawAxisValue };
                         });
                     }
 
@@ -1060,28 +1308,31 @@ export const useDirectQuery = (widget: BIWidget) => {
                     // rows based on Axis Label, destroying the Legend distinction (e.g. merging "Brand A" and "Brand B").
                     const willPivot = widget.legend && dimensions.includes(widget.legend);
 
-                    if (axisFields.length > 0 && !willPivot) {
-                        const groupedMap = new Map<string, any>();
-                        processedData.forEach(row => {
-                            const label = row[axisKey];
-                            if (!groupedMap.has(label)) {
-                                groupedMap.set(label, { ...row });
-                            } else {
-                                const existing = groupedMap.get(label);
-                                measures.forEach(m => {
-                                    existing[m.field] = (existing[m.field] || 0) + (row[m.field] || 0);
-                                });
-                            }
-                        });
-                        processedData = Array.from(groupedMap.values());
-                    }
+                        if (axisFields.length > 0 && !willPivot) {
+                            const groupedMap = new Map<string, any>();
+                            processedData.forEach(row => {
+                                const label = row[axisKey];
+                                if (!groupedMap.has(label)) {
+                                    groupedMap.set(label, { ...row });
+                                } else {
+                                    const existing = groupedMap.get(label);
+                                    measures.forEach(m => {
+                                        const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                        existing[outputField] = (existing[outputField] || 0) + (row[outputField] || 0);
+                                    });
+                                }
+                            });
+                            processedData = Array.from(groupedMap.values());
+                        }
 
                     const legendFields = new Set<string>();
                     // 4. Pivot by Legend (if applicable)
                     if (widget.legend && dimensions.includes(widget.legend)) {
                         const xFieldKey = axisKey;
                         const legendField = widget.legend;
-                        const legendMeasureField = measures[0]?.field;
+                        const legendMeasureField = measures[0]
+                            ? getMeasureOutputField(measures[0].field, measures[0].aggregation)
+                            : undefined;
                         const pivotMap = new Map<string, any>();
 
                         if (legendMeasureField) {
@@ -1128,7 +1379,10 @@ export const useDirectQuery = (widget: BIWidget) => {
                                         return Array.from(legendFields).reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
                                     }
                                     // Otherwise sum all primary measures
-                                    return measures.reduce((sum, m) => sum + (Number(row[m.field]) || 0), 0);
+                                    return measures.reduce((sum, m) => {
+                                        const outputField = getMeasureOutputField(m.field, m.aggregation);
+                                        return sum + (Number(row[outputField]) || 0);
+                                    }, 0);
                                 };
                                 valA = calcTotal(a);
                                 valB = calcTotal(b);
@@ -1196,13 +1450,18 @@ export const useDirectQuery = (widget: BIWidget) => {
         dataSource?.id,
         dataSource?.dataModelId,
         dataSource?.semanticEngine,
+        JSON.stringify(dataSource?.schema || []),
         JSON.stringify(dataSource?.semanticTableIds || []),
         JSON.stringify(dataSource?.semanticFieldMap || {}),
+        JSON.stringify(allCalculatedFields || []),
         JSON.stringify(dimensions),
         JSON.stringify(measures),
+        JSON.stringify(widgetIntrinsicFilters),
         JSON.stringify(globalFilters),
         JSON.stringify(crossFilters.filter(cf => cf.sourceWidgetId !== widget.id)),
-        JSON.stringify(drillDowns[widget.id])
+        JSON.stringify(currentDrillDownState),
+        isNullLikeFilterValue,
+        appendDrillDownFilters
     ]);
 
     // Derived properties for Charts
@@ -1212,7 +1471,7 @@ export const useDirectQuery = (widget: BIWidget) => {
     useEffect(() => {
         if (widget.legend && data.length > 0) {
             const fields = new Set<string>();
-            const xFields = DrillDownService.getCurrentFields(widget, drillDowns[widget.id]);
+            const xFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
             const xField = xFields[0];
             data.forEach(row => {
                 Object.keys(row).forEach(key => {
@@ -1230,24 +1489,46 @@ export const useDirectQuery = (widget: BIWidget) => {
     }, [
         data,
         widget.legend,
-        JSON.stringify(drillDowns[widget.id]),
+        JSON.stringify(currentDrillDownState),
         JSON.stringify(measures)
     ]);
 
     const seriesList = useMemo(() => {
         if (pivotedSeries.length > 0) return pivotedSeries;
+
+        const mapConfiguredField = (field: string) => {
+            const matchedMeasure = measures.find((m) => m.field === field);
+            if (!matchedMeasure) return field;
+            return getMeasureOutputField(matchedMeasure.field, matchedMeasure.aggregation);
+        };
+
         if (widget.yAxisConfigs && widget.yAxisConfigs.length > 0) {
-            return widget.yAxisConfigs.map(c => c.field);
+            return widget.yAxisConfigs.map(c => mapConfiguredField(c.field));
         }
-        return widget.yAxis ? widget.yAxis : (widget.measures ? widget.measures : []);
-    }, [widget, pivotedSeries]);
+
+        if (widget.yAxis && widget.yAxis.length > 0) {
+            return widget.yAxis.map((field) => mapConfiguredField(field));
+        }
+
+        if (widget.measures && widget.measures.length > 0) {
+            return widget.measures.map((field) => mapConfiguredField(field));
+        }
+
+        return Array.from(
+            new Set(
+                measures
+                    .map((m) => getMeasureOutputField(m.field, m.aggregation))
+                    .filter(Boolean)
+            )
+        );
+    }, [widget.yAxisConfigs, widget.yAxis, widget.measures, pivotedSeries, measures, getMeasureOutputField]);
 
     const lineSeriesList = useMemo(() => {
         if (widget.lineAxisConfigs && widget.lineAxisConfigs.length > 0) {
-            return widget.lineAxisConfigs.map(c => c.field);
+            return widget.lineAxisConfigs.map(c => getMeasureOutputField(c.field, c.aggregation));
         }
         return [];
-    }, [widget]);
+    }, [widget.lineAxisConfigs, getMeasureOutputField]);
 
     return {
         data,

@@ -154,6 +154,104 @@ const sanitizeDashboard = (dashboard: BIDashboard): BIDashboard => ({
     sharedWith: sanitizeSharePermissions(dashboard?.sharedWith),
 });
 
+const toTimestamp = (value: unknown): number => {
+    if (!value) return 0;
+    const ts = Date.parse(String(value));
+    return Number.isFinite(ts) ? ts : 0;
+};
+
+const mergeDashboardsPreferNewestLocal = (
+    localDashboards: BIDashboard[],
+    remoteDashboards: BIDashboard[]
+): BIDashboard[] => {
+    const localById = new Map(localDashboards.map((dashboard) => [dashboard.id, dashboard]));
+    const remoteById = new Map(remoteDashboards.map((dashboard) => [dashboard.id, dashboard]));
+
+    const merged = remoteDashboards.map((remoteDashboard) => {
+        const localDashboard = localById.get(remoteDashboard.id);
+        if (!localDashboard) return remoteDashboard;
+
+        const localUpdatedAt = toTimestamp(localDashboard.updatedAt);
+        const remoteUpdatedAt = toTimestamp(remoteDashboard.updatedAt);
+
+        if (localUpdatedAt > remoteUpdatedAt) {
+            return sanitizeDashboard(localDashboard);
+        }
+
+        return remoteDashboard;
+    });
+
+    // Keep local dashboards that are not on backend yet (e.g. optimistic/local-only edits).
+    localDashboards.forEach((localDashboard) => {
+        if (!remoteById.has(localDashboard.id)) {
+            merged.push(sanitizeDashboard(localDashboard));
+        }
+    });
+
+    return merged;
+};
+
+const GRID_COLUMNS = 12;
+
+type WidgetLayoutBox = Pick<BIWidget, 'x' | 'y' | 'w' | 'h'>;
+
+const normalizeSpan = (value: number | undefined, min = 1, max = GRID_COLUMNS): number => {
+    const fallback = min;
+    const numeric = Number.isFinite(value as number) ? Math.round(value as number) : fallback;
+    return Math.max(min, Math.min(max, numeric));
+};
+
+const normalizeWidgetBox = (widget: Partial<WidgetLayoutBox>): WidgetLayoutBox => ({
+    x: Math.max(0, normalizeSpan(widget.x, 0, GRID_COLUMNS - 1)),
+    y: Math.max(0, normalizeSpan(widget.y, 0, Number.MAX_SAFE_INTEGER)),
+    w: normalizeSpan(widget.w, 1, GRID_COLUMNS),
+    h: normalizeSpan(widget.h, 1, Number.MAX_SAFE_INTEGER),
+});
+
+const boxesCollide = (a: WidgetLayoutBox, b: WidgetLayoutBox): boolean => {
+    return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+    );
+};
+
+const isAreaFree = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    occupied: WidgetLayoutBox[]
+): boolean => {
+    const candidate: WidgetLayoutBox = { x, y, w, h };
+    return occupied.every((box) => !boxesCollide(candidate, box));
+};
+
+const findNextFlowPosition = (
+    existingWidgets: BIWidget[],
+    targetWidth: number,
+    targetHeight: number
+): { x: number; y: number } => {
+    const occupied = existingWidgets
+        .filter((widget) => !widget.isGlobalFilter)
+        .map((widget) => normalizeWidgetBox(widget));
+
+    const maxBottom = occupied.reduce((max, box) => Math.max(max, box.y + box.h), 0);
+    const scanMaxY = Math.max(maxBottom + targetHeight + 50, targetHeight + 1);
+    const maxX = Math.max(0, GRID_COLUMNS - targetWidth);
+
+    for (let y = 0; y <= scanMaxY; y++) {
+        for (let x = 0; x <= maxX; x++) {
+            if (isAreaFree(x, y, targetWidth, targetHeight, occupied)) {
+                return { x, y };
+            }
+        }
+    }
+
+    return { x: 0, y: maxBottom };
+};
+
 const saveToStorage = (state: DashboardState) => {
     if (!state.isHydrated || !state.domain) {
         // console.warn('Sync skipped: Store not hydrated or domain missing');
@@ -191,6 +289,57 @@ const saveToStorage = (state: DashboardState) => {
             console.error('Failed to save dashboard data', e);
         }
     }
+};
+
+const widgetAutosaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const widgetAutosaveControllers = new Map<string, AbortController>();
+
+const scheduleWidgetAutosave = (dashboardId: string, getState: () => DashboardState) => {
+    const existingTimer = widgetAutosaveTimers.get(dashboardId);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+        widgetAutosaveTimers.delete(dashboardId);
+
+        const token = localStorage.getItem('auth_token');
+        if (!token || !isUUID(dashboardId)) return;
+
+        const dashboard = getState().dashboards.find((d) => d.id === dashboardId);
+        if (!dashboard) return;
+
+        const previousController = widgetAutosaveControllers.get(dashboardId);
+        if (previousController) {
+            previousController.abort();
+        }
+
+        const controller = new AbortController();
+        widgetAutosaveControllers.set(dashboardId, controller);
+
+        fetch(`${API_BASE}/dashboards/${dashboardId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            signal: controller.signal,
+            body: JSON.stringify({
+                pages: dashboard.pages || [],
+                widgets: dashboard.widgets || [],
+                activePageId: dashboard.activePageId
+            })
+        })
+            .catch((err) => {
+                if (err?.name !== 'AbortError') {
+                    console.error('Failed to auto-save widget state', err);
+                }
+            })
+            .finally(() => {
+                if (widgetAutosaveControllers.get(dashboardId) === controller) {
+                    widgetAutosaveControllers.delete(dashboardId);
+                }
+            });
+    }, 180);
+
+    widgetAutosaveTimers.set(dashboardId, timer);
 };
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
@@ -657,7 +806,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     },
 
     addWidget: (dashboardId, widget) => {
-        const newWidget: BIWidget = {
+        const baseWidget: BIWidget = {
             enableCrossFilter: true,
             showLegend: true,
             legendPosition: 'bottom',
@@ -671,7 +820,45 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 if (d.id === dashboardId) {
                     const activePage = (d.pages || []).find(p => p.id === d.activePageId);
                     const pageDataSourceId = activePage?.dataSourceId;
-                    const widgetWithDS = { ...newWidget, dataSourceId: newWidget.dataSourceId || pageDataSourceId || d.dataSourceId };
+                    const currentWidgets = activePage ? activePage.widgets : (d.widgets || []);
+
+                    const normalizedWidth = normalizeSpan(baseWidget.w, 1, GRID_COLUMNS);
+                    const normalizedHeight = normalizeSpan(baseWidget.h, 1, Number.MAX_SAFE_INTEGER);
+                    const hasFiniteX = Number.isFinite(baseWidget.x);
+                    const hasFiniteY = Number.isFinite(baseWidget.y);
+                    const shouldAutoPlace =
+                        !hasFiniteX ||
+                        !hasFiniteY ||
+                        baseWidget.y === Infinity ||
+                        baseWidget.x < 0 ||
+                        baseWidget.y < 0 ||
+                        baseWidget.x + normalizedWidth > GRID_COLUMNS;
+
+                    const positionedWidget = (() => {
+                        if (shouldAutoPlace) {
+                            const nextPos = findNextFlowPosition(currentWidgets, normalizedWidth, normalizedHeight);
+                            return {
+                                ...baseWidget,
+                                x: nextPos.x,
+                                y: nextPos.y,
+                                w: normalizedWidth,
+                                h: normalizedHeight
+                            };
+                        }
+
+                        return {
+                            ...baseWidget,
+                            x: Math.max(0, Math.min(GRID_COLUMNS - normalizedWidth, Math.round(baseWidget.x))),
+                            y: Math.max(0, Math.round(baseWidget.y)),
+                            w: normalizedWidth,
+                            h: normalizedHeight
+                        };
+                    })();
+
+                    const widgetWithDS = {
+                        ...positionedWidget,
+                        dataSourceId: positionedWidget.dataSourceId || pageDataSourceId || d.dataSourceId
+                    };
 
                     if (d.pages && d.pages.length > 0) {
                         const updatedPages = d.pages.map(p =>
@@ -684,7 +871,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                 }
                 return d;
             }),
-            editingWidgetId: newWidget.id
+            editingWidgetId: baseWidget.id
         }));
         saveToStorage(get());
     },
@@ -707,6 +894,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             })
         }));
         saveToStorage(get());
+        scheduleWidgetAutosave(dashboardId, get);
     },
 
     deleteWidget: (dashboardId, widgetId) => {
@@ -1034,17 +1222,18 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
                         const nextFolders = (folderRes.data || []).map(sanitizeFolder);
                         const nextDashboards = (dashboardRes.data || []).map(sanitizeDashboard);
                         set((state) => {
+                            const mergedDashboards = mergeDashboardsPreferNewestLocal(state.dashboards || [], nextDashboards);
                             const activeFromState = state.activeDashboardId;
-                            const activeDashboardId = nextDashboards.some((d) => d.id === activeFromState)
+                            const activeDashboardId = mergedDashboards.some((d) => d.id === activeFromState)
                                 ? activeFromState
-                                : (nextDashboards.some((d) => d.id === preferredActiveDashboardId)
+                                : (mergedDashboards.some((d) => d.id === preferredActiveDashboardId)
                                     ? preferredActiveDashboardId
-                                    : (nextDashboards[0]?.id || null));
+                                    : (mergedDashboards[0]?.id || null));
                             return {
                                 folders: nextFolders,
-                                dashboards: nextDashboards,
+                                dashboards: mergedDashboards,
                                 activeDashboardId,
-                                history: [nextDashboards],
+                                history: [mergedDashboards],
                                 historyIndex: 0,
                                 isHydrated: true
                             };

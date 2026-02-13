@@ -62,6 +62,56 @@ const FORMULA_FUNCTION_SNIPPETS: Array<{ label: string; snippet: string; hint: s
     { label: 'MAX', snippet: 'MAX(VALUE, ROW_TOTAL)', hint: 'max value' },
 ];
 
+const stripHierarchySuffix = (fieldName?: string) => {
+    const raw = String(fieldName || '').trim();
+    const idx = raw.indexOf('___');
+    return idx >= 0 ? raw.slice(0, idx) : raw;
+};
+
+const normalizeFieldLookup = (fieldName?: string) => stripHierarchySuffix(fieldName).toLowerCase();
+
+const toFieldSegments = (fieldName?: string) =>
+    normalizeFieldLookup(fieldName).split('.').map((part) => part.trim()).filter(Boolean);
+
+const resolveFieldDefinitionByName = (
+    fields: Array<{ name?: string; type?: string }>,
+    fieldName?: string
+) => {
+    const targetNorm = normalizeFieldLookup(fieldName);
+    if (!targetNorm) return undefined;
+
+    const direct = fields.find((field) => normalizeFieldLookup(field?.name) === targetNorm);
+    if (direct) return direct;
+
+    const targetSegs = toFieldSegments(fieldName);
+    if (targetSegs.length === 0) return undefined;
+    const targetLast = targetSegs[targetSegs.length - 1];
+    const targetLast2 = targetSegs.length >= 2 ? targetSegs.slice(-2).join('.') : '';
+
+    let best: { score: number; field: { name?: string; type?: string } } | null = null;
+    fields.forEach((field) => {
+        const fieldNorm = normalizeFieldLookup(field?.name);
+        if (!fieldNorm) return;
+        const fieldSegs = toFieldSegments(field?.name);
+        const fieldLast = fieldSegs[fieldSegs.length - 1] || '';
+        const fieldLast2 = fieldSegs.length >= 2 ? fieldSegs.slice(-2).join('.') : '';
+
+        let score = 0;
+        if (fieldNorm === targetNorm) score += 1000;
+        if (targetNorm.endsWith(`.${fieldNorm}`)) score += 420;
+        if (fieldNorm.endsWith(`.${targetNorm}`)) score += 360;
+        if (targetLast && fieldLast && targetLast === fieldLast) score += 160;
+        if (targetLast2 && fieldLast2 && targetLast2 === fieldLast2) score += 240;
+
+        if (score <= 0) return;
+        if (!best || score > best.score) {
+            best = { score, field };
+        }
+    });
+
+    return best?.field;
+};
+
 const FieldIcon: React.FC<{ field: any }> = ({ field }) => {
     let icon = "fa-question";
     let color = "text-slate-400";
@@ -292,7 +342,8 @@ const CustomFieldDropdown: React.FC<{
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    const selectedField = fields.find(f => f.name === value);
+    const selectedField = resolveFieldDefinitionByName(fields, value);
+    const selectedNorm = normalizeFieldLookup(selectedField?.name || value);
 
     return (
         <div className={`relative ${className || ''}`} ref={wrapperRef}>
@@ -325,11 +376,13 @@ const CustomFieldDropdown: React.FC<{
                         </div>
                     )}
                     {fields.length === 0 && <div className="p-2 text-xs text-slate-400 italic text-center">No fields available</div>}
-                    {fields.map(field => (
+                    {fields.map(field => {
+                        const isSelected = normalizeFieldLookup(field?.name) === selectedNorm;
+                        return (
                         <div
                             key={field.name}
                             onClick={() => { onChange(field.name); setIsOpen(false); }}
-                            className={`flex items-center gap-2 p-2 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer border-b last:border-0 border-slate-100 dark:border-white/5 ${value === field.name ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
+                            className={`flex items-center gap-2 p-2 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer border-b last:border-0 border-slate-100 dark:border-white/5 ${isSelected ? 'bg-indigo-50 dark:bg-indigo-900/20' : ''}`}
                         >
                             <FieldIcon field={field} />
                             <div className="flex flex-col overflow-hidden">
@@ -341,7 +394,8 @@ const CustomFieldDropdown: React.FC<{
                                 </div>
                             </div>
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -510,7 +564,7 @@ const FieldSelector: React.FC<{
         id: slotId,
         data: { slot: slotId }
     });
-    const selectedField = fields.find((f) => f.name === value);
+    const selectedField = resolveFieldDefinitionByName(fields, value);
     const aggregationOptions = selectedField ? getAggregationOptionsForFieldType(selectedField.type) : AGGREGATION_OPTIONS;
     const safeAggregation = coerceAggregationForFieldType(aggregation || 'sum', selectedField?.type);
 
@@ -563,12 +617,12 @@ const PivotValueSelector: React.FC<{
     const [showRecommendations, setShowRecommendations] = useState(false);
 
     const getDefaultAggregation = (fieldName: string): AggregationType => {
-        const selectedField = fields.find((f) => f.name === fieldName);
+        const selectedField = resolveFieldDefinitionByName(fields, fieldName);
         return getDefaultAggregationForFieldType(selectedField?.type);
     };
 
     const getFieldType = (fieldName: string) => {
-        return fields.find((f) => f.name === fieldName)?.type;
+        return resolveFieldDefinitionByName(fields, fieldName)?.type;
     };
 
     const handleAdd = (fieldName: string) => {
@@ -1386,9 +1440,31 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         const fallbackSource = effectiveDataSourceId
             ? dataSources.find((ds) => ds.id === effectiveDataSourceId)
             : undefined;
-        const sourceForResolution = updates.dataSourceId
+        const selectedSidebarSource = selectedDataSourceId
+            ? dataSources.find((ds) => ds.id === selectedDataSourceId)
+            : undefined;
+        const selectedSidebarNonSemanticSource = selectedSidebarSource?.type === 'semantic_model'
+            ? undefined
+            : selectedSidebarSource;
+        const explicitUpdateSource = updates.dataSourceId
             ? dataSources.find((ds) => ds.id === updates.dataSourceId)
-            : (activeWidgetSource || fallbackSource);
+            : undefined;
+        const explicitUpdateNonSemanticSource = explicitUpdateSource?.type === 'semantic_model'
+            ? undefined
+            : explicitUpdateSource;
+        const activeWidgetNonSemanticSource = activeWidgetSource?.type === 'semantic_model'
+            ? undefined
+            : activeWidgetSource;
+        const fallbackNonSemanticSource = fallbackSource?.type === 'semantic_model'
+            ? undefined
+            : fallbackSource;
+        const sourceForResolution = explicitUpdateNonSemanticSource
+            || selectedSidebarNonSemanticSource
+            || activeWidgetNonSemanticSource
+            || fallbackNonSemanticSource
+            || explicitUpdateSource
+            || activeWidgetSource
+            || fallbackSource;
 
         let resolvedSemanticMeta: { sourceId: string; sourceName: string; pipelineName?: string } | null = null;
         const mapFieldName = (fieldName?: string) => {
@@ -1462,6 +1538,19 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                     }))
                     : item.conditionalFormatting,
             }));
+        }
+
+        if (updates.drillDownHierarchy !== undefined) {
+            const nextHierarchy = Array.isArray(updates.drillDownHierarchy)
+                ? updates.drillDownHierarchy
+                : [];
+            const prevHierarchy = Array.isArray(activeWidget.drillDownHierarchy)
+                ? activeWidget.drillDownHierarchy
+                : [];
+            if (JSON.stringify(nextHierarchy) !== JSON.stringify(prevHierarchy)) {
+                updates.drillDownState = null;
+                useFilterStore.getState().setDrillDown(activeWidget.id, null);
+            }
         }
 
         if (resolvedSemanticMeta && activeWidget.dataSourceId !== resolvedSemanticMeta.sourceId) {
@@ -1706,7 +1795,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
     const getDefaultAggregationForField = (fieldName?: string): AggregationType => {
         if (!fieldName) return normalizeAggregation(activeWidget?.aggregation || 'sum');
-        const selectedField = fields.find((f) => f.name === fieldName);
+        const selectedField = resolveFieldDefinitionByName(fields, fieldName);
         if (!selectedField) return normalizeAggregation(activeWidget?.aggregation || 'sum');
         return coerceAggregationForFieldType(activeWidget?.aggregation || 'sum', selectedField.type);
     };
@@ -1833,7 +1922,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         const semanticSources = dataSources.filter((ds) => ds.type === 'semantic_model' && ds.semanticFieldMap);
         if (semanticSources.length === 0) return null;
 
-        if (source?.type === 'semantic_model') {
+        if (source?.type === 'semantic_model' && (source.semanticFieldMap?.[rawFieldName] || source.semanticFieldMap?.[baseField])) {
             return {
                 fieldName: rawFieldName,
                 sourceId: source.id,
@@ -3168,6 +3257,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                 onClose={() => setIsAddingCalc(false)}
                 onSave={handleSaveCalculation}
                 availableFields={fields}
+                sampleRows={Array.isArray(fieldScopeSource?.data) ? fieldScopeSource.data.slice(0, 20) : []}
                 existingFieldNames={fields.map(f => f.name)}
                 editingFieldName={
                     editingCalcId

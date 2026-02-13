@@ -86,6 +86,31 @@ export interface GenerateCalculatedFieldFormulaResult {
   modelId: string;
 }
 
+export interface FormulaRecommendationVariable {
+  key: string;
+  label: string;
+  suggestedField: string;
+  acceptedTypes?: Array<'string' | 'number' | 'date' | 'boolean' | string>;
+}
+
+export interface FormulaRecommendation {
+  id: string;
+  title: string;
+  description: string;
+  suggestedName: string;
+  formulaTemplate: string;
+  variables: FormulaRecommendationVariable[];
+}
+
+export interface GenerateCalculatedFieldRecommendationsInput {
+  availableFields: FormulaGenerationField[];
+  sampleRows?: Record<string, any>[];
+  modelId?: string;
+  provider?: AIProvider;
+  contextHint?: string;
+  signal?: AbortSignal;
+}
+
 async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7, signal?: AbortSignal) {
   const apiKey = getApiKey('OpenAI');
   if (!apiKey) throw new Error("OpenAI API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
@@ -671,12 +696,12 @@ export async function generateReportInsight(
 
     // 2. Execute Dashboard-level SQL for KPIs if possible
     let kpiValues = result.kpis || [];
-    if (options?.semanticEngine === 'postgres' && options?.executeSql && result.sql) {
+    if (options?.executeSql && result.sql) {
       try {
         const kpiData = await options.executeSql(result.sql);
         if (kpiData && kpiData.length > 0) {
           const firstRow = kpiData[0];
-          const normalizeStr = (str: string) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\\s/g, '_');
+          const normalizeStr = (str: string) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s/g, '_');
 
           kpiValues = (result.kpis || []).map((k: any) => {
             const normalizedLabel = normalizeStr(k.label);
@@ -701,7 +726,7 @@ export async function generateReportInsight(
           kpiValues = (result.kpis || []).map((k: any) => ({ ...k, value: "0" }));
         }
       } catch (e: any) {
-        console.warn("Failed to fetch dashboard KPIs (postgres semantic)", e);
+        console.warn("Failed to fetch dashboard KPIs (scoped SQL executor)", e);
         const errorMsg = e.message || "Query Error";
         kpiValues = (result.kpis || []).map((k: any) => ({ ...k, value: errorMsg }));
       }
@@ -766,7 +791,7 @@ export async function generateReportInsight(
     let finalStrategicInsights = result.insights;
     let finalChartInsights = (result.charts || []).map((c: any) => c.insight);
 
-    const canRegenerateWithRealData = (options?.semanticEngine === 'postgres' && !!options?.executeSql)
+    const canRegenerateWithRealData = !!options?.executeSql
       || (!!options?.token && !!options?.projectId);
 
     if (canRegenerateWithRealData) {
@@ -1084,7 +1109,433 @@ Return strictly this JSON shape:
   }
 }
 
+const normalizeFieldTypeToken = (rawType: any): 'string' | 'number' | 'date' | 'boolean' => {
+  const t = String(rawType || '').trim().toLowerCase();
+  if (t.includes('num') || t.includes('int') || t.includes('float') || t.includes('double') || t.includes('decimal')) return 'number';
+  if (t.includes('date') || t.includes('time')) return 'date';
+  if (t.includes('bool')) return 'boolean';
+  return 'string';
+};
 
+const normalizeVariableKey = (rawKey: any, fallbackIndex: number): string => {
+  const cleaned = String(rawKey || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || `var_${fallbackIndex + 1}`;
+};
+
+const normalizeSuggestedName = (rawName: any, fallback: string): string => {
+  const cleaned = String(rawName || fallback)
+    .trim()
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, '_');
+  return cleaned || fallback;
+};
+
+const fieldNameMapLower = (fields: FormulaGenerationField[]) => {
+  const map = new Map<string, FormulaGenerationField>();
+  fields.forEach((field) => {
+    map.set(String(field.name || '').trim().toLowerCase(), field);
+  });
+  return map;
+};
+
+const findFieldByNameLoose = (fields: FormulaGenerationField[], fieldName?: string): FormulaGenerationField | null => {
+  const token = String(fieldName || '').trim().toLowerCase();
+  if (!token) return null;
+  const byLower = fieldNameMapLower(fields).get(token);
+  if (byLower) return byLower;
+  const byContains = fields.find((field) => String(field.name || '').toLowerCase().includes(token));
+  return byContains || null;
+};
+
+const parseAcceptedTypes = (raw: any): Array<'string' | 'number' | 'date' | 'boolean'> => {
+  if (!Array.isArray(raw)) return [];
+  const normalized = raw.map((item) => normalizeFieldTypeToken(item));
+  return Array.from(new Set(normalized));
+};
+
+const pickSuggestedFieldForVariable = ({
+  availableFields,
+  variable,
+}: {
+  availableFields: FormulaGenerationField[];
+  variable: FormulaRecommendationVariable;
+}): string => {
+  const acceptedTypes = parseAcceptedTypes(variable.acceptedTypes);
+  const suggested = findFieldByNameLoose(availableFields, variable.suggestedField);
+  if (suggested) {
+    if (acceptedTypes.length === 0) return suggested.name;
+    const suggestedType = normalizeFieldTypeToken(suggested.type);
+    if (acceptedTypes.includes(suggestedType)) return suggested.name;
+  }
+
+  if (acceptedTypes.length > 0) {
+    const matchedByType = availableFields.find((field) => acceptedTypes.includes(normalizeFieldTypeToken(field.type)));
+    if (matchedByType) return matchedByType.name;
+  }
+
+  return availableFields[0]?.name || '';
+};
+
+const extractTemplateKeys = (formulaTemplate: string): string[] => {
+  const keys = new Set<string>();
+  const regex = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+  let match: RegExpExecArray | null = regex.exec(formulaTemplate);
+  while (match) {
+    keys.add(String(match[1] || '').trim());
+    match = regex.exec(formulaTemplate);
+  }
+  return Array.from(keys);
+};
+
+const convertBracketFormulaToTemplate = (
+  rawFormula: string
+): { formulaTemplate: string; variables: FormulaRecommendationVariable[] } => {
+  const fieldToKey = new Map<string, { key: string; fieldName: string }>();
+  let index = 0;
+
+  const formulaTemplate = String(rawFormula || '').replace(/\[\s*([^\]]+?)\s*\]/g, (_, fieldRaw) => {
+    const fieldName = String(fieldRaw || '').trim();
+    const token = fieldName.toLowerCase();
+    if (!fieldName) return String(_);
+
+    if (!fieldToKey.has(token)) {
+      fieldToKey.set(token, {
+        key: `var_${index + 1}`,
+        fieldName,
+      });
+      index += 1;
+    }
+    const info = fieldToKey.get(token)!;
+    return `{{${info.key}}}`;
+  });
+
+  const variables = Array.from(fieldToKey.values()).map((item) => ({
+    key: item.key,
+    label: item.fieldName,
+    suggestedField: item.fieldName,
+    acceptedTypes: [],
+  }));
+
+  return { formulaTemplate, variables };
+};
+
+const normalizeRecommendations = (
+  rawItems: any[],
+  availableFields: FormulaGenerationField[]
+): FormulaRecommendation[] => {
+  const normalized: FormulaRecommendation[] = [];
+
+  rawItems.forEach((item, idx) => {
+    const initialTemplate = String(item?.formulaTemplate || item?.template || item?.formula || '').trim();
+    if (!initialTemplate) return;
+
+    let formulaTemplate = initialTemplate;
+    let variablesRaw = Array.isArray(item?.variables) ? item.variables : [];
+
+    const templateKeysBefore = extractTemplateKeys(formulaTemplate);
+    if (templateKeysBefore.length === 0 && /\[[^\]]+\]/.test(formulaTemplate)) {
+      const converted = convertBracketFormulaToTemplate(formulaTemplate);
+      formulaTemplate = converted.formulaTemplate;
+      if (!variablesRaw.length) variablesRaw = converted.variables;
+    }
+
+    const templateKeys = new Set(extractTemplateKeys(formulaTemplate));
+    if (templateKeys.size === 0) return;
+
+    const fallbackVariables = Array.from(templateKeys).map((key, keyIndex) => ({
+      key,
+      label: key.replace(/_/g, ' '),
+      suggestedField: '',
+      acceptedTypes: [],
+      _idx: keyIndex,
+    }));
+
+    const candidateVariables = (variablesRaw.length > 0 ? variablesRaw : fallbackVariables)
+      .map((variable: any, variableIndex: number) => {
+        const key = normalizeVariableKey(variable?.key, variableIndex);
+        if (!templateKeys.has(key)) return null;
+        return {
+          key,
+          label: String(variable?.label || key).trim(),
+          suggestedField: String(variable?.suggestedField || variable?.field || '').trim(),
+          acceptedTypes: parseAcceptedTypes(variable?.acceptedTypes || variable?.types || []),
+          _idx: variableIndex,
+        };
+      })
+      .filter(Boolean) as Array<FormulaRecommendationVariable & { _idx: number }>;
+
+    const dedupedVariables: FormulaRecommendationVariable[] = [];
+    const seenVarKeys = new Set<string>();
+    candidateVariables.forEach((variable) => {
+      if (seenVarKeys.has(variable.key)) return;
+      seenVarKeys.add(variable.key);
+      dedupedVariables.push({
+        key: variable.key,
+        label: variable.label || variable.key,
+        suggestedField: pickSuggestedFieldForVariable({
+          availableFields,
+          variable,
+        }),
+        acceptedTypes: variable.acceptedTypes,
+      });
+    });
+
+    if (dedupedVariables.length === 0) return;
+
+    const fallbackName = `calculated_field_${idx + 1}`;
+    normalized.push({
+      id: `ai-rec-${Date.now()}-${idx}`,
+      title: String(item?.title || item?.name || `Recommendation ${idx + 1}`).trim(),
+      description: String(item?.description || item?.explanation || 'Suggested formula based on your current fields.').trim(),
+      suggestedName: normalizeSuggestedName(item?.suggestedName || item?.fieldName, fallbackName),
+      formulaTemplate,
+      variables: dedupedVariables,
+    });
+  });
+
+  return normalized.slice(0, 5);
+};
+
+const buildFallbackFormulaRecommendations = (
+  availableFields: FormulaGenerationField[]
+): FormulaRecommendation[] => {
+  const numericFields = availableFields.filter((field) => normalizeFieldTypeToken(field.type) === 'number');
+  const stringFields = availableFields.filter((field) => normalizeFieldTypeToken(field.type) === 'string');
+
+  const suggestions: FormulaRecommendation[] = [];
+
+  if (numericFields.length >= 2) {
+    suggestions.push({
+      id: 'fallback-margin',
+      title: 'Quick margin estimate',
+      description: 'Subtract cost-like metric from revenue-like metric, then keep null-safe behavior.',
+      suggestedName: 'margin_value',
+      formulaTemplate: 'IF({{base_value}} != null, {{base_value}} - {{compare_value}}, 0)',
+      variables: [
+        { key: 'base_value', label: 'Base value', suggestedField: numericFields[0].name, acceptedTypes: ['number'] },
+        { key: 'compare_value', label: 'Compare value', suggestedField: numericFields[1].name, acceptedTypes: ['number'] },
+      ],
+    });
+
+    suggestions.push({
+      id: 'fallback-ratio',
+      title: 'Ratio with safe denominator',
+      description: 'Create a percentage or ratio metric with divide-by-zero protection.',
+      suggestedName: 'ratio_percent',
+      formulaTemplate: 'IF({{denominator}} > 0, ROUND(({{numerator}} / {{denominator}}) * 100, 2), 0)',
+      variables: [
+        { key: 'numerator', label: 'Numerator', suggestedField: numericFields[0].name, acceptedTypes: ['number'] },
+        { key: 'denominator', label: 'Denominator', suggestedField: numericFields[1].name, acceptedTypes: ['number'] },
+      ],
+    });
+  }
+
+  if (stringFields.length > 0) {
+    suggestions.push({
+      id: 'fallback-text-normalized',
+      title: 'Standardize text value',
+      description: 'Normalize text to uppercase to reduce duplicate labels caused by casing.',
+      suggestedName: 'normalized_text',
+      formulaTemplate: 'UPPER({{text_field}})',
+      variables: [
+        { key: 'text_field', label: 'Text field', suggestedField: stringFields[0].name, acceptedTypes: ['string'] },
+      ],
+    });
+  }
+
+  if (numericFields.length > 0) {
+    suggestions.push({
+      id: 'fallback-numeric-bucket',
+      title: 'Positive/negative flag',
+      description: 'Mark whether a metric is positive for quick filtering in charts.',
+      suggestedName: 'positive_flag',
+      formulaTemplate: 'IF({{metric}} > 0, 1, 0)',
+      variables: [
+        { key: 'metric', label: 'Metric', suggestedField: numericFields[0].name, acceptedTypes: ['number'] },
+      ],
+    });
+  }
+
+  if (suggestions.length === 0 && availableFields.length > 0) {
+    suggestions.push({
+      id: 'fallback-identity',
+      title: 'Quick copy field',
+      description: 'Start from one existing field and customize the formula from there.',
+      suggestedName: 'new_calculated_field',
+      formulaTemplate: '{{source_field}}',
+      variables: [
+        { key: 'source_field', label: 'Source field', suggestedField: availableFields[0].name, acceptedTypes: [] },
+      ],
+    });
+  }
+
+  return suggestions.slice(0, 4);
+};
+
+export async function generateCalculatedFieldRecommendations(
+  input: GenerateCalculatedFieldRecommendationsInput
+): Promise<{
+  recommendations: FormulaRecommendation[];
+  provider: AIProvider;
+  modelId: string;
+}> {
+  const availableFields = Array.isArray(input.availableFields) ? input.availableFields : [];
+  if (availableFields.length === 0) {
+    throw new Error('No fields available for recommendations.');
+  }
+
+  let modelSelection: { provider: AIProvider; modelId: string };
+  try {
+    modelSelection = pickBestFormulaModel(input.modelId, input.provider);
+  } catch (_e) {
+    return {
+      recommendations: buildFallbackFormulaRecommendations(availableFields),
+      provider: 'Google',
+      modelId: 'fallback-local',
+    };
+  }
+  const fieldCatalog = availableFields
+    .map((field) => `- ${field.name} (${normalizeFieldTypeToken(field.type)})`)
+    .join('\n');
+  const sampleRows = (Array.isArray(input.sampleRows) ? input.sampleRows : []).slice(0, 8);
+  const samplePreview = sampleRows.length > 0 ? JSON.stringify(sampleRows, null, 2) : 'No sample rows available';
+  const contextHint = String(input.contextHint || '').trim();
+
+  const systemInstruction = `
+You are a BI formula recommendation assistant.
+Return valid JSON only.
+You write formulas for this exact expression engine:
+- Field reference syntax: [FieldName]
+- Supported functions only: IF, AND, OR, NOT, ABS, ROUND, CEILING, FLOOR, MAX, MIN, UPPER, LOWER, CONCAT, LEN
+- Operators: + - * / % > < >= <= == != && || !
+
+Rules:
+1. Return 3 to 5 recommendations tailored to available fields.
+2. Use human-friendly language in title and description.
+3. Use formulaTemplate with placeholders like {{variable_key}} (NOT direct [FieldName] if possible).
+4. Each variable must include: key, label, suggestedField, acceptedTypes.
+5. Suggested fields must come from provided fields list.
+6. Avoid meaningless relationships like name-name between unrelated metrics.
+7. Keep formulas executable and concise.
+`;
+
+  const userPrompt = `
+Context hint from user (optional):
+${contextHint || '(none)'}
+
+Available fields:
+${fieldCatalog}
+
+Sample rows (optional):
+${samplePreview}
+
+Return strictly:
+{
+  "recommendations": [
+    {
+      "title": "string",
+      "description": "string",
+      "suggestedName": "string_snake_case",
+      "formulaTemplate": "string with {{variables}}",
+      "variables": [
+        {
+          "key": "string",
+          "label": "string",
+          "suggestedField": "string",
+          "acceptedTypes": ["number" | "string" | "date" | "boolean"]
+        }
+      ]
+    }
+  ]
+}
+`;
+
+  try {
+    let responseText = '{}';
+
+    if (modelSelection.provider === 'OpenAI') {
+      responseText = await callOpenAI(modelSelection.modelId, systemInstruction, userPrompt, 0.2, input.signal);
+    } else if (modelSelection.provider === 'Anthropic') {
+      responseText = await callAnthropic(modelSelection.modelId, systemInstruction, userPrompt, 0.2, input.signal);
+    } else {
+      const apiKey = getApiKey('Google');
+      if (!apiKey) throw new Error('Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.');
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: modelSelection.modelId,
+        systemInstruction
+      });
+
+      const response = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+          responseSchema: {
+            type: SchemaType.OBJECT,
+            properties: {
+              recommendations: {
+                type: SchemaType.ARRAY,
+                items: {
+                  type: SchemaType.OBJECT,
+                  properties: {
+                    title: { type: SchemaType.STRING },
+                    description: { type: SchemaType.STRING },
+                    suggestedName: { type: SchemaType.STRING },
+                    formulaTemplate: { type: SchemaType.STRING },
+                    variables: {
+                      type: SchemaType.ARRAY,
+                      items: {
+                        type: SchemaType.OBJECT,
+                        properties: {
+                          key: { type: SchemaType.STRING },
+                          label: { type: SchemaType.STRING },
+                          suggestedField: { type: SchemaType.STRING },
+                          acceptedTypes: {
+                            type: SchemaType.ARRAY,
+                            items: { type: SchemaType.STRING }
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          } as any
+        }
+      }, { signal: input.signal });
+
+      responseText = response.response.text();
+    }
+
+    const parsed = JSON.parse(cleanJsonResponse(responseText || '{}'));
+    const rawRecommendations = Array.isArray(parsed?.recommendations)
+      ? parsed.recommendations
+      : (Array.isArray(parsed?.items) ? parsed.items : []);
+    const recommendations = normalizeRecommendations(rawRecommendations, availableFields);
+
+    return {
+      recommendations: recommendations.length > 0
+        ? recommendations
+        : buildFallbackFormulaRecommendations(availableFields),
+      provider: modelSelection.provider,
+      modelId: modelSelection.modelId,
+    };
+  } catch (e: any) {
+    console.warn('AI recommendation fallback activated:', e?.message || e);
+    return {
+      recommendations: buildFallbackFormulaRecommendations(availableFields),
+      provider: modelSelection.provider,
+      modelId: modelSelection.modelId,
+    };
+  }
+}
 
 export async function testApiKey(provider: string, key: string): Promise<{ success: boolean, message: string }> {
   if (!key) return { success: false, message: "API Key không được để trống." };

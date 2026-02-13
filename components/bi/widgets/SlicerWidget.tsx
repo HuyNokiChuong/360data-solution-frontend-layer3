@@ -12,6 +12,7 @@ import { useDashboardStore } from '../store/dashboardStore';
 import BaseWidget from './BaseWidget';
 import { formatBIValue } from '../engine/utils';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { getFieldValue } from '../engine/utils';
 
 interface SlicerWidgetProps {
     widget: BIWidget;
@@ -53,17 +54,41 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
     // Switch to useDirectQuery
     const { data: directData, isLoading, error: directError } = useDirectQuery(widget);
 
+    const normalizeFieldToken = useCallback((value: string) => {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    }, []);
+
+    const resolveRowFieldValue = useCallback((row: Record<string, any>, fieldName: string) => {
+        const direct = getFieldValue(row, fieldName);
+        if (direct !== undefined) return direct;
+
+        const target = normalizeFieldToken(fieldName);
+        const targetTail = normalizeFieldToken(fieldName.split('.').pop() || fieldName);
+        const matchedKey = Object.keys(row || {}).find((key) => {
+            const keyToken = normalizeFieldToken(key);
+            if (!keyToken) return false;
+            if (keyToken === target || keyToken === targetTail) return true;
+            const keyTail = normalizeFieldToken(key.split('.').pop() || key);
+            return keyTail === targetTail;
+        });
+
+        if (!matchedKey) return undefined;
+        return row[matchedKey];
+    }, [normalizeFieldToken]);
+
     const { uniqueValues, dataSource } = useMemo(() => {
         if (!widget.dataSourceId || !widget.slicerField) return { uniqueValues: [], dataSource: null };
         const ds = getDataSource(widget.dataSourceId);
         if (!ds) return { uniqueValues: [], dataSource: null };
 
         let values: any[] = [];
+        const pickValue = (row: Record<string, any>) => resolveRowFieldValue(row, widget.slicerField!);
+        const usesDirectValues = ds.type === 'bigquery' || ds.type === 'semantic_model';
 
-        if (ds.type === 'bigquery') {
-            values = directData.map(row => row[widget.slicerField!]);
+        if (usesDirectValues) {
+            values = directData.map((row) => pickValue(row));
         } else {
-            values = ds.data.map(row => row[widget.slicerField!]);
+            values = (ds.data || []).map((row: Record<string, any>) => pickValue(row));
         }
 
         // Include null/undefined values, convert them to "(Blank)" for display
@@ -71,9 +96,26 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
         const unique = Array.from(new Set(mappedValues));
         const sorted = unique.sort((a, b) => (a > b ? 1 : -1));
 
-
         return { uniqueValues: sorted, dataSource: ds };
-    }, [widget.dataSourceId, widget.slicerField, getDataSource, directData]);
+    }, [widget.dataSourceId, widget.slicerField, getDataSource, directData, resolveRowFieldValue]);
+
+    React.useEffect(() => {
+        if (!widget.slicerField) {
+            if (selectedValues.length > 0) setSelectedValues([]);
+            return;
+        }
+
+        const currentFilter = (widget.filters || []).find((f) => f.field === widget.slicerField);
+        const nextSelected = currentFilter
+            ? (Array.isArray(currentFilter.value)
+                ? currentFilter.value
+                : (currentFilter.value !== undefined ? [currentFilter.value] : []))
+            : [];
+
+        if (JSON.stringify(nextSelected) !== JSON.stringify(selectedValues)) {
+            setSelectedValues(nextSelected);
+        }
+    }, [widget.slicerField, widget.filters]);
 
     // Filter values based on search query
     const filteredValues = useMemo(() => {
@@ -120,11 +162,10 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
             enabled: true
         };
 
-        const allWidgets = dashboard.pages && dashboard.pages.length > 0
-            ? dashboard.pages.flatMap(p => p.widgets)
-            : dashboard.widgets;
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const pageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
 
-        const affectedIds = allWidgets
+        const affectedIds = pageWidgets
             .filter(w => w.id !== widget.id)
             .map(w => w.id);
 
@@ -255,6 +296,13 @@ const SlicerWidget: React.FC<SlicerWidgetProps> = ({
                         <div className="text-center py-4 text-slate-500 text-[10px]">
                             <i className="fas fa-search mb-1 opacity-40"></i>
                             <p>No results found for "{searchQuery}"</p>
+                        </div>
+                    )}
+
+                    {filteredValues.length === 0 && !searchQuery && (
+                        <div className="text-center py-4 text-slate-500 text-[10px]">
+                            <i className="fas fa-filter mb-1 opacity-40"></i>
+                            <p>{dataSource ? 'No values found for this field' : 'Data source not found'}</p>
                         </div>
                     )}
 

@@ -260,7 +260,7 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                             ))}
                         </tbody>
                         {columns.length > 0 && tableData.length > 0 && (
-                            <tfoot className="sticky bottom-0 bg-slate-100 dark:bg-slate-900 border-t border-slate-300 dark:border-white/10">
+                            <tfoot className="sticky bottom-0 z-[1] bg-slate-100 dark:bg-slate-800/95 backdrop-blur border-t-2 border-indigo-400/40 shadow-[0_-10px_24px_rgba(2,6,23,0.55)]">
                                 <tr>
                                     {columns.map((col) => {
                                         const isLabelColumn = col.field === totalLabelField;
@@ -270,10 +270,21 @@ const TableWidget: React.FC<TableWidgetProps> = ({
                                         return (
                                             <td
                                                 key={`total-${col.field}`}
-                                                className="px-3 py-2 font-bold text-slate-700 dark:text-slate-200"
+                                                className={`px-3 py-2.5 font-extrabold ${isLabelColumn
+                                                    ? 'text-slate-900 dark:text-white'
+                                                    : 'text-slate-800 dark:text-slate-100'}`}
                                             >
                                                 {isLabelColumn
-                                                    ? `Total (${tableData.length.toLocaleString()} rows)`
+                                                    ? (
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-400/40">
+                                                                Total
+                                                            </span>
+                                                            <span className="text-[13px] md:text-sm font-black">
+                                                                {tableData.length.toLocaleString()} rows
+                                                            </span>
+                                                        </div>
+                                                    )
                                                     : totalInfo?.isNumeric
                                                         ? formatBIValue(totalInfo.sum, format)
                                                         : '-'}

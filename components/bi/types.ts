@@ -124,6 +124,7 @@ export interface BIWidget {
     // Interactions
     enableCrossFilter?: boolean;
     drillDownHierarchy?: string[];
+    drillDownState?: DrillDownState | null;
     legendHierarchy?: string[];
 
     // Card-specific
@@ -434,7 +435,7 @@ export interface DrillDownState {
     widgetId: string;
     hierarchy: string[];
     currentLevel: number;
-    breadcrumbs: { level: number; value: string }[];
+    breadcrumbs: { level: number; value: string; rawValue?: any }[];
     mode?: 'drill' | 'expand'; // Power BI style: drill (replace) vs expand (additive)
 }
 

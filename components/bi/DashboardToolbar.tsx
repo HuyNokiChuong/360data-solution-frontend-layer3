@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useDashboardStore } from './store/dashboardStore';
 import { useFilterStore } from './store/filterStore';
 import { useLanguageStore } from '../../store/languageStore';
@@ -61,14 +61,30 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
         lastReloadTimestamp
     } = useDashboardStore();
 
-    const { clearAllFilters, crossFilters } = useFilterStore();
-    const hasActiveFilters = crossFilters.length > 0;
+    const { clearAllFilters, crossFilters, removeCrossFilter } = useFilterStore();
 
     const [isShareModalOpen, setIsShareModalOpen] = useState(false);
     const activeDashboard = dashboards.find(d => d.id === dashboardId);
     const { shareDashboard } = useDashboardStore();
 
     const dashboard = dashboards.find(d => d.id === dashboardId);
+    const currentPageWidgetIds = useMemo(() => {
+        if (!dashboard) return new Set<string>();
+        const activePage = dashboard.pages?.find((p) => p.id === dashboard.activePageId);
+        const pageWidgets = activePage ? activePage.widgets : (dashboard.widgets || []);
+        return new Set(pageWidgets.map((w) => w.id));
+    }, [dashboard?.id, dashboard?.activePageId, dashboard?.pages, dashboard?.widgets]);
+
+    const currentPageCrossFilters = useMemo(() => {
+        if (!dashboard || currentPageWidgetIds.size === 0) return [];
+
+        return crossFilters.filter((cf) => {
+            if (currentPageWidgetIds.has(cf.sourceWidgetId)) return true;
+            return (cf.affectedWidgetIds || []).some((id) => currentPageWidgetIds.has(id));
+        });
+    }, [dashboard?.id, crossFilters, currentPageWidgetIds]);
+
+    const hasActiveFilters = currentPageCrossFilters.length > 0;
     const [title, setTitle] = useState(dashboard?.title || '');
     const [showSettings, setShowSettings] = useState(false);
     const [reloadMode, setReloadMode] = useState<'interval' | 'cron'>(typeof autoReloadInterval === 'string' && autoReloadInterval.includes(' ') ? 'cron' : 'interval');
@@ -156,17 +172,28 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
 
     // Auto-save visual feedback
+    // Use stable, scalar dependencies to avoid update loops from large array/object refs.
     useEffect(() => {
         if (!dashboard) return;
-        setSaveStatus('saving');
+        setSaveStatus((prev) => (prev === 'saving' ? prev : 'saving'));
         const timer = setTimeout(() => {
             setSaveStatus('saved');
         }, 1500);
         return () => clearTimeout(timer);
-    }, [dashboards, folders, dashboard?.globalFilters]);
+    }, [
+        dashboard?.id,
+        dashboard?.updatedAt,
+        dashboard?.widgets?.length,
+        dashboard?.globalFilters?.length,
+    ]);
 
     const handleClearFilters = () => {
-        clearAllFilters();
+        if (currentPageCrossFilters.length > 0) {
+            const sourceIds = Array.from(new Set(currentPageCrossFilters.map((cf) => cf.sourceWidgetId)));
+            sourceIds.forEach((sourceId) => removeCrossFilter(sourceId));
+        } else {
+            clearAllFilters();
+        }
 
         // Visual feedback
         const btn = document.getElementById('clear-filters-btn');
@@ -232,7 +259,7 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                             title={t('bi.clear_filters')}
                         >
                             <i className="fas fa-times-circle mr-2"></i>
-                            {t('bi.clear_filters')} ({crossFilters.length.toLocaleString()})
+                            {t('bi.clear_filters')} ({currentPageCrossFilters.length.toLocaleString()})
                         </button>
                     </>
                 )}
@@ -358,7 +385,7 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                         className="p-2 rounded hover:bg-slate-100 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
                         title={t('bi.export_image')}
                     >
-                        <i className="fas fa-image"></i>
+                        <i className="fas fa-file-image"></i>
                     </button>
                 </div>
 

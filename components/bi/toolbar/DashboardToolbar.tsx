@@ -167,7 +167,7 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                                     }}
                                     className="w-full px-4 py-2 text-left text-xs text-slate-300 hover:bg-slate-700 transition-colors flex items-center gap-2"
                                 >
-                                    <i className="fas fa-image text-green-400"></i>
+                                    <i className="fas fa-file-image text-green-400"></i>
                                     Export as PNG
                                 </button>
                                 <button
