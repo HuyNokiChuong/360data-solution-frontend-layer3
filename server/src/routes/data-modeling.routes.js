@@ -634,6 +634,47 @@ const calculateSuggestionScore = ({
     return clampScore(score);
 };
 
+const suggestionSignalRank = (suggestion) => {
+    const reasons = Array.isArray(suggestion?.reasons) ? suggestion.reasons : [];
+    if (reasons.includes('from_fk_to_target_pk') || reasons.includes('to_fk_to_source_pk')) return 4;
+    if (reasons.includes('table_reference_pattern')) return 3;
+    if (reasons.some((reason) => String(reason).startsWith('profile_'))) return 2;
+    if (reasons.includes('same_id_like_name')) return 1;
+    return 0;
+};
+
+const relationshipTypePreferenceRank = (type) => {
+    if (type === 'n-1' || type === '1-n') return 4;
+    if (type === '1-1') return 3;
+    if (type === 'n-n') return 1;
+    return 0;
+};
+
+const pickPreferredSuggestion = (current, candidate) => {
+    if (!current) return candidate;
+    if (!candidate) return current;
+
+    if (candidate.confidence !== current.confidence) {
+        return candidate.confidence > current.confidence ? candidate : current;
+    }
+
+    const currentValid = current.validationStatus === 'valid' ? 1 : 0;
+    const candidateValid = candidate.validationStatus === 'valid' ? 1 : 0;
+    if (candidateValid !== currentValid) {
+        return candidateValid > currentValid ? candidate : current;
+    }
+
+    const signalDiff = suggestionSignalRank(candidate) - suggestionSignalRank(current);
+    if (signalDiff !== 0) return signalDiff > 0 ? candidate : current;
+
+    const relationDiff = relationshipTypePreferenceRank(candidate.relationshipType) - relationshipTypePreferenceRank(current.relationshipType);
+    if (relationDiff !== 0) return relationDiff > 0 ? candidate : current;
+
+    const currentKey = `${current.fromTableId}:${String(current.fromColumn).toLowerCase()}->${current.toTableId}:${String(current.toColumn).toLowerCase()}`;
+    const candidateKey = `${candidate.fromTableId}:${String(candidate.fromColumn).toLowerCase()}->${candidate.toTableId}:${String(candidate.toColumn).toLowerCase()}`;
+    return candidateKey.localeCompare(currentKey) < 0 ? candidate : current;
+};
+
 router.get('/default-model', async (req, res) => {
     try {
         const model = await ensureDefaultDataModel(req.user.workspace_id, 'Workspace Default Model');
@@ -920,6 +961,7 @@ router.post('/relationships/auto-detect', async (req, res) => {
             for (let j = i + 1; j < tables.length; j += 1) {
                 const tableA = tables[i];
                 const tableB = tables[j];
+                let bestPairSuggestion = null;
 
                 const colsA = (tableA.schema || []).filter((col) => col?.name);
                 const colsB = (tableB.schema || []).filter((col) => col?.name);
@@ -958,11 +1000,6 @@ router.post('/relationships/auto-detect', async (req, res) => {
                             directionalSeeds.push(
                                 { fromTable: tableA, fromColumn: a.name, toTable: tableB, toColumn: b.name, seedReason: 'same_id_like_name' },
                                 { fromTable: tableB, fromColumn: b.name, toTable: tableA, toColumn: a.name, seedReason: 'same_id_like_name' }
-                            );
-                        } else if (bothPostgres && normalizedA === normalizedB && isForeignKeyLikeColumnName(normalizedA)) {
-                            directionalSeeds.push(
-                                { fromTable: tableA, fromColumn: a.name, toTable: tableB, toColumn: b.name, seedReason: 'same_fk_name' },
-                                { fromTable: tableB, fromColumn: b.name, toTable: tableA, toColumn: a.name, seedReason: 'same_fk_name' }
                             );
                         }
 
@@ -1008,6 +1045,7 @@ router.post('/relationships/auto-detect', async (req, res) => {
                             const hasExplicitReferencePattern = analysis.aRefersB || analysis.bRefersA;
                             const tableNamesRelated = areTableNamesLikelyRelated(seed.fromTable.tableName, seed.toTable.tableName);
                             const bothForeignKeyLike = analysis.aFkLike && analysis.bFkLike;
+                            const hasStrongPattern = hasExplicitReferencePattern || analysis.confidence === 'strong';
 
                             // Two FK columns with same name across unrelated tables usually point to a 3rd dimension table.
                             // Avoid suggesting direct relationship to prevent wrong planner joins.
@@ -1017,6 +1055,10 @@ router.post('/relationships/auto-detect', async (req, res) => {
                             if (plainIdPair && !tableNamesRelated) continue;
 
                             if (inferred.ambiguousSharedForeignKey) continue;
+
+                            if (!hasStrongPattern && isGenericNonKeyColumnName(normalizedFromColumn) && isGenericNonKeyColumnName(normalizedToColumn)) {
+                                continue;
+                            }
 
                             const score = calculateSuggestionScore({
                                 typeA: fromColumnType,
@@ -1028,10 +1070,16 @@ router.post('/relationships/auto-detect', async (req, res) => {
                                 inferred,
                             });
 
-                            const minScore = inferred.byProfile ? 52 : 70;
-                            const requiredScore = relationshipType === 'n-n'
-                                ? Math.max(minScore, 68)
-                                : minScore;
+                            const hasProfileEvidence = Boolean(
+                                inferred.byProfile
+                                && inferred.overlapProfile
+                                && Math.max(
+                                    Number(inferred.overlapProfile.coverageFrom || 0),
+                                    Number(inferred.overlapProfile.coverageTo || 0)
+                                ) >= 0.6
+                            );
+                            const minScore = hasStrongPattern ? 72 : (hasProfileEvidence ? 86 : 92);
+                            const requiredScore = relationshipType === 'n-n' ? (minScore + 6) : minScore;
                             if (score < requiredScore) continue;
 
                             let validationStatus = 'valid';
@@ -1081,12 +1129,17 @@ router.post('/relationships/auto-detect', async (req, res) => {
                                 ].filter(Boolean))),
                             };
 
-                            const existing = suggestionsByKey.get(canonicalKey);
-                            if (!existing || Number(existing.confidence || 0) < suggestion.confidence) {
-                                suggestionsByKey.set(canonicalKey, suggestion);
-                            }
+                            bestPairSuggestion = pickPreferredSuggestion(bestPairSuggestion, suggestion);
                         }
                     }
+                }
+
+                if (bestPairSuggestion) {
+                    const existing = suggestionsByKey.get(bestPairSuggestion.id);
+                    suggestionsByKey.set(
+                        bestPairSuggestion.id,
+                        pickPreferredSuggestion(existing, bestPairSuggestion)
+                    );
                 }
             }
         }
