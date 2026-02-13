@@ -45,7 +45,7 @@ const HOST = String(process.env.BACKEND_HOST || '').trim();
 // ============================================
 app.use(helmet());
 app.use(cors({
-    origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://0.0.0.0:8080'],
+    origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://0.0.0.0:8080', 'https://bi.360data-solutions.com'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
