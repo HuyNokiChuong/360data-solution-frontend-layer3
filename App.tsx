@@ -52,6 +52,7 @@ const UserManagement = lazyWithRetry(() => import('./components/UserManagement')
 const BIMain = lazyWithRetry(() => import('./components/bi/BIMain'), 'BIMain');
 const LogViewer = lazyWithRetry(() => import('./components/LogViewer'), 'LogViewer');
 const Onboarding = lazyWithRetry(() => import('./components/Onboarding'), 'Onboarding');
+const GettingStartedGuide = lazyWithRetry(() => import('./components/GettingStartedGuide'), 'GettingStartedGuide');
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -88,6 +89,7 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : null;
   });
   const [isAuthenticated, setIsAuthenticated] = useState(!!currentUser);
+  const [hasSeenGettingStarted, setHasSeenGettingStarted] = useState(true);
 
   const domain = currentUser?.email.split('@')[1] || pendingUser?.email.split('@')[1] || '';
 
@@ -617,10 +619,30 @@ const App: React.FC = () => {
   }, [reportSessions, isReady, isAuthenticated, currentUser]);
 
   useEffect(() => {
-    if (!hasConnections && activeTab !== 'connections' && activeTab !== 'ai-config' && activeTab !== 'users' && activeTab !== 'onboarding') {
+    if (!hasConnections && activeTab !== 'connections' && activeTab !== 'ai-config' && activeTab !== 'users' && activeTab !== 'onboarding' && activeTab !== 'getting-started') {
       setActiveTab('connections');
     }
   }, [connections.length, activeTab, hasConnections]);
+
+  useEffect(() => {
+    if (!currentUser?.email) {
+      setHasSeenGettingStarted(true);
+      return;
+    }
+
+    const key = `guide_seen:${currentUser.email.trim().toLowerCase()}`;
+    setHasSeenGettingStarted(localStorage.getItem(key) === '1');
+  }, [currentUser?.email]);
+
+  const markGettingStartedSeen = () => {
+    const email = currentUser?.email?.trim().toLowerCase();
+    if (email) {
+      localStorage.setItem(`guide_seen:${email}`, '1');
+    }
+    setHasSeenGettingStarted(true);
+  };
+
+  const shouldForceGettingStarted = isAuthenticated && !!currentUser && !hasSeenGettingStarted;
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -796,7 +818,7 @@ const App: React.FC = () => {
     setCurrentUser(userToSave);
     setIsAuthenticated(true);
     setPendingUser(null);
-    navigate('/connections');
+    navigate('/getting-started');
   };
 
   const handleLogout = () => {
@@ -1289,7 +1311,7 @@ const App: React.FC = () => {
             </div>
           }>
             <Routes>
-              <Route path="/" element={<Navigate to="/connections" replace />} />
+              <Route path="/" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
 
               <Route path="/onboarding" element={
                 pendingUser || (currentUser && !currentUser.jobTitle)
@@ -1297,7 +1319,17 @@ const App: React.FC = () => {
                     currentUser={pendingUser || currentUser!}
                     onUpdateUser={handleOnboardingComplete}
                   />
-                  : <Navigate to="/connections" replace />
+                  : <Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />
+              } />
+
+              <Route path="/getting-started" element={
+                <GettingStartedGuide
+                  currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                  hasConnections={hasConnections}
+                  activeTableCount={activeTablesForBuilder.length}
+                  onGoToTab={setActiveTab}
+                  onMarkComplete={markGettingStartedSeen}
+                />
               } />
 
               <Route path="/connections" element={
@@ -1372,7 +1404,7 @@ const App: React.FC = () => {
                   <UserManagement users={users} setUsers={setUsers} currentUser={currentUser} />
                 ) : <Navigate to="/connections" replace />
               } />
-              <Route path="*" element={<Navigate to="/connections" replace />} />
+              <Route path="*" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
             </Routes>
           </Suspense>
         </main>

@@ -158,3 +158,92 @@ html:not(.dark) ::-webkit-scrollbar-thumb:hover {
 .dark .custom-scrollbar::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.1);
 }
+
+@keyframes guide2Enter {
+    0% {
+        opacity: 0;
+        transform: translateY(18px) scale(0.985);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes guide2Pulse {
+    0%,
+    100% {
+        transform: translateX(0);
+        box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.26);
+    }
+    50% {
+        transform: translateX(2px);
+        box-shadow: 0 0 0 9px rgba(13, 148, 136, 0);
+    }
+}
+
+@keyframes guide2Sweep {
+    0% {
+        background-position: 0% 50%;
+    }
+    100% {
+        background-position: 220% 50%;
+    }
+}
+
+@keyframes guide2Ambient {
+    0%,
+    100% {
+        opacity: 0.45;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.95;
+        transform: scale(1.04);
+    }
+}
+
+.guide2-enter {
+    opacity: 0;
+    animation: guide2Enter 0.5s ease forwards;
+}
+
+.guide2-step-focused {
+    animation: guide2Pulse 1.8s ease-in-out infinite;
+}
+
+.guide2-connector {
+    border-image: linear-gradient(180deg, rgba(13, 148, 136, 0.25), rgba(245, 158, 11, 0.95), rgba(13, 148, 136, 0.25)) 1;
+}
+
+.guide2-progress-ring {
+    animation: guide2Sweep 4.5s linear infinite;
+    background-size: 220% 100%;
+}
+
+.guide2-ambient {
+    animation: guide2Ambient 3s ease-in-out infinite;
+}
+
+.guide2-grid {
+    background-image:
+        linear-gradient(to right, rgba(148, 163, 184, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(148, 163, 184, 0.1) 1px, transparent 1px);
+    background-size: 24px 24px;
+}
+
+@keyframes guide2Highlight {
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.32);
+        transform: translateY(0);
+    }
+    50% {
+        box-shadow: 0 14px 28px -16px rgba(245, 158, 11, 0.7);
+        transform: translateY(-1px);
+    }
+}
+
+.guide2-highlight-card {
+    animation: guide2Highlight 2.2s ease-in-out infinite;
+}

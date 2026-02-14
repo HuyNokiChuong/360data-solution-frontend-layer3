@@ -12,6 +12,7 @@ interface LanguageState {
 
 const translations: Record<Language, Record<string, string>> = {
     en: {
+        'nav.getting_started': 'Start Here',
         'nav.connections': 'Connections',
         'nav.tables': 'Data Assets',
         'nav.reports': 'Ask AI',
@@ -387,6 +388,7 @@ const translations: Record<Language, Record<string, string>> = {
         'ai.provider.anthropic_desc': 'Use Claude Sonnet 4 for coding and reasoning.',
     },
     vi: {
+        'nav.getting_started': 'Bắt đầu tại đây',
         'nav.connections': 'Kết nối',
         'nav.tables': 'Tài sản dữ liệu',
         'nav.reports': 'Hỏi đáp AI',
