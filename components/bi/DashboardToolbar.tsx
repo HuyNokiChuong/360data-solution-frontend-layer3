@@ -26,6 +26,7 @@ interface DashboardToolbarProps {
     isSyncing?: boolean;
     currentUserId?: string;
     currentUserEmail?: string;
+    currentUserGroup?: string;
 }
 
 const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
@@ -47,7 +48,8 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
     onStopAllJobs,
     isSyncing = false,
     currentUserId,
-    currentUserEmail
+    currentUserEmail,
+    currentUserGroup
 }) => {
     const { t } = useLanguageStore();
     const {
@@ -96,7 +98,24 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
         if (!candidate) return false;
         return candidate === normalizeIdentity(currentUserId) || candidate === normalizeIdentity(currentUserEmail);
     };
-    const currentPermission = dashboard?.sharedWith?.find((p) => isCurrentUser(p.userId))?.permission;
+    const permissionRank = (permission?: SharePermission['permission']) => {
+        if (permission === 'admin') return 3;
+        if (permission === 'edit') return 2;
+        if (permission === 'view') return 1;
+        return 0;
+    };
+    const shareMatchesCurrentUser = (share?: SharePermission) => {
+        const targetType = normalizeIdentity(share?.targetType) === 'group' ? 'group' : 'user';
+        const targetId = normalizeIdentity(share?.targetId || (targetType === 'group' ? share?.groupId : share?.userId));
+        if (!targetId) return false;
+        if (targetType === 'group') return targetId === normalizeIdentity(currentUserGroup);
+        return isCurrentUser(targetId);
+    };
+    const currentPermission = (() => {
+        const matches = (dashboard?.sharedWith || []).filter((share) => shareMatchesCurrentUser(share));
+        if (matches.length === 0) return undefined;
+        return [...matches].sort((a, b) => permissionRank(b.permission) - permissionRank(a.permission))[0]?.permission;
+    })();
 
     // Click outside to close settings
     useEffect(() => {
@@ -408,14 +427,25 @@ const DashboardToolbar: React.FC<DashboardToolbarProps> = ({
                     itemType="dashboard"
                     permissions={activeDashboard.sharedWith || []}
                     dashboard={activeDashboard}
-                    onSave={(email, payload: ShareSavePayload) => {
+                    onSave={(target, payload: ShareSavePayload) => {
                         const dashboardRole = payload.roles['dashboard'];
                         const rlsCfg = payload.dashboardRLS[activeDashboard.id];
+                        const targetType = target.targetType === 'group' ? 'group' : 'user';
+                        const targetId = String(target.targetId || '').trim();
+                        const targetKey = `${targetType}:${targetId.toLowerCase()}`;
+                        const permissionTargetKey = (perm: SharePermission) => {
+                            const permType = String(perm?.targetType || '').trim().toLowerCase() === 'group' ? 'group' : 'user';
+                            const permId = String(perm?.targetId || (permType === 'group' ? perm?.groupId : perm?.userId) || '').trim();
+                            return `${permType}:${permId.toLowerCase()}`;
+                        };
                         if (activeDashboard) {
-                            let newPerms = [...(activeDashboard.sharedWith || [])].filter(p => p.userId !== email);
+                            let newPerms = [...(activeDashboard.sharedWith || [])].filter((p) => permissionTargetKey(p) !== targetKey);
                             if (dashboardRole !== 'none') {
                                 newPerms.push({
-                                    userId: email,
+                                    targetType,
+                                    targetId,
+                                    userId: targetType === 'user' ? targetId : undefined,
+                                    groupId: targetType === 'group' ? targetId : undefined,
                                     permission: dashboardRole,
                                     sharedAt: new Date().toISOString(),
                                     allowedPageIds: rlsCfg?.allowedPageIds || [],

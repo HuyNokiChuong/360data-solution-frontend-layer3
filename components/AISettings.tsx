@@ -1,8 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AI_MODELS } from '../constants';
 import { testApiKey } from '../services/ai';
 import { API_BASE } from '../services/api';
 import { useLanguageStore } from '../store/languageStore';
+
+type ToastType = 'success' | 'error';
+
+interface ToastState {
+  message: string;
+  type: ToastType;
+  id: number;
+}
 
 const AISettings: React.FC = () => {
   const { t } = useLanguageStore();
@@ -11,6 +19,17 @@ const AISettings: React.FC = () => {
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_api_key') || '');
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [toast, setToast] = useState<ToastState | null>(null);
+
+  const showToast = (message: string, type: ToastType = 'success') => {
+    setToast({ message, type, id: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [toast?.id]);
 
   const saveAll = () => {
     localStorage.setItem('openai_api_key', openaiKey.trim());
@@ -30,16 +49,19 @@ const AISettings: React.FC = () => {
             { provider: 'anthropic', apiKey: anthropicKey.trim() },
           ]
         })
-      }).catch(console.error);
+      }).catch((error) => {
+        console.error(error);
+        showToast('Saved locally, but sync to server failed.', 'error');
+      });
     }
 
-    alert(t('ai.saved'));
+    showToast(t('ai.saved'), 'success');
   };
 
   const handleTestKey = async (provider: string, key: string) => {
     setTesting(prev => ({ ...prev, [provider]: true }));
     const result = await testApiKey(provider, key);
-    alert(result.message);
+    showToast(result.message, result.success ? 'success' : 'error');
     setTesting(prev => ({ ...prev, [provider]: false }));
   };
 
@@ -88,6 +110,29 @@ const AISettings: React.FC = () => {
 
   return (
     <div className="p-10 max-w-7xl mx-auto h-full overflow-y-auto custom-scrollbar">
+      {toast && (
+        <div className="fixed top-6 right-6 z-[80] animate-in fade-in slide-in-from-top-3 duration-300">
+          <div className={`relative min-w-[320px] max-w-md rounded-[2rem] px-6 py-5 border backdrop-blur-2xl shadow-2xl flex items-start gap-4 ${toast.type === 'error' ? 'bg-rose-500/90 border-rose-200/40 text-white' : 'bg-indigo-600/90 border-indigo-200/30 text-white'}`}>
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center border ${toast.type === 'error' ? 'bg-black/20 border-white/20' : 'bg-cyan-300/20 border-cyan-200/25'}`}>
+              <i className={`fas ${toast.type === 'error' ? 'fa-triangle-exclamation' : 'fa-circle-check'} text-sm`}></i>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.18em] opacity-80">
+                {toast.type === 'error' ? 'Notification' : 'Saved'}
+              </p>
+              <p className="text-sm font-semibold leading-relaxed break-words">{toast.message}</p>
+            </div>
+            <button
+              onClick={() => setToast(null)}
+              className="w-8 h-8 rounded-xl bg-black/20 border border-white/20 hover:bg-black/30 transition-colors flex items-center justify-center"
+              aria-label="Close notification"
+            >
+              <i className="fas fa-xmark text-xs"></i>
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="mb-16 flex justify-between items-end">
         <div>
           <h2 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter mb-4 animate-in fade-in slide-in-from-left duration-700">{t('ai.neural_hub')}</h2>

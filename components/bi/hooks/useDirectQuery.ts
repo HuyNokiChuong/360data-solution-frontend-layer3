@@ -1273,7 +1273,10 @@ export const useDirectQuery = (widget: BIWidget) => {
                 bqFilters.push(...activeCrossFilters.map(f => ({ ...f, enabled: true })));
                 const bqFiltersWithDrill = appendDrillDownFilters(bqFilters);
 
-                if (dimensions.length === 0 && measures.length === 0) {
+                const scopedDimensions = dimensions.filter((field) => isFieldCompatibleWithCurrentSource(field));
+                const scopedMeasures = measures.filter((measure) => isFieldCompatibleWithCurrentSource(measure.field));
+
+                if (scopedDimensions.length === 0 && scopedMeasures.length === 0) {
                     setData([]);
                     setIsLoading(false);
                     return;
@@ -1287,13 +1290,13 @@ export const useDirectQuery = (widget: BIWidget) => {
                     bqSortDir = dir.toUpperCase() as any;
                     if (type === 'category') {
                         // Sort by all dimensions to maintain hierarchy order
-                        bqSortBy = dimensions;
+                        bqSortBy = scopedDimensions;
                     } else if (type === 'value') {
-                        bqSortBy = measures[0] ? `${measures[0].field}_${measures[0].aggregation}` : undefined;
+                        bqSortBy = scopedMeasures[0] ? `${scopedMeasures[0].field}_${scopedMeasures[0].aggregation}` : undefined;
                     }
-                } else if (dimensions.length > 0) {
+                } else if (scopedDimensions.length > 0) {
                     // AUTO-DETECT TIME SERIES: Sort by all dimensions ASC by default if no explicit sort
-                    const firstDim = dimensions[0];
+                    const firstDim = scopedDimensions[0];
                     const isTimeHierarchy = firstDim.includes('___');
                     const fieldDef = dataSource.schema.find(f => f.name === firstDim.split('___')[0]);
                     const isDateType = fieldDef?.type === 'date' ||
@@ -1301,16 +1304,16 @@ export const useDirectQuery = (widget: BIWidget) => {
                         firstDim.toLowerCase().includes('time');
 
                     if (isTimeHierarchy || isDateType) {
-                        bqSortBy = dimensions;
+                        bqSortBy = scopedDimensions;
                         bqSortDir = 'ASC';
                     } else if (['pie', 'donut'].includes(widget.chartType || widget.type)) {
                         // Smart default for Pie/Donut: Biggest slice first
-                        bqSortBy = measures[0] ? `${measures[0].field}_${measures[0].aggregation}` : undefined;
+                        bqSortBy = scopedMeasures[0] ? `${scopedMeasures[0].field}_${scopedMeasures[0].aggregation}` : undefined;
                         bqSortDir = 'DESC';
                     }
                 }
 
-                const bqDimensions = dimensions.map(d => {
+                const bqDimensions = scopedDimensions.map(d => {
                     const calcField = allCalculatedFields.find(c => c.name === d);
                     if (calcField) {
                         let expr = calcField.formula;
@@ -1335,7 +1338,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                     token!, projectId, dataSource.datasetName || '', dataSource.tableName || '',
                     {
                         dimensions: bqDimensions,
-                        measures,
+                        measures: scopedMeasures,
                         filters: finalFilters,
                         sortBy: bqSortBy,
                         sortDir: bqSortDir,
@@ -1350,7 +1353,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                         const newRow: Record<string, any> = {};
 
                         // Copy dimension values (handle hierarchy case-insensitively)
-                        dimensions.forEach(dim => {
+                        scopedDimensions.forEach(dim => {
                             if (row[dim] !== undefined) {
                                 newRow[dim] = row[dim];
                             } else {
@@ -1360,7 +1363,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                         });
 
                         // Extract measures
-                        measures.forEach(m => {
+                        scopedMeasures.forEach(m => {
                             const sqlAlias = `${m.field}_${m.aggregation}`;
                             const findKey = (obj: any, target: string) =>
                                 Object.keys(obj).find(k => k.toLowerCase() === target.toLowerCase());
@@ -1388,14 +1391,15 @@ export const useDirectQuery = (widget: BIWidget) => {
                         return;
                     }
 
-                    if (dimensions.length === 0 && measures.length > 0) {
+                    if (scopedDimensions.length === 0 && scopedMeasures.length > 0) {
                         normalizedData = normalizedData.map((row) => ({
                             ...row,
                             _autoCategory: row._autoCategory || 'Total',
                         }));
                     }
 
-                    const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState);
+                    const axisFields = DrillDownService.getCurrentFields(widget, currentDrillDownState)
+                        .filter((field) => scopedDimensions.includes(field));
 
                     let processedData = normalizedData;
 
@@ -1419,7 +1423,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                     // If multiple rows have the same label, we sum their measures.
                     // IMPORTANT: Skip this if we are going to Pivot (Block 4), because this grouping blindly merges 
                     // rows based on Axis Label, destroying the Legend distinction (e.g. merging "Brand A" and "Brand B").
-                    const willPivot = widget.legend && dimensions.includes(widget.legend);
+                    const willPivot = widget.legend && scopedDimensions.includes(widget.legend);
 
                         if (axisFields.length > 0 && !willPivot) {
                             const groupedMap = new Map<string, any>();
@@ -1429,7 +1433,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                                     groupedMap.set(label, { ...row });
                                 } else {
                                     const existing = groupedMap.get(label);
-                                    measures.forEach(m => {
+                                    scopedMeasures.forEach(m => {
                                         const outputField = getMeasureOutputField(m.field, m.aggregation);
                                         existing[outputField] = (existing[outputField] || 0) + (row[outputField] || 0);
                                     });
@@ -1440,11 +1444,11 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                     const legendFields = new Set<string>();
                     // 4. Pivot by Legend (if applicable)
-                    if (widget.legend && dimensions.includes(widget.legend)) {
+                    if (widget.legend && scopedDimensions.includes(widget.legend)) {
                         const xFieldKey = axisKey;
                         const legendField = widget.legend;
-                        const legendMeasureField = measures[0]
-                            ? getMeasureOutputField(measures[0].field, measures[0].aggregation)
+                        const legendMeasureField = scopedMeasures[0]
+                            ? getMeasureOutputField(scopedMeasures[0].field, scopedMeasures[0].aggregation)
                             : undefined;
                         const pivotMap = new Map<string, any>();
 
@@ -1492,7 +1496,7 @@ export const useDirectQuery = (widget: BIWidget) => {
                                         return Array.from(legendFields).reduce((sum, key) => sum + (Number(row[key]) || 0), 0);
                                     }
                                     // Otherwise sum all primary measures
-                                    return measures.reduce((sum, m) => {
+                                    return scopedMeasures.reduce((sum, m) => {
                                         const outputField = getMeasureOutputField(m.field, m.aggregation);
                                         return sum + (Number(row[outputField]) || 0);
                                     }, 0);
@@ -1511,7 +1515,7 @@ export const useDirectQuery = (widget: BIWidget) => {
 
                     // 6. Quick Measures Post-Processing
                     // We do this AFTER everything else because it depends on final sorted/grouped data
-                    const activeQuickMeasures = measures.filter(m => m.isQuickMeasure);
+                    const activeQuickMeasures = scopedMeasures.filter(m => m.isQuickMeasure);
                     if (activeQuickMeasures.length > 0) {
                         const finalData = [...processedData];
                         const totalMap = new Map<string, number>();
@@ -1573,6 +1577,7 @@ export const useDirectQuery = (widget: BIWidget) => {
         JSON.stringify(globalFilters),
         JSON.stringify(crossFilters.filter(cf => cf.sourceWidgetId !== widget.id)),
         JSON.stringify(currentDrillDownState),
+        isFieldCompatibleWithCurrentSource,
         isNullLikeFilterValue,
         appendDrillDownFilters
     ]);

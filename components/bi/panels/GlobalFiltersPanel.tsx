@@ -3,10 +3,12 @@ import React, { useState } from 'react';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useDataStore } from '../store/dataStore';
 import { GlobalFilter, FilterOperator } from '../types';
+import { isAssistantGeneratedDataSource } from '../utils/dataSourceVisibility';
 
 const GlobalFiltersPanel: React.FC = () => {
     const { getActiveDashboard, addGlobalFilter, removeGlobalFilter, updateDashboard } = useDashboardStore();
     const { dataSources } = useDataStore();
+    const visibleDataSources = dataSources.filter((ds) => !isAssistantGeneratedDataSource(ds));
 
     const activeDashboard = getActiveDashboard();
     const [isAddingFilter, setIsAddingFilter] = useState(false);
@@ -26,7 +28,7 @@ const GlobalFiltersPanel: React.FC = () => {
         );
     }
 
-    const dataSource = dataSources.find(ds => ds.id === selectedDataSourceId);
+    const dataSource = visibleDataSources.find(ds => ds.id === selectedDataSourceId);
     const fields = dataSource?.schema || [];
 
     const handleAddFilter = () => {
@@ -94,7 +96,7 @@ const GlobalFiltersPanel: React.FC = () => {
                             className="w-full bg-slate-950 border border-white/10 rounded px-2 py-1.5 text-xs text-white focus:ring-1 focus:ring-indigo-500 outline-none"
                         >
                             <option value="">Select Data Source...</option>
-                            {dataSources.map(ds => (
+                            {visibleDataSources.map(ds => (
                                 <option key={ds.id} value={ds.id}>
                                     {ds.tableName || ds.name}
                                 </option>

@@ -4,6 +4,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useDataStore } from '../store/dataStore';
 import { Field } from '../types';
+import { isAssistantGeneratedDataSource } from '../utils/dataSourceVisibility';
 
 interface FieldItemProps {
     field: Field;
@@ -101,9 +102,14 @@ const FieldsListPanel: React.FC<FieldsListPanelProps> = ({ onFieldDragStart }) =
     const [searchQuery, setSearchQuery] = useState('');
     const [filterType, setFilterType] = useState<'all' | 'number' | 'string' | 'date' | 'boolean'>('all');
 
+    const visibleDataSources = useMemo(
+        () => dataSources.filter((ds) => !isAssistantGeneratedDataSource(ds)),
+        [dataSources]
+    );
+
     const selectedDataSource = useMemo(() => {
-        return dataSources.find(ds => ds.id === selectedDataSourceId);
-    }, [dataSources, selectedDataSourceId]);
+        return visibleDataSources.find(ds => ds.id === selectedDataSourceId);
+    }, [visibleDataSources, selectedDataSourceId]);
 
     const filteredFields = useMemo(() => {
         if (!selectedDataSource) return [];
@@ -173,7 +179,7 @@ const FieldsListPanel: React.FC<FieldsListPanelProps> = ({ onFieldDragStart }) =
                         className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-indigo-400 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none hover:border-indigo-500/50 transition-all cursor-pointer"
                     >
                         <option value="">Select data table...</option>
-                        {dataSources.map(ds => (
+                        {visibleDataSources.map(ds => (
                             <option key={ds.id} value={ds.id}>
                                 {ds.type === 'semantic_model'
                                     ? ds.name

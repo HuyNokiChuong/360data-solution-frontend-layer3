@@ -13,7 +13,7 @@ interface ShareModalProps {
     permissions: SharePermission[];
     dashboard?: BIDashboard;
     folderDashboards?: BIDashboard[];
-    onSave: (email: string, payload: ShareSavePayload) => void;
+    onSave: (target: { targetType: 'user' | 'group'; targetId: string }, payload: ShareSavePayload) => void;
 }
 
 const createDefaultConfig = (dashboard?: BIDashboard): DashboardRLSConfig => ({
@@ -113,9 +113,11 @@ export const ShareModal: React.FC<ShareModalProps> = ({
 }) => {
     const { t } = useLanguageStore();
     const dataSources = useDataStore((s) => s.dataSources);
-    const [email, setEmail] = useState('');
+    const [targetType, setTargetType] = useState<'user' | 'group'>('user');
+    const [targetId, setTargetId] = useState('');
     const [workspaceUserEmails, setWorkspaceUserEmails] = useState<string[]>([]);
-    const [isEmailSuggestionOpen, setIsEmailSuggestionOpen] = useState(false);
+    const [workspaceGroups, setWorkspaceGroups] = useState<string[]>([]);
+    const [isTargetSuggestionOpen, setIsTargetSuggestionOpen] = useState(false);
     const [granularRoles, setGranularRoles] = useState<Record<string, SharePermission['permission'] | 'none'>>({});
     const [dashboardRLS, setDashboardRLS] = useState<Record<string, DashboardRLSConfig>>({});
     const [confirmedDashboardIds, setConfirmedDashboardIds] = useState<Set<string>>(new Set());
@@ -126,13 +128,28 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     const dashboardById = useMemo(() => new Map(dashboards.map((d) => [d.id, d])), [dashboards]);
     const sharedResources = useMemo(() => {
         const dedupeShares = (shares: SharePermission[] = []) => {
-            const byEmail = new Map<string, SharePermission>();
+            const byTarget = new Map<string, SharePermission>();
             shares.forEach((share) => {
-                const email = String(share?.userId || '').trim();
-                if (!email) return;
-                byEmail.set(email.toLowerCase(), { ...share, userId: email });
+                const normalizedTargetType = String(share?.targetType || '').trim().toLowerCase() === 'group' ? 'group' : 'user';
+                const normalizedTargetId = String(
+                    share?.targetId || (normalizedTargetType === 'group' ? share?.groupId : share?.userId) || ''
+                ).trim();
+                if (!normalizedTargetId) return;
+                const key = `${normalizedTargetType}:${normalizedTargetId.toLowerCase()}`;
+                byTarget.set(key, {
+                    ...share,
+                    targetType: normalizedTargetType,
+                    targetId: normalizedTargetId,
+                    userId: normalizedTargetType === 'user' ? normalizedTargetId : undefined,
+                    groupId: normalizedTargetType === 'group' ? normalizedTargetId : undefined,
+                });
             });
-            return Array.from(byEmail.values()).sort((a, b) => String(a.userId).localeCompare(String(b.userId)));
+            return Array.from(byTarget.values()).sort((a, b) => {
+                const aType = String(a.targetType || 'user');
+                const bType = String(b.targetType || 'user');
+                if (aType !== bType) return aType.localeCompare(bType);
+                return String(a.targetId || '').localeCompare(String(b.targetId || ''));
+            });
         };
 
         if (itemType === 'dashboard') {
@@ -192,6 +209,9 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         setDashboardRLS(rlsMap);
         setConfirmedDashboardIds(new Set());
         setViewMode('manage');
+        setTargetType('user');
+        setTargetId('');
+        setIsTargetSuggestionOpen(false);
         if (!dashboards.length) setActiveDashboardId('');
     }, [isOpen, itemType, dashboards]);
 
@@ -205,22 +225,25 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         })
             .then((res) => res.json())
             .then((data) => {
-                const emails = Array.isArray(data?.data)
-                    ? data.data.map((u: any) => String(u?.email || '').trim()).filter(Boolean)
-                    : [];
+                const rows = Array.isArray(data?.data) ? data.data : [];
+                const emails = rows.map((u: any) => String(u?.email || '').trim()).filter(Boolean);
+                const groups = rows.map((u: any) => String(u?.groupName || '').trim()).filter(Boolean);
                 setWorkspaceUserEmails(Array.from(new Set(emails)));
+                setWorkspaceGroups(Array.from(new Set(groups)));
             })
             .catch(() => {
                 setWorkspaceUserEmails([]);
+                setWorkspaceGroups([]);
             });
     }, [isOpen]);
 
     if (!isOpen) return null;
 
     const filteredSuggestions = (() => {
-        const keyword = email.trim().toLowerCase();
+        const keyword = targetId.trim().toLowerCase();
         if (!keyword) return [];
-        return workspaceUserEmails
+        const source = targetType === 'group' ? workspaceGroups : workspaceUserEmails;
+        return source
             .filter((candidate) => candidate.toLowerCase().includes(keyword))
             .slice(0, 8);
     })();
@@ -257,18 +280,24 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     })();
 
     const handleSave = () => {
-        if (!email.trim() || !email.includes('@')) {
+        const normalizedTargetId = targetId.trim();
+        if (!normalizedTargetId) {
+            alert(targetType === 'group' ? 'Please enter a group name.' : t('share.invalid_email'));
+            return;
+        }
+
+        if (targetType === 'user' && !normalizedTargetId.includes('@')) {
             alert(t('share.invalid_email'));
             return;
         }
 
-        onSave(email.trim(), {
+        onSave({ targetType, targetId: normalizedTargetId }, {
             roles: granularRoles,
             dashboardRLS,
             confirmedDashboardIds: Array.from(confirmedDashboardIds),
         });
         onClose();
-        setEmail('');
+        setTargetId('');
     };
 
     return (
@@ -309,25 +338,43 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                 {viewMode === 'manage' ? (
                     <>
                         <div className="px-8 pt-6">
-                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] pb-2">{t('share.user_email')}</label>
+                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] pb-2">
+                                {targetType === 'group' ? 'Group Name' : t('share.user_email')}
+                            </label>
                             <div className="relative">
+                                <div className="mb-2 inline-flex rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 p-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setTargetType('user')}
+                                        className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest ${targetType === 'user' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'}`}
+                                    >
+                                        User
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setTargetType('group')}
+                                        className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest ${targetType === 'group' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'}`}
+                                    >
+                                        Group
+                                    </button>
+                                </div>
                                 <input
                                     autoFocus
-                                    type="email"
-                                    value={email}
+                                    type={targetType === 'group' ? 'text' : 'email'}
+                                    value={targetId}
                                     onChange={(e) => {
-                                        setEmail(e.target.value);
-                                        setIsEmailSuggestionOpen(true);
+                                        setTargetId(e.target.value);
+                                        setIsTargetSuggestionOpen(true);
                                     }}
-                                    onFocus={() => setIsEmailSuggestionOpen(true)}
+                                    onFocus={() => setIsTargetSuggestionOpen(true)}
                                     onBlur={() => {
-                                        setTimeout(() => setIsEmailSuggestionOpen(false), 120);
+                                        setTimeout(() => setIsTargetSuggestionOpen(false), 120);
                                     }}
-                                    placeholder={t('share.email_placeholder')}
+                                    placeholder={targetType === 'group' ? 'sales, finance, marketing...' : t('share.email_placeholder')}
                                     className="w-full bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-2xl px-5 py-4 text-base font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-600"
                                 />
 
-                                {isEmailSuggestionOpen && filteredSuggestions.length > 0 && (
+                                {isTargetSuggestionOpen && filteredSuggestions.length > 0 && (
                                     <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
                                         {filteredSuggestions.map((suggestion) => (
                                             <button
@@ -335,8 +382,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                                                 type="button"
                                                 onMouseDown={(e) => {
                                                     e.preventDefault();
-                                                    setEmail(suggestion);
-                                                    setIsEmailSuggestionOpen(false);
+                                                    setTargetId(suggestion);
+                                                    setIsTargetSuggestionOpen(false);
                                                 }}
                                                 className="w-full text-left px-4 py-3 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5"
                                             >
@@ -474,9 +521,14 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                                         ) : (
                                             <div className="mt-3 space-y-2">
                                                 {resource.shares.map((share) => (
-                                                    <div key={`${resource.resourceId}-${share.userId}`} className="rounded-xl border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-slate-900/60 px-3 py-2 flex items-center justify-between gap-3">
+                                                    <div key={`${resource.resourceId}-${share.targetType || 'user'}-${share.targetId || share.userId || share.groupId}`} className="rounded-xl border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-slate-900/60 px-3 py-2 flex items-center justify-between gap-3">
                                                         <div className="min-w-0">
-                                                            <div className="text-sm font-bold text-slate-900 dark:text-white truncate">{share.userId}</div>
+                                                            <div className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                                                                {share.targetId || share.userId || share.groupId}
+                                                            </div>
+                                                            <div className="text-[10px] uppercase tracking-wider text-slate-500">
+                                                                {(share.targetType || 'user') === 'group' ? 'Group' : 'User'}
+                                                            </div>
                                                         </div>
                                                         <span className={`px-3 py-1 rounded-full text-[10px] uppercase tracking-widest font-black ${permissionBadgeClass(share.permission)}`}>
                                                             {permissionLabel(share.permission)}

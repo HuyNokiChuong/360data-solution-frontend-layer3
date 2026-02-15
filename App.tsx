@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, lazy, Suspense, useMemo } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Connection, SyncedTable, ReportSession, User } from './types';
 import { INITIAL_TABLES } from './constants';
@@ -13,6 +13,9 @@ import { isCorporateDomain } from './utils/domain';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { normalizeSchema } from './utils/schema';
 import { generateUUID, isUUID } from './utils/id';
+import { AssistantRuntimeProvider } from './components/assistant/AssistantRuntimeProvider';
+import GlobalAssistantChat from './components/assistant/GlobalAssistantChat';
+import type { AssistantClientBindings } from './components/assistant/types';
 
 const lazyWithRetry = <T extends React.ComponentType<any>>(
   importer: () => Promise<{ default: T }>,
@@ -1083,6 +1086,30 @@ const App: React.FC = () => {
     });
   };
 
+  const assistantBindings = useMemo<Omit<AssistantClientBindings, 'pushUndo' | 'popUndo'>>(() => ({
+    activeTab,
+    currentUser,
+    connections,
+    tables,
+    users,
+    setUsers,
+    setActiveTab,
+    deleteConnection,
+    toggleTableStatus,
+    deleteTable: executeDeleteTable,
+  }), [
+    activeTab,
+    currentUser,
+    connections,
+    tables,
+    users,
+    setUsers,
+    setActiveTab,
+    deleteConnection,
+    toggleTableStatus,
+    executeDeleteTable,
+  ]);
+
 
   if (!isAuthenticated) {
     if (location.pathname === '/onboarding' && pendingUser) {
@@ -1268,148 +1295,153 @@ const App: React.FC = () => {
 
 
   return (
-    <>
-      <ConfirmationModal
-        isOpen={deleteConfirmation.isOpen}
-        onClose={() => setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))}
-        onConfirm={deleteConfirmation.onConfirm}
-        title={deleteConfirmation.title}
-        message={deleteConfirmation.message}
-        confirmText="Yes, delete it"
-        type="danger"
-      />
-      <div className="h-screen bg-slate-50 dark:bg-[#020617] flex overflow-hidden transition-colors duration-300">
-        <Suspense fallback={null}>
-          {!isMainSidebarCollapsed ? (
-            <Sidebar
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              onLogout={handleLogout}
-              hasConnections={hasConnections}
-              onToggleCollapse={() => setIsMainSidebarCollapsed(true)}
-              currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
-              width={sidebarWidth}
-              onWidthChange={setSidebarWidth}
-            />
-          ) : (
-            <button
-              onClick={() => setIsMainSidebarCollapsed(false)}
-              className="fixed left-4 bottom-6 w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-2xl shadow-indigo-600/30 hover:scale-110 active:scale-95 transition-all z-[60]"
-              title="Show Sidebar"
-            >
-              <i className="fas fa-angles-right"></i>
-            </button>
-          )}
-        </Suspense>
-        <main
-          style={{ marginLeft: isMainSidebarCollapsed ? 0 : sidebarWidth }}
-          className={`flex-1 h-screen bg-slate-50 dark:bg-[#020617] transition-[margin] duration-0 ease-linear overflow-hidden relative`}
-        >
-          <Suspense fallback={
-            <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-[#020617]">
-              <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-            </div>
-          }>
-            <Routes>
-              <Route path="/" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
-
-              <Route path="/onboarding" element={
-                pendingUser || (currentUser && !currentUser.jobTitle)
-                  ? <Onboarding
-                    currentUser={pendingUser || currentUser!}
-                    onUpdateUser={handleOnboardingComplete}
-                  />
-                  : <Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />
-              } />
-
-              <Route path="/getting-started" element={
-                <GettingStartedGuide
-                  currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
-                  hasConnections={hasConnections}
-                  activeTableCount={activeTablesForBuilder.length}
-                  onGoToTab={setActiveTab}
-                  onMarkComplete={markGettingStartedSeen}
-                />
-              } />
-
-              <Route path="/connections" element={
-                <Connections
-                  connections={connections}
-                  tables={tables}
-                  onAddConnection={addConnection}
-                  onCreateExcelConnection={createExcelConnection}
-                  onCreateGoogleSheetsConnection={createGoogleSheetsConnection}
-                  onRefreshData={syncConnectionsAndTables}
-                  onUpdateConnection={updateConnection}
-                  onDeleteConnection={deleteConnection}
-                  googleToken={googleToken}
-                  setGoogleToken={setGoogleToken}
-                />
-              } />
-              <Route path="/tables" element={
-                hasConnections ? (
-                  <Tables
-                    tables={tables}
-                    connections={connections}
-                    onToggleStatus={toggleTableStatus}
-                    onDeleteTable={deleteTable}
-                    onDeleteTables={deleteTables}
-                    googleToken={googleToken}
-                    setGoogleToken={setGoogleToken}
-                  />
-                ) : <Navigate to="/connections" replace />
-              } />
-              <Route path="/reports" element={
-                hasConnections ? (
-                  <Reports
-                    tables={activeTablesForBuilder}
-                    connections={connections}
-                    sessions={reportSessions}
-                    setSessions={setReportSessions}
-                    activeSessionId={activeReportSessionId}
-                    setActiveSessionId={setActiveReportSessionId}
-                    loading={isAIThinking}
-                    setLoading={setIsAIThinking}
-                    googleToken={googleToken}
-                    setGoogleToken={setGoogleToken}
-                    currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
-                  />
-                ) : <Navigate to="/connections" replace />
-              } />
-              <Route path="/data-modeling" element={
-                hasConnections ? (
-                  <DataModeling
-                    currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
-                  />
-                ) : <Navigate to="/connections" replace />
-              } />
-              <Route path="/ai-config" element={<AISettings />} />
-              <Route path="/logs" element={<LogViewer />} />
-              <Route path="/bi" element={
-                hasConnections ? (
-                  <BIMain
-                    tables={activeTablesForBuilder}
-                    connections={connections}
-                    currentUser={currentUser || { id: 'current-user', name: 'User', role: 'Admin', email: '', status: 'Active', joinedAt: '' }}
-                    googleToken={googleToken}
-                    setGoogleToken={setGoogleToken}
-                    domain={domain}
-                    isMainSidebarCollapsed={isMainSidebarCollapsed}
-                    onToggleMainSidebar={() => setIsMainSidebarCollapsed(!isMainSidebarCollapsed)}
-                  />
-                ) : <Navigate to="/connections" replace />
-              } />
-              <Route path="/users" element={
-                currentUser?.role === 'Admin' ? (
-                  <UserManagement users={users} setUsers={setUsers} currentUser={currentUser} />
-                ) : <Navigate to="/connections" replace />
-              } />
-              <Route path="*" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
-            </Routes>
+    <AssistantRuntimeProvider bindings={assistantBindings}>
+      <>
+        <ConfirmationModal
+          isOpen={deleteConfirmation.isOpen}
+          onClose={() => setDeleteConfirmation(prev => ({ ...prev, isOpen: false }))}
+          onConfirm={deleteConfirmation.onConfirm}
+          title={deleteConfirmation.title}
+          message={deleteConfirmation.message}
+          confirmText="Yes, delete it"
+          type="danger"
+        />
+        <div className="h-screen bg-slate-50 dark:bg-[#020617] flex overflow-hidden transition-colors duration-300">
+          <Suspense fallback={null}>
+            {!isMainSidebarCollapsed ? (
+              <Sidebar
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                onLogout={handleLogout}
+                hasConnections={hasConnections}
+                onToggleCollapse={() => setIsMainSidebarCollapsed(true)}
+                currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                width={sidebarWidth}
+                onWidthChange={setSidebarWidth}
+              />
+            ) : (
+              <button
+                onClick={() => setIsMainSidebarCollapsed(false)}
+                className="fixed left-4 bottom-6 w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-2xl shadow-indigo-600/30 hover:scale-110 active:scale-95 transition-all z-[60]"
+                title="Show Sidebar"
+              >
+                <i className="fas fa-angles-right"></i>
+              </button>
+            )}
           </Suspense>
-        </main>
-      </div>
-    </>
+          <main
+            style={{ marginLeft: isMainSidebarCollapsed ? 0 : sidebarWidth }}
+            className={`flex-1 h-screen bg-slate-50 dark:bg-[#020617] transition-[margin] duration-0 ease-linear overflow-hidden relative`}
+          >
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-[#020617]">
+                <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            }>
+              <Routes>
+                <Route path="/" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
+
+                <Route path="/onboarding" element={
+                  pendingUser || (currentUser && !currentUser.jobTitle)
+                    ? <Onboarding
+                      currentUser={pendingUser || currentUser!}
+                      onUpdateUser={handleOnboardingComplete}
+                    />
+                    : <Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />
+                } />
+
+                <Route path="/getting-started" element={
+                  <GettingStartedGuide
+                    currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                    hasConnections={hasConnections}
+                    activeTableCount={activeTablesForBuilder.length}
+                    onGoToTab={setActiveTab}
+                    onMarkComplete={markGettingStartedSeen}
+                  />
+                } />
+
+                <Route path="/connections" element={
+                  <Connections
+                    connections={connections}
+                    tables={tables}
+                    onAddConnection={addConnection}
+                    onCreateExcelConnection={createExcelConnection}
+                    onCreateGoogleSheetsConnection={createGoogleSheetsConnection}
+                    onRefreshData={syncConnectionsAndTables}
+                    onUpdateConnection={updateConnection}
+                    onDeleteConnection={deleteConnection}
+                    googleToken={googleToken}
+                    setGoogleToken={setGoogleToken}
+                  />
+                } />
+                <Route path="/tables" element={
+                  hasConnections ? (
+                    <Tables
+                      tables={tables}
+                      connections={connections}
+                      users={users}
+                      currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                      onToggleStatus={toggleTableStatus}
+                      onDeleteTable={deleteTable}
+                      onDeleteTables={deleteTables}
+                      googleToken={googleToken}
+                      setGoogleToken={setGoogleToken}
+                    />
+                  ) : <Navigate to="/connections" replace />
+                } />
+                <Route path="/reports" element={
+                  hasConnections ? (
+                    <Reports
+                      tables={activeTablesForBuilder}
+                      connections={connections}
+                      sessions={reportSessions}
+                      setSessions={setReportSessions}
+                      activeSessionId={activeReportSessionId}
+                      setActiveSessionId={setActiveReportSessionId}
+                      loading={isAIThinking}
+                      setLoading={setIsAIThinking}
+                      googleToken={googleToken}
+                      setGoogleToken={setGoogleToken}
+                      currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                    />
+                  ) : <Navigate to="/connections" replace />
+                } />
+                <Route path="/data-modeling" element={
+                  hasConnections ? (
+                    <DataModeling
+                      currentUser={currentUser || { id: 'anon', name: 'Anonymous', email: '', role: 'Viewer', status: 'Active', joinedAt: '' }}
+                    />
+                  ) : <Navigate to="/connections" replace />
+                } />
+                <Route path="/ai-config" element={<AISettings />} />
+                <Route path="/logs" element={<LogViewer />} />
+                <Route path="/bi" element={
+                  hasConnections ? (
+                    <BIMain
+                      tables={activeTablesForBuilder}
+                      connections={connections}
+                      currentUser={currentUser || { id: 'current-user', name: 'User', role: 'Admin', email: '', status: 'Active', joinedAt: '' }}
+                      googleToken={googleToken}
+                      setGoogleToken={setGoogleToken}
+                      domain={domain}
+                      isMainSidebarCollapsed={isMainSidebarCollapsed}
+                      onToggleMainSidebar={() => setIsMainSidebarCollapsed(!isMainSidebarCollapsed)}
+                    />
+                  ) : <Navigate to="/connections" replace />
+                } />
+                <Route path="/users" element={
+                  currentUser?.role === 'Admin' ? (
+                    <UserManagement users={users} setUsers={setUsers} currentUser={currentUser} />
+                  ) : <Navigate to="/connections" replace />
+                } />
+                <Route path="*" element={<Navigate to={shouldForceGettingStarted ? '/getting-started' : '/connections'} replace />} />
+              </Routes>
+            </Suspense>
+          </main>
+        </div>
+        <GlobalAssistantChat />
+      </>
+    </AssistantRuntimeProvider>
   );
 };
 

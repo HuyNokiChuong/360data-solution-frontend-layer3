@@ -18,6 +18,7 @@ interface BISidebarProps {
     dashboards: BIDashboard[];
     currentUserId: string;
     currentUserEmail?: string;
+    currentUserGroup?: string;
     activeDashboardId: string | null;
     onSelectDashboard: (id: string) => void;
     onCreateFolder: (name: string, parentId?: string) => void;
@@ -287,6 +288,7 @@ const BISidebar: React.FC<BISidebarProps> = ({
     dashboards,
     currentUserId,
     currentUserEmail,
+    currentUserGroup,
     activeDashboardId,
     onSelectDashboard,
     onCreateFolder,
@@ -310,14 +312,31 @@ const BISidebar: React.FC<BISidebarProps> = ({
     const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
 
     const normalizeIdentity = (value?: string) => String(value || '').trim().toLowerCase();
+    const permissionRank = (permission?: SharePermission['permission']) => {
+        if (permission === 'admin') return 3;
+        if (permission === 'edit') return 2;
+        if (permission === 'view') return 1;
+        return 0;
+    };
     const isCurrentUser = (value?: string) => {
         const candidate = normalizeIdentity(value);
         if (!candidate) return false;
         return candidate === normalizeIdentity(currentUserId) || candidate === normalizeIdentity(currentUserEmail);
     };
+    const shareMatchesCurrentUser = (share?: SharePermission) => {
+        const targetType = normalizeIdentity(share?.targetType) === 'group' ? 'group' : 'user';
+        const targetId = normalizeIdentity(share?.targetId || (targetType === 'group' ? share?.groupId : share?.userId));
+        if (!targetId) return false;
+        if (targetType === 'group') {
+            return targetId === normalizeIdentity(currentUserGroup);
+        }
+        return isCurrentUser(targetId);
+    };
     const getPermissionForCurrentUser = (sharedWith?: SharePermission[]) => {
         if (!Array.isArray(sharedWith)) return undefined;
-        return sharedWith.find((p) => isCurrentUser(p.userId))?.permission;
+        const matches = sharedWith.filter((share) => shareMatchesCurrentUser(share));
+        if (matches.length === 0) return undefined;
+        return [...matches].sort((a, b) => permissionRank(b.permission) - permissionRank(a.permission))[0]?.permission;
     };
 
 
@@ -560,18 +579,33 @@ const BISidebar: React.FC<BISidebarProps> = ({
                     permissions={shareModalData.permissions}
                     dashboard={shareModalData.dashboard}
                     folderDashboards={shareModalData.folderDashboards}
-                    onSave={(email: string, payload: ShareSavePayload) => {
+                    onSave={(target, payload: ShareSavePayload) => {
                         const now = new Date().toISOString();
                         const { roles, dashboardRLS } = payload;
+                        const targetType = target.targetType === 'group' ? 'group' : 'user';
+                        const targetId = String(target.targetId || '').trim();
+                        const targetKey = `${targetType}:${targetId.toLowerCase()}`;
+                        const permissionTargetKey = (perm: SharePermission) => {
+                            const permType = String(perm?.targetType || '').trim().toLowerCase() === 'group' ? 'group' : 'user';
+                            const permId = String(perm?.targetId || (permType === 'group' ? perm?.groupId : perm?.userId) || '').trim();
+                            return `${permType}:${permId.toLowerCase()}`;
+                        };
 
                         // 1. Handle Folder-level permission
                         if (shareModalData.type === 'folder') {
                             const folderRole = roles['folder'];
                             const folder = folders.find(f => f.id === shareModalData.id);
                             if (folder) {
-                                let newPerms = [...(folder.sharedWith || [])].filter(p => p.userId !== email);
+                                let newPerms = [...(folder.sharedWith || [])].filter((p) => permissionTargetKey(p) !== targetKey);
                                 if (folderRole !== 'none') {
-                                    newPerms.push({ userId: email, permission: folderRole, sharedAt: now });
+                                    newPerms.push({
+                                        targetType,
+                                        targetId,
+                                        userId: targetType === 'user' ? targetId : undefined,
+                                        groupId: targetType === 'group' ? targetId : undefined,
+                                        permission: folderRole,
+                                        sharedAt: now
+                                    });
                                 }
                                 shareFolder(folder.id, newPerms);
                             }
@@ -586,11 +620,14 @@ const BISidebar: React.FC<BISidebarProps> = ({
                             const dashboard = dashboards.find(d => d.id === targetDashboardId);
 
                             if (dashboard) {
-                                let newPerms = [...(dashboard.sharedWith || [])].filter(p => p.userId !== email);
+                                let newPerms = [...(dashboard.sharedWith || [])].filter((p) => permissionTargetKey(p) !== targetKey);
                                 if (role !== 'none') {
                                     const rlsCfg = dashboardRLS[dashboard.id];
                                     newPerms.push({
-                                        userId: email,
+                                        targetType,
+                                        targetId,
+                                        userId: targetType === 'user' ? targetId : undefined,
+                                        groupId: targetType === 'group' ? targetId : undefined,
                                         permission: role,
                                         sharedAt: now,
                                         allowedPageIds: rlsCfg?.allowedPageIds || [],

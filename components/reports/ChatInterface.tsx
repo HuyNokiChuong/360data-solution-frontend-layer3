@@ -82,6 +82,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         }
     }, [messages, isLoading, activeTab]);
 
+    useEffect(() => {
+        const onAssistantOpenFlow = (event: Event) => {
+            const custom = event as CustomEvent<any>;
+            const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
+            const tab = String(detail.tab || '').trim().toLowerCase();
+            if (tab !== 'reports') return;
+            setActiveTab('analysis');
+        };
+
+        window.addEventListener('assistant:open-flow', onAssistantOpenFlow as EventListener);
+        return () => window.removeEventListener('assistant:open-flow', onAssistantOpenFlow as EventListener);
+    }, []);
+
     // Click outside listener for model selector
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

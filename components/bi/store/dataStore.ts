@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import { DataSource, Field, SystemLog } from '../types';
 import { parseCSV, parseJSON, detectSchema } from '../engine/dataProcessing';
 import { PersistentStorage } from '../../../services/storage';
+import { isAssistantGeneratedDataSource } from '../utils/dataSourceVisibility';
 
 interface DataState {
     // Data
@@ -478,16 +479,29 @@ export const useDataStore = create<DataState>((set, get) => ({
                 const systemLogs = parsed.systemLogs || [];
 
                 const fullSources = await Promise.all(metadataSources.map(async (ds: any) => {
+                    const normalizedMeta = isAssistantGeneratedDataSource(ds)
+                        ? {
+                            ...ds,
+                            type: 'ai_generated',
+                            assistantGenerated: true,
+                            hiddenFromDataTables: true
+                        }
+                        : ds;
                     const cachedData = await PersistentStorage.get(`ds_data_${ds.id}`);
                     return {
-                        ...ds,
+                        ...normalizedMeta,
                         data: cachedData || [],
-                        isLoaded: ds.isLoaded && !!cachedData,
-                        isLoadingPartial: ds.syncStatus === 'syncing'
+                        isLoaded: normalizedMeta.isLoaded && !!cachedData,
+                        isLoadingPartial: normalizedMeta.syncStatus === 'syncing'
                     };
                 }));
 
-                set({ dataSources: fullSources, selectedDataSourceId, domain, systemLogs, isHydrated: true });
+                const selectedSource = fullSources.find((source) => source.id === selectedDataSourceId);
+                const normalizedSelectedId = selectedSource && !isAssistantGeneratedDataSource(selectedSource)
+                    ? selectedDataSourceId
+                    : null;
+
+                set({ dataSources: fullSources, selectedDataSourceId: normalizedSelectedId, domain, systemLogs, isHydrated: true });
             } else {
                 set({ dataSources: [], selectedDataSourceId: null, domain, isHydrated: true });
             }

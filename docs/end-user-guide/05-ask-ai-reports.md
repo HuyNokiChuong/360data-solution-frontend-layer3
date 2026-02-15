@@ -74,3 +74,22 @@
 ![M04-07 Session Management](./images/M04-07-session-actions.png)
 - Callout: rename, delete, tao session moi.
 
+## 7. Global Assistant v1
+Global Assistant la floating chat thuc thi action that tren toan he thong. Trong module Reports, ban co the dung ngay cac lenh:
+- "Tao report session moi ten Revenue Deep Dive."
+- "Hoi reports: tong quan doanh thu 6 thang gan nhat."
+- "Chay lai chart SQL cho message `<messageId>` voi SQL moi ...".
+- "Chuyen toi tab Data Modeling."
+
+### 7.1 Quy tac confirm risky
+- Action rui ro (xoa user, xoa connection, xoa table, doi role/disable user) se vao trang thai `waiting_confirm`.
+- Can bam `Approve` hoac `Reject` de tiep tuc.
+
+### 7.2 Undo
+- Lenh `undo` se hoat dong cho cac action co ho tro.
+- Khong undo hard-delete tai nguyen phia server.
+
+### 7.3 Gioi han can user thao tac tay
+- OAuth/Google linking.
+- Upload file (Excel/Google Sheets import).
+- Cac popup trinh duyet bi chan quyen.

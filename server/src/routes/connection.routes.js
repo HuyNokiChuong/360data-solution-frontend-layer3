@@ -3,7 +3,16 @@
 // ============================================
 const express = require('express');
 const { query, getClient } = require('../config/db');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requireAdmin } = require('../middleware/auth');
+const {
+    normalizeTargetId,
+    normalizeTableAccessEntries,
+    loadTablePermissionCounts,
+    getAccessibleTableIds,
+    hasTableAccess,
+    isMissingTableAccessTableError,
+    isAdminUser,
+} = require('../utils/table-access');
 const { encryptString } = require('../services/crypto.service');
 const {
     MAX_EXCEL_FILE_SIZE_BYTES,
@@ -2095,7 +2104,7 @@ router.delete('/:id', async (req, res) => {
 /**
  * POST /api/connections/:id/tables - Bulk upsert tables
  */
-router.post('/:id/tables', async (req, res) => {
+router.post('/:id/tables', requireAdmin, async (req, res) => {
     const client = await getClient();
     try {
         const { tables } = req.body;
@@ -2161,9 +2170,10 @@ router.post('/:id/tables', async (req, res) => {
 
         await client.query('COMMIT');
 
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, results);
         res.status(201).json({
             success: true,
-            data: results.map(formatTable),
+            data: rowsWithAccessMeta.map(formatTable),
         });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -2177,7 +2187,7 @@ router.post('/:id/tables', async (req, res) => {
 /**
  * PATCH /api/connections/tables/:id/status — Toggle or set synced table status
  */
-router.patch('/tables/:id/status', async (req, res) => {
+router.patch('/tables/:id/status', requireAdmin, async (req, res) => {
     try {
         const rawStatus = typeof req.body?.status === 'string' ? req.body.status.trim().toLowerCase() : '';
         let nextStatus = null;
@@ -2211,7 +2221,8 @@ router.patch('/tables/:id/status', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Table not found' });
         }
 
-        res.json({ success: true, data: formatTable(result.rows[0]) });
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, result.rows);
+        res.json({ success: true, data: formatTable(rowsWithAccessMeta[0] || result.rows[0]) });
     } catch (err) {
         console.error('Update table status error:', err);
         res.status(500).json({ success: false, message: 'Failed to update table status' });
@@ -2221,7 +2232,7 @@ router.patch('/tables/:id/status', async (req, res) => {
 /**
  * DELETE /api/connections/tables/:id — Soft delete a synced table
  */
-router.delete('/tables/:id', async (req, res) => {
+router.delete('/tables/:id', requireAdmin, async (req, res) => {
     try {
         const result = await query(
             `UPDATE synced_tables st
@@ -2273,6 +2284,15 @@ router.get('/tables/:id/data', async (req, res) => {
         const rawLimit = parseInt(req.query.limit, 10);
         const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
         const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1000) : 200;
+
+        const allowed = await hasTableAccess({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            tableId: req.params.id,
+        });
+        if (!allowed) {
+            return res.status(403).json({ success: false, message: 'You do not have access to this table' });
+        }
 
         const tableResult = await query(
             `SELECT st.*, c.type AS connection_type
@@ -2342,8 +2362,193 @@ router.get('/tables/:id/data', async (req, res) => {
             },
         });
     } catch (err) {
+        if (isMissingTableAccessTableError(err)) {
+            // Backward-compatible mode when migration 010 is not applied yet.
+            console.warn('[connections] table_view_permissions is missing, access checks bypassed for table preview');
+        }
         console.error('Get imported table data error:', err);
         res.status(500).json({ success: false, message: 'Failed to get table data' });
+    }
+});
+
+/**
+ * GET /api/connections/tables/:id/access
+ * Admin: read table-level access policy (user/group)
+ */
+router.get('/tables/:id/access', requireAdmin, async (req, res) => {
+    try {
+        const tableCheck = await query(
+            `SELECT st.id
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [req.params.id, req.user.workspace_id]
+        );
+
+        if (tableCheck.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        let rows = [];
+        try {
+            const policyResult = await query(
+                `SELECT target_type, target_id, created_at
+                 FROM table_view_permissions
+                 WHERE workspace_id = $1
+                   AND synced_table_id = $2
+                 ORDER BY target_type, target_id`,
+                [req.user.workspace_id, req.params.id]
+            );
+            rows = policyResult.rows;
+        } catch (err) {
+            if (!isMissingTableAccessTableError(err)) throw err;
+        }
+
+        const entries = rows.map((row) => ({
+            targetType: row.target_type === 'group' ? 'group' : 'user',
+            targetId: String(row.target_id || '').trim(),
+            userId: row.target_type === 'user' ? String(row.target_id || '').trim() : undefined,
+            groupId: row.target_type === 'group' ? String(row.target_id || '').trim() : undefined,
+            permission: 'view',
+            grantedAt: row.created_at,
+        }));
+
+        res.json({
+            success: true,
+            data: {
+                tableId: req.params.id,
+                mode: entries.length > 0 ? 'restricted' : 'public',
+                entries,
+            },
+        });
+    } catch (err) {
+        console.error('Get table access error:', err);
+        res.status(500).json({ success: false, message: 'Failed to get table access' });
+    }
+});
+
+/**
+ * PUT /api/connections/tables/:id/access
+ * Admin: replace table-level access policy (user/group). Empty entries => public.
+ */
+router.put('/tables/:id/access', requireAdmin, async (req, res) => {
+    const client = await getClient();
+    try {
+        const entries = normalizeTableAccessEntries(req.body?.entries || []);
+
+        const tableCheck = await client.query(
+            `SELECT st.id
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [req.params.id, req.user.workspace_id]
+        );
+
+        if (tableCheck.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        const userTargets = entries
+            .filter((entry) => entry.targetType === 'user')
+            .map((entry) => normalizeTargetId(entry.targetId));
+        if (userTargets.length > 0) {
+            const usersResult = await client.query(
+                `SELECT LOWER(email) AS email
+                 FROM users
+                 WHERE workspace_id = $1
+                   AND LOWER(email) = ANY($2::text[])`,
+                [req.user.workspace_id, userTargets]
+            );
+            const allowedUsers = new Set(usersResult.rows.map((row) => row.email));
+            const missingUsers = userTargets.filter((email) => !allowedUsers.has(email));
+            if (missingUsers.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Users not found in this workspace: ${missingUsers.join(', ')}`,
+                });
+            }
+        }
+
+        const groupTargets = entries
+            .filter((entry) => entry.targetType === 'group')
+            .map((entry) => normalizeTargetId(entry.targetId))
+            .filter(Boolean);
+        if (groupTargets.length > 0) {
+            const groupsResult = await client.query(
+                `SELECT DISTINCT LOWER(group_name) AS group_name
+                 FROM users
+                 WHERE workspace_id = $1
+                   AND group_name IS NOT NULL
+                   AND group_name <> ''
+                   AND LOWER(group_name) = ANY($2::text[])`,
+                [req.user.workspace_id, groupTargets]
+            );
+            const allowedGroups = new Set(groupsResult.rows.map((row) => row.group_name));
+            const missingGroups = groupTargets.filter((groupName) => !allowedGroups.has(groupName));
+            if (missingGroups.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Groups not found in this workspace: ${missingGroups.join(', ')}`,
+                });
+            }
+        }
+
+        await client.query('BEGIN');
+        try {
+            await client.query(
+                `DELETE FROM table_view_permissions
+                 WHERE workspace_id = $1
+                   AND synced_table_id = $2`,
+                [req.user.workspace_id, req.params.id]
+            );
+        } catch (err) {
+            if (isMissingTableAccessTableError(err)) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    success: false,
+                    message: 'Table access schema is missing. Run migration 010_groups_and_table_access.sql first.',
+                });
+            }
+            throw err;
+        }
+
+        for (const entry of entries) {
+            await client.query(
+                `INSERT INTO table_view_permissions (
+                    workspace_id, synced_table_id, target_type, target_id, granted_by
+                ) VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (workspace_id, synced_table_id, target_type, target_id)
+                DO UPDATE SET granted_by = EXCLUDED.granted_by, updated_at = NOW()`,
+                [req.user.workspace_id, req.params.id, entry.targetType, entry.targetId, req.user.id]
+            );
+        }
+
+        await client.query('COMMIT');
+        res.json({
+            success: true,
+            data: {
+                tableId: req.params.id,
+                mode: entries.length > 0 ? 'restricted' : 'public',
+                entries,
+            },
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Update table access error:', err);
+        res.status(err.status || 500).json({
+            success: false,
+            message: err.status ? err.message : 'Failed to update table access',
+        });
+    } finally {
+        client.release();
     }
 });
 
@@ -2364,12 +2569,46 @@ router.get('/:id/tables', async (req, res) => {
             [req.params.id, req.user.workspace_id]
         );
 
-        res.json({ success: true, data: result.rows.map(formatTable) });
+        const visibleRows = await filterTableRowsByAccess({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            rows: result.rows,
+        });
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, visibleRows);
+
+        res.json({ success: true, data: rowsWithAccessMeta.map(formatTable) });
     } catch (err) {
         console.error('List tables error:', err);
         res.status(500).json({ success: false, message: 'Failed to list tables' });
     }
 });
+
+const filterTableRowsByAccess = async ({ workspaceId, user, rows }) => {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+    if (isAdminUser(user)) return rows;
+
+    const tableIds = rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+    const accessibleSet = await getAccessibleTableIds({
+        workspaceId,
+        user,
+        tableIds,
+    });
+    return rows.filter((row) => accessibleSet.has(String(row.id || '').trim()));
+};
+
+const attachTablePermissionMeta = async (workspaceId, rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+    const tableIds = rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+    const permissionCountByTable = await loadTablePermissionCounts({
+        workspaceId,
+        tableIds,
+    });
+
+    return rows.map((row) => ({
+        ...row,
+        permission_count: permissionCountByTable.get(String(row.id || '').trim()) || 0,
+    }));
+};
 
 function formatConnection(row) {
     const rootConfig = toObject(row.config);
@@ -2450,6 +2689,7 @@ function formatTable(row) {
         sourceSheetId: row.source_sheet_id || undefined,
         importTime: row.upload_time || undefined,
         lastSyncTime: row.last_sync || undefined,
+        accessMode: Number(row.permission_count || 0) > 0 ? 'restricted' : 'public',
     };
 }
 

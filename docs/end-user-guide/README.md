@@ -19,6 +19,7 @@ Tai lieu nay dung cho nguoi dung cuoi (Admin/Editor/Viewer) de van hanh he thong
 9. [09. User Management - Quan Ly Nguoi Dung](./09-user-management.md)
 10. [10. Logs - Audit Trail](./10-logs.md)
 11. [11. Troubleshooting & FAQ](./11-troubleshooting-faq.md)
+12. [Global Assistant v1](./05-ask-ai-reports.md#7-global-assistant-v1)
 
 ## 2.1 Tai lieu bo sung (nang cao)
 - [Huong Dan Measure & Calculated Fields](../USER_GUIDE_MEASURES.md)
@@ -34,6 +35,7 @@ Tai lieu nay dung cho nguoi dung cuoi (Admin/Editor/Viewer) de van hanh he thong
 | AI Settings | Thuong Admin | Thuong khong | Khong |
 | User Management | Toan quyen | Khong | Khong |
 | Logs | Xem (khuyen nghi Admin) | Xem (neu duoc cap) | Khong |
+| Global Assistant | Thuc thi toan bo action trong scope quyen | Thuc thi action duoc cap quyen | Chat/hoi dap, action bi gioi han theo role |
 
 ## 4. Flow tong he thong (nhin nhanh)
 ```mermaid
@@ -62,3 +64,17 @@ flowchart LR
 - Da co tai khoan workspace hop le.
 - Da co quyen phu hop theo vai tro.
 - Trinh duyet cho phep popup (cho OAuth Google).
+
+## 7. Global Assistant v1 (system-wide)
+- Assistant nay la floating chat chay tren toan bo he thong, khong chi trong `/bi`.
+- Co 2 kenh chat:
+  - `Global Assistant`: thao tac lien module (connections/tables/reports/users/data-modeling/bi/navigation).
+  - `Dashboard AI Chat` trong BI: giu UI hien tai, dung chung execution engine.
+- Quy tac bat buoc:
+  - `Safe action`: tu dong chay chuoi buoc.
+  - `Risky action` (delete, disable user, doi quyen): bat buoc confirm truoc khi chay.
+  - `Thieu tham so`: assistant hoi 1 cau ngan de lay du lieu con thieu.
+  - `Flow OAuth/file`: assistant huong dan mo dung man hinh va tam dung cho user thao tac tay.
+- Undo:
+  - Ho tro cho mot so thao tac BI (create/update/delete widget, calculated field, table status toggle).
+  - Khong ho tro undo hard-delete tai nguyen server.

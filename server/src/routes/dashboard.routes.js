@@ -22,7 +22,14 @@ router.get('/', async (req, res) => {
                 `SELECT d.*, 
             COALESCE(
               (SELECT json_agg(json_build_object(
+                'targetType', COALESCE((to_jsonb(ds)->>'target_type'), 'user'),
+                'targetId', COALESCE((to_jsonb(ds)->>'target_id'), ds.user_id),
                 'userId', ds.user_id,
+                'groupId', CASE
+                  WHEN COALESCE((to_jsonb(ds)->>'target_type'), 'user') = 'group'
+                  THEN COALESCE((to_jsonb(ds)->>'target_id'), ds.user_id)
+                  ELSE NULL
+                END,
                 'permission', ds.permission,
                 'sharedAt', ds.shared_at,
                 'allowedPageIds', COALESCE(to_jsonb(ds)->'allowed_page_ids', '[]'::jsonb),
@@ -46,7 +53,7 @@ router.get('/', async (req, res) => {
             );
         }
 
-        res.json({ success: true, data: result.rows.map(formatDashboard).map((d) => applyPageAccessConstraint(d, req.user.email)) });
+        res.json({ success: true, data: result.rows.map(formatDashboard).map((d) => applyPageAccessConstraint(d, req.user)) });
     } catch (err) {
         console.error('List dashboards error:', err);
         res.status(500).json({ success: false, message: 'Failed to list dashboards' });
@@ -86,11 +93,21 @@ router.post('/', async (req, res) => {
         );
 
         // Auto-share with creator as admin
-        await query(
-            `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, 'admin')
-       ON CONFLICT (dashboard_id, user_id) DO NOTHING`,
-            [result.rows[0].id, req.user.email]
-        );
+        try {
+            await query(
+                `INSERT INTO dashboard_shares (dashboard_id, user_id, target_type, target_id, permission)
+                 VALUES ($1, $2, 'user', $2, 'admin')
+                 ON CONFLICT (dashboard_id, target_type, target_id) DO NOTHING`,
+                [result.rows[0].id, req.user.email]
+            );
+        } catch (err) {
+            if (err.code !== '42703' && err.code !== '42P10') throw err;
+            await query(
+                `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, 'admin')
+                 ON CONFLICT (dashboard_id, user_id) DO NOTHING`,
+                [result.rows[0].id, req.user.email]
+            );
+        }
 
         res.status(201).json({ success: true, data: formatDashboard(result.rows[0]) });
     } catch (err) {
@@ -226,13 +243,19 @@ router.delete('/:id', async (req, res) => {
 router.post('/:id/share', async (req, res) => {
     const client = await getClient();
     try {
-        const { permissions } = req.body; // Array of { userId, permission }
+        const { permissions } = req.body; // Array of { targetType, targetId, permission }
         const dashboardId = req.params.id;
         const normalizedPermissions = normalizeSharePermissions(permissions, {
             includeAllowedPages: true,
             includeRls: true,
         });
-        const targetUsers = normalizedPermissions.map((p) => normalizeIdentity(p.userId));
+        const targetUsers = normalizedPermissions
+            .filter((p) => p.targetType === 'user')
+            .map((p) => normalizeIdentity(p.targetId));
+        const targetGroups = normalizedPermissions
+            .filter((p) => p.targetType === 'group')
+            .map((p) => normalizeIdentity(p.targetId))
+            .filter(Boolean);
 
         await client.query('BEGIN');
 
@@ -255,13 +278,38 @@ router.post('/:id/share', async (req, res) => {
             );
             const allowedSet = new Set(usersInWorkspace.rows.map((r) => r.email));
             const unknown = normalizedPermissions
-                .map((p) => p.userId)
+                .filter((p) => p.targetType === 'user')
+                .map((p) => p.targetId)
                 .filter((email) => !allowedSet.has(normalizeIdentity(email)));
             if (unknown.length > 0) {
                 await client.query('ROLLBACK');
                 return res.status(400).json({
                     success: false,
                     message: `Users not found in this workspace: ${unknown.join(', ')}`,
+                });
+            }
+        }
+
+        if (targetGroups.length > 0) {
+            const groupsInWorkspace = await client.query(
+                `SELECT DISTINCT LOWER(group_name) AS group_name
+                 FROM users
+                 WHERE workspace_id = $1
+                   AND group_name IS NOT NULL
+                   AND group_name <> ''
+                   AND LOWER(group_name) = ANY($2::text[])`,
+                [req.user.workspace_id, targetGroups]
+            );
+            const allowedGroupSet = new Set(groupsInWorkspace.rows.map((row) => row.group_name));
+            const unknownGroups = normalizedPermissions
+                .filter((p) => p.targetType === 'group')
+                .map((p) => p.targetId)
+                .filter((groupId) => !allowedGroupSet.has(normalizeIdentity(groupId)));
+            if (unknownGroups.length > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    success: false,
+                    message: `Groups not found in this workspace: ${unknownGroups.join(', ')}`,
                 });
             }
         }
@@ -278,23 +326,37 @@ router.post('/:id/share', async (req, res) => {
             const rlsConfig = perm?.rls && typeof perm.rls === 'object' ? perm.rls : {};
             try {
                 await client.query(
-                    `INSERT INTO dashboard_shares (dashboard_id, user_id, permission, allowed_page_ids, rls_config) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
-             ON CONFLICT (dashboard_id, user_id) DO UPDATE
+                    `INSERT INTO dashboard_shares (dashboard_id, user_id, target_type, target_id, permission, allowed_page_ids, rls_config)
+                     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+                     ON CONFLICT (dashboard_id, target_type, target_id) DO UPDATE
              SET permission = EXCLUDED.permission,
                  allowed_page_ids = EXCLUDED.allowed_page_ids,
                  rls_config = EXCLUDED.rls_config,
                  shared_at = NOW()`,
-                    [dashboardId, perm.userId, perm.permission, JSON.stringify(allowedPageIds), JSON.stringify(rlsConfig)]
+                    [
+                        dashboardId,
+                        perm.targetType === 'user' ? perm.targetId : null,
+                        perm.targetType,
+                        perm.targetId,
+                        perm.permission,
+                        JSON.stringify(allowedPageIds),
+                        JSON.stringify(rlsConfig),
+                    ]
                 );
             } catch (err) {
-                if (err.code !== '42703') throw err;
+                if (err.code !== '42703' && err.code !== '42P10') throw err;
+                if (perm.targetType === 'group') {
+                    const fallbackErr = new Error('Group sharing requires migration 010_groups_and_table_access.sql');
+                    fallbackErr.status = 400;
+                    throw fallbackErr;
+                }
                 // Backward-compatible fallback when RLS columns are not migrated yet.
                 await client.query(
                     `INSERT INTO dashboard_shares (dashboard_id, user_id, permission) VALUES ($1, $2, $3)
              ON CONFLICT (dashboard_id, user_id) DO UPDATE
              SET permission = EXCLUDED.permission,
                  shared_at = NOW()`,
-                    [dashboardId, perm.userId, perm.permission]
+                    [dashboardId, perm.targetId, perm.permission]
                 );
             }
         }
@@ -332,18 +394,44 @@ function formatDashboard(row) {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         createdBy: row.created_by,
-        sharedWith: shares.map((share) => ({
-            ...share,
-            permission: normalizeSharePermission(share?.permission) || share?.permission,
-        })),
+        sharedWith: shares.map((share) => {
+            const targetType = normalizeIdentity(share?.targetType) === 'group' ? 'group' : 'user';
+            const targetId = String(share?.targetId || (targetType === 'group' ? share?.groupId : share?.userId) || '').trim();
+            return {
+                ...share,
+                targetType,
+                targetId,
+                userId: targetType === 'user' ? (targetId || share?.userId) : undefined,
+                groupId: targetType === 'group' ? (targetId || share?.groupId) : undefined,
+                permission: normalizeSharePermission(share?.permission) || share?.permission,
+            };
+        }),
     };
 }
 
-function applyPageAccessConstraint(dashboard, email) {
+const permissionRank = (permission) => {
+    const normalized = normalizeSharePermission(permission);
+    if (normalized === 'admin') return 3;
+    if (normalized === 'edit') return 2;
+    return 1;
+};
+
+function applyPageAccessConstraint(dashboard, user) {
     const shares = Array.isArray(dashboard.sharedWith) ? dashboard.sharedWith : [];
-    const currentUser = normalizeIdentity(email);
-    const currentShare = shares.find((s) => normalizeIdentity(s?.userId) === currentUser);
-    if (!currentShare || currentShare.permission === 'admin') return dashboard;
+    const currentUser = normalizeIdentity(user?.email);
+    const currentGroup = normalizeIdentity(user?.group_name || user?.groupName || '');
+    const matches = shares.filter((share) => {
+        const targetType = normalizeIdentity(share?.targetType) === 'group' ? 'group' : 'user';
+        const targetId = normalizeIdentity(share?.targetId || (targetType === 'group' ? share?.groupId : share?.userId));
+        if (!targetId) return false;
+        if (targetType === 'group') return !!currentGroup && targetId === currentGroup;
+        return targetId === currentUser;
+    });
+
+    if (matches.length === 0) return dashboard;
+
+    const currentShare = matches.sort((a, b) => permissionRank(b?.permission) - permissionRank(a?.permission))[0];
+    if (normalizeSharePermission(currentShare?.permission) === 'admin') return dashboard;
 
     const allowed = Array.isArray(currentShare.allowedPageIds) ? currentShare.allowedPageIds : [];
     if (allowed.length === 0) return dashboard;

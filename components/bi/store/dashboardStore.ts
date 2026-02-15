@@ -99,15 +99,20 @@ const sanitizeSharePermissions = (permissions: any): SharePermission[] => {
     const dedup = new Map<string, SharePermission>();
 
     permissions.forEach((item) => {
-        const userId = String(item?.userId || '').trim();
-        if (!userId) return;
-        const key = userId.toLowerCase();
+        const targetType = String(item?.targetType || '').trim().toLowerCase() === 'group' ? 'group' : 'user';
+        const fallbackTargetId = targetType === 'group' ? item?.groupId : item?.userId;
+        const targetId = String(item?.targetId || fallbackTargetId || '').trim();
+        if (!targetId) return;
+        const key = `${targetType}:${targetId.toLowerCase()}`;
         const allowedPageIds = Array.isArray(item?.allowedPageIds)
             ? Array.from(new Set(item.allowedPageIds.map((id: any) => String(id || '').trim()).filter(Boolean)))
             : undefined;
         const rls = item?.rls && typeof item.rls === 'object' ? item.rls : undefined;
         dedup.set(key, {
-            userId,
+            targetType,
+            targetId,
+            userId: targetType === 'user' ? targetId : undefined,
+            groupId: targetType === 'group' ? targetId : undefined,
             permission: normalizeSharePermission(item?.permission),
             sharedAt: item?.sharedAt || new Date().toISOString(),
             allowedPageIds,

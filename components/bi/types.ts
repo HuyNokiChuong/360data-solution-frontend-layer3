@@ -6,7 +6,7 @@
 // Data Source Types
 // --------------------------------------------
 
-export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'excel' | 'manual' | 'semantic_model';
+export type DataSourceType = 'csv' | 'json' | 'api' | 'bigquery' | 'excel' | 'manual' | 'ai_generated' | 'semantic_model';
 
 export interface DataSource {
     id: string;
@@ -37,6 +37,8 @@ export interface DataSource {
     syncStatus?: 'ready' | 'syncing' | 'error' | 'stale' | 'queued';
     lastSyncAt?: string;
     syncError?: string | null;
+    assistantGenerated?: boolean;
+    hiddenFromDataTables?: boolean;
 }
 
 export interface SystemLog {
@@ -345,7 +347,10 @@ export interface DashboardTheme {
 }
 
 export interface SharePermission {
-    userId: string;
+    targetType?: 'user' | 'group';
+    targetId?: string;
+    userId?: string;
+    groupId?: string;
     permission: 'view' | 'edit' | 'admin';
     sharedAt: string;
     allowedPageIds?: string[];

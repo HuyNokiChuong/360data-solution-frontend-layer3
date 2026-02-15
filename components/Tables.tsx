@@ -1,15 +1,18 @@
 
 import React, { useState, useMemo } from 'react';
-import { SyncedTable, Connection } from '../types';
+import { SyncedTable, Connection, User } from '../types';
 import { MOCK_DATA_MAP } from '../constants';
 import { fetchTableData } from '../services/bigquery';
 import { fetchExcelTableData } from '../services/excel';
 import { normalizeSchema } from '../utils/schema';
 import { useLanguageStore } from '../store/languageStore';
+import { API_BASE } from '../services/api';
 
 interface TablesProps {
   tables: SyncedTable[];
   connections: Connection[];
+  users: User[];
+  currentUser: User;
   onToggleStatus: (id: string) => void;
   onDeleteTable: (id: string) => void;
   onDeleteTables?: (ids: string[]) => void;
@@ -79,12 +82,20 @@ const formatCellValue = (value: any, columnType: string, preserveRaw = false): s
   return value.toString();
 };
 
-const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, onDeleteTable, onDeleteTables, googleToken, setGoogleToken }) => {
+const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser, onToggleStatus, onDeleteTable, onDeleteTables, googleToken, setGoogleToken }) => {
   const { language } = useLanguageStore();
   const isVi = language === 'vi';
+  const isAdmin = currentUser.role === 'Admin';
   const [filterConnId, setFilterConnId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedTableIds, setSelectedTableIds] = useState<Set<string>>(new Set());
+  const [accessModeOverrides, setAccessModeOverrides] = useState<Record<string, 'public' | 'restricted'>>({});
+  const [accessModalTable, setAccessModalTable] = useState<SyncedTable | null>(null);
+  const [isAccessLoading, setIsAccessLoading] = useState(false);
+  const [isAccessSaving, setIsAccessSaving] = useState(false);
+  const [restrictAccess, setRestrictAccess] = useState(false);
+  const [selectedAccessUsers, setSelectedAccessUsers] = useState<Set<string>>(new Set());
+  const [selectedAccessGroups, setSelectedAccessGroups] = useState<Set<string>>(new Set());
   const [previewTable, setPreviewTable] = useState<SyncedTable | null>(null);
   const [previewData, setPreviewData] = useState<any[]>([]);
   const [previewSchema, setPreviewSchema] = useState<{ name: string, type: string }[]>([]);
@@ -133,6 +144,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
   };
 
   const handleToggleSelect = (id: string) => {
+    if (!isAdmin) return;
     setSelectedTableIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -142,6 +154,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
   };
 
   const handleSelectAll = () => {
+    if (!isAdmin) return;
     if (selectedTableIds.size === filteredTables.length && filteredTables.length > 0) {
       setSelectedTableIds(new Set());
     } else {
@@ -150,6 +163,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
   };
 
   const handleBulkDelete = () => {
+    if (!isAdmin) return;
     if (selectedTableIds.size === 0) return;
 
     // Delegate confirmation to parent handler (onDeleteTables)
@@ -260,6 +274,106 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
     setCurrentPage(1);
   };
 
+  const availableUserEmails = useMemo(
+    () => Array.from(new Set(users.map((user) => String(user.email || '').trim().toLowerCase()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [users]
+  );
+  const availableGroups = useMemo(
+    () => Array.from(new Set(users.map((user) => String(user.groupName || '').trim().toLowerCase()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [users]
+  );
+
+  const openAccessModal = async (table: SyncedTable) => {
+    if (!isAdmin) return;
+    setAccessModalTable(table);
+    setIsAccessLoading(true);
+    setRestrictAccess(false);
+    setSelectedAccessUsers(new Set());
+    setSelectedAccessGroups(new Set());
+
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      setIsAccessLoading(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/connections/tables/${table.id}/access`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(payload?.message || 'Failed to load table access');
+      }
+
+      const entries = Array.isArray(payload?.data?.entries) ? payload.data.entries : [];
+      const nextUsers = new Set<string>();
+      const nextGroups = new Set<string>();
+      entries.forEach((entry: any) => {
+        const type = String(entry?.targetType || '').trim().toLowerCase() === 'group' ? 'group' : 'user';
+        const id = String(entry?.targetId || (type === 'group' ? entry?.groupId : entry?.userId) || '').trim();
+        if (!id) return;
+        if (type === 'group') nextGroups.add(id);
+        else nextUsers.add(id);
+      });
+      setRestrictAccess(entries.length > 0);
+      setSelectedAccessUsers(nextUsers);
+      setSelectedAccessGroups(nextGroups);
+    } catch (err) {
+      console.error(err);
+      setRestrictAccess(false);
+      setSelectedAccessUsers(new Set());
+      setSelectedAccessGroups(new Set());
+    } finally {
+      setIsAccessLoading(false);
+    }
+  };
+
+  const saveTableAccess = async () => {
+    if (!accessModalTable) return;
+    if (restrictAccess && selectedAccessUsers.size === 0 && selectedAccessGroups.size === 0) {
+      alert(isVi ? 'Bạn phải chọn ít nhất 1 user hoặc group khi bật chế độ restricted.' : 'Select at least one user or group for restricted mode.');
+      return;
+    }
+
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    setIsAccessSaving(true);
+    try {
+      const entries = !restrictAccess
+        ? []
+        : [
+          ...Array.from(selectedAccessUsers).map((email) => ({ targetType: 'user', targetId: email })),
+          ...Array.from(selectedAccessGroups).map((groupName) => ({ targetType: 'group', targetId: groupName })),
+        ];
+
+      const response = await fetch(`${API_BASE}/connections/tables/${accessModalTable.id}/access`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ entries }),
+      });
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(payload?.message || 'Failed to save table access');
+      }
+
+      setAccessModeOverrides((prev) => ({
+        ...prev,
+        [accessModalTable.id]: entries.length > 0 ? 'restricted' : 'public',
+      }));
+      setAccessModalTable(null);
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || (isVi ? 'Không thể lưu quyền truy cập bảng' : 'Failed to save table access'));
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
   return (
     <div className="p-10 max-w-[1600px] mx-auto h-full overflow-y-auto custom-scrollbar relative">
       <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -328,6 +442,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                       type="checkbox"
                       className="w-4 h-4 rounded border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800 text-indigo-600 focus:ring-indigo-500/50 cursor-pointer"
                       checked={filteredTables.length > 0 && selectedTableIds.size === filteredTables.length}
+                      disabled={!isAdmin}
                       onChange={handleSelectAll}
                     />
                   </div>
@@ -343,6 +458,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
               {filteredTables.map(table => {
                 const conn = connections.find(c => c.id === table.connectionId);
                 const isSelected = selectedTableIds.has(table.id);
+                const effectiveAccessMode = accessModeOverrides[table.id] || table.accessMode || 'public';
                 return (
                   <tr
                     key={table.id}
@@ -354,6 +470,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                           type="checkbox"
                           className="w-4 h-4 rounded border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800 text-indigo-600 focus:ring-indigo-500/50 cursor-pointer"
                           checked={isSelected}
+                          disabled={!isAdmin}
                           onChange={() => handleToggleSelect(table.id)}
                         />
                       </div>
@@ -368,6 +485,15 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                             {table.tableName}
                           </span>
                           <span className="text-[10px] text-slate-600 font-black uppercase">Dataset: {table.datasetName}</span>
+                          <div className="mt-1">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${effectiveAccessMode === 'restricted'
+                              ? 'bg-amber-500/15 text-amber-500 border border-amber-500/30'
+                              : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                              }`}>
+                              <i className={`fas ${effectiveAccessMode === 'restricted' ? 'fa-lock' : 'fa-lock-open'}`}></i>
+                              {effectiveAccessMode === 'restricted' ? 'Restricted' : 'Public'}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -390,10 +516,11 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                       <div className="flex justify-center">
                         <button
                           onClick={() => onToggleStatus(table.id)}
+                          disabled={!isAdmin}
                           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${table.status === 'Active'
                             ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
                             : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700'
-                            }`}
+                            } ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
                         >
                           <div className={`w-1.5 h-1.5 rounded-full ${table.status === 'Active' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`}></div>
                           {table.status === 'Active' ? (isVi ? 'Hoạt động' : 'Active') : (isVi ? 'Tạm dừng' : 'Paused')}
@@ -402,6 +529,15 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                     </td>
                     <td className="px-8 py-6 text-right">
                       <div className="flex justify-end gap-2">
+                        {isAdmin && (
+                          <button
+                            onClick={() => openAccessModal(table)}
+                            className="w-10 h-10 bg-amber-500/10 rounded-xl text-amber-500 hover:bg-amber-500 hover:text-white transition-all flex items-center justify-center"
+                            title={isVi ? 'Phân quyền xem bảng theo user/group' : 'Manage table access by user/group'}
+                          >
+                            <i className="fas fa-user-shield text-xs"></i>
+                          </button>
+                        )}
                         <button
                           onClick={() => handleOpenPreview(table)}
                           className="w-10 h-10 bg-indigo-600/10 rounded-xl text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center"
@@ -409,13 +545,15 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
                         >
                           <i className="fas fa-eye text-xs"></i>
                         </button>
-                        <button
-                          onClick={() => onDeleteTable(table.id)}
-                          className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
-                          title={isVi ? 'Gỡ bỏ thực thể' : 'Remove entity'}
-                        >
-                          <i className="fas fa-trash-alt text-xs"></i>
-                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => onDeleteTable(table.id)}
+                            className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl text-slate-400 dark:text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all flex items-center justify-center"
+                            title={isVi ? 'Gỡ bỏ thực thể' : 'Remove entity'}
+                          >
+                            <i className="fas fa-trash-alt text-xs"></i>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -428,7 +566,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
 
       {/* Bulk Action Bar */}
       {
-        selectedTableIds.size > 0 && (
+        isAdmin && selectedTableIds.size > 0 && (
           <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[55] animate-in slide-in-from-bottom-10 duration-500">
             <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-indigo-100 dark:border-indigo-500/30 rounded-2xl px-6 py-4 shadow-2xl flex items-center gap-8 min-w-[500px]">
               <div className="flex items-center gap-4">
@@ -461,6 +599,113 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, onToggleStatus, on
           </div>
         )
       }
+
+      {isAdmin && accessModalTable && (
+        <div className="fixed inset-0 z-[62] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-xl animate-in fade-in duration-300">
+          <div className="w-full max-w-3xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-[2rem] shadow-2xl overflow-hidden">
+            <div className="px-8 py-6 border-b border-slate-100 dark:border-white/10 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-black text-slate-900 dark:text-white">{isVi ? 'Phân quyền bảng' : 'Table Access Policy'}</h3>
+                <p className="text-[11px] text-slate-500 mt-1 font-bold">{accessModalTable.datasetName}.{accessModalTable.tableName}</p>
+              </div>
+              <button
+                onClick={() => setAccessModalTable(null)}
+                className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/5 text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              {isAccessLoading ? (
+                <div className="py-10 text-center text-slate-500 text-sm">{isVi ? 'Đang tải chính sách quyền...' : 'Loading access policy...'}</div>
+              ) : (
+                <>
+                  <label className="flex items-center gap-3 text-sm font-bold text-slate-800 dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={restrictAccess}
+                      onChange={(e) => setRestrictAccess(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30"
+                    />
+                    {isVi ? 'Bật chế độ restricted (chỉ user/group bên dưới được xem)' : 'Enable restricted mode (only selected users/groups can view)'}
+                  </label>
+
+                  <div className={`grid grid-cols-1 md:grid-cols-2 gap-6 ${!restrictAccess ? 'opacity-60 pointer-events-none' : ''}`}>
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-3">{isVi ? 'Users được phép xem' : 'Allowed Users'}</div>
+                      <div className="max-h-52 overflow-y-auto rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/20 p-3 space-y-2">
+                        {availableUserEmails.length === 0 ? (
+                          <div className="text-xs text-slate-500 italic">{isVi ? 'Chưa có user trong workspace' : 'No users in workspace yet'}</div>
+                        ) : availableUserEmails.map((email) => (
+                          <label key={email} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={selectedAccessUsers.has(email)}
+                              onChange={(e) => {
+                                setSelectedAccessUsers((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(email);
+                                  else next.delete(email);
+                                  return next;
+                                });
+                              }}
+                              className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30"
+                            />
+                            <span className="truncate">{email}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-3">{isVi ? 'Groups được phép xem' : 'Allowed Groups'}</div>
+                      <div className="max-h-52 overflow-y-auto rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/20 p-3 space-y-2">
+                        {availableGroups.length === 0 ? (
+                          <div className="text-xs text-slate-500 italic">{isVi ? 'Chưa có group nào được gán cho user' : 'No user groups found yet'}</div>
+                        ) : availableGroups.map((groupName) => (
+                          <label key={groupName} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={selectedAccessGroups.has(groupName)}
+                              onChange={(e) => {
+                                setSelectedAccessGroups((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(groupName);
+                                  else next.delete(groupName);
+                                  return next;
+                                });
+                              }}
+                              className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30"
+                            />
+                            <span className="truncate">{groupName}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="px-8 py-5 border-t border-slate-100 dark:border-white/10 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setAccessModalTable(null)}
+                className="px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
+              >
+                {isVi ? 'Hủy' : 'Cancel'}
+              </button>
+              <button
+                onClick={saveTableAccess}
+                disabled={isAccessLoading || isAccessSaving}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {isAccessSaving ? (isVi ? 'Đang lưu...' : 'Saving...') : (isVi ? 'Lưu phân quyền' : 'Save Policy')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Data Preview Modal */}
       {

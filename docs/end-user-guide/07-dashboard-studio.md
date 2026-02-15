@@ -128,3 +128,28 @@
 
 ![M06-12 Export Toolbar](./images/M06-12-export-and-preview-toolbar.png)
 - Callout: preview mode, zoom, grid, export.
+
+## 7. Global Assistant trong Dashboard Studio
+Ban co the ra lenh truc tiep thay vi thao tac tay tung buoc:
+- "Tao dashboard moi ten Sales Executive."
+- "Tao calculated field margin = (revenue-cost)/revenue."
+- "Tao chart doanh thu theo thang."
+- "Cap nhat widget `<widgetId>` doi tieu de thanh Revenue by Month."
+- "Xoa widget `<widgetId>`." (yeu cau confirm vi la risky action)
+
+### 7.1 Hanh vi chart mac dinh
+- Neu dang o `/bi` va co active dashboard: tao chart ngay.
+- Neu khong o `/bi`: assistant hoi 1 cau ngan de chon dashboard.
+- Neu chua co dashboard nao: assistant hoi tao dashboard moi truoc.
+
+### 7.2 Undo ho tro
+- Ho tro undo cho:
+  - create/update/delete widget
+  - create/edit/delete calculated field
+  - table status toggle
+- Khong ho tro undo cho hard-delete resource phia server.
+
+### 7.3 Action can input thu cong
+- OAuth flow.
+- Upload file import.
+- Cac buoc can user click tren popup/browser permission.

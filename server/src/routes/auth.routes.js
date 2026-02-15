@@ -15,7 +15,7 @@ const router = express.Router();
 router.post('/register', async (req, res) => {
     const client = await getClient();
     try {
-        const { email, password, name, phoneNumber, level, department, industry, companySize } = req.body;
+        const { email, password, name, phoneNumber, level, department, industry, companySize, groupName } = req.body;
 
         if (!email || !password || !name) {
             return res.status(400).json({ success: false, message: 'Email, password, and name are required' });
@@ -53,11 +53,15 @@ router.post('/register', async (req, res) => {
         const role = parseInt(userCount.rows[0].count) === 0 ? 'Admin' : 'Viewer';
 
         // Insert user
+        const normalizedGroupName = typeof groupName === 'string' && groupName.trim().length > 0
+            ? groupName.trim().slice(0, 120)
+            : null;
+
         const userResult = await client.query(
-            `INSERT INTO users (workspace_id, email, password_hash, name, role, status, phone_number, level, department, industry, company_size)
-       VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10)
-       RETURNING id, email, name, role, status, joined_at, phone_number, level, department, industry, company_size`,
-            [workspaceId, email, passwordHash, name, role, phoneNumber, level, department, industry, companySize]
+            `INSERT INTO users (workspace_id, email, password_hash, name, role, status, phone_number, level, department, industry, company_size, group_name)
+       VALUES ($1, $2, $3, $4, $5, 'Active', $6, $7, $8, $9, $10, $11)
+       RETURNING id, email, name, role, status, joined_at, phone_number, level, department, industry, company_size, group_name`,
+            [workspaceId, email, passwordHash, name, role, phoneNumber, level, department, industry, companySize, normalizedGroupName]
         );
 
         await client.query('COMMIT');
@@ -207,6 +211,7 @@ function formatUser(row) {
         level: row.level || undefined,
         department: row.department || undefined,
         industry: row.industry || undefined,
+        groupName: row.group_name || undefined,
         note: row.note || undefined,
         tags: Array.isArray(row.tags) ? row.tags : [],
     };

@@ -4,17 +4,15 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { BIDashboard } from './types';
-import { DashboardConfig } from '../../types';
-import { analyzeDashboardContent } from '../../services/ai';
 import { useLanguageStore } from '../../store/languageStore';
+import { useAssistantRuntime } from '../assistant/AssistantRuntimeProvider';
 
 interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
-    visualData?: DashboardConfig;
-    sqlTrace?: string;
-    executionTime?: number;
+    runtimeMessageId?: string;
+    pendingActionIds?: string[];
     timestamp: Date;
 }
 
@@ -24,6 +22,7 @@ interface DashboardAIChatProps {
 
 const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
     const { language } = useLanguageStore();
+    const { sendMessage, confirmActions } = useAssistantRuntime();
     const isVi = language === 'vi';
     const [isOpen, setIsOpen] = useState(false);
     const [position, setPosition] = useState({ x: window.innerWidth - 100, y: window.innerHeight - 100 });
@@ -43,6 +42,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
     ]);
     const [input, setInput] = useState('');
     const [isTyping, setIsTyping] = useState(false);
+    const [confirmingMessageId, setConfirmingMessageId] = useState<string | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto scroll to bottom
@@ -116,13 +116,34 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
         setIsTyping(true);
 
         try {
-            const history = messages.map(m => ({ role: m.role, content: m.content }));
-            const response = await analyzeDashboardContent(input.trim(), dashboard, history);
+            const response = await sendMessage({
+                channel: 'bi',
+                text: input.trim(),
+                context: {
+                    activeTab: 'bi',
+                    activeDashboardId: dashboard.id,
+                    dashboardTitle: dashboard.title,
+                    dashboards: [{ id: dashboard.id, title: dashboard.title }],
+                },
+                autoExecute: true,
+            });
+
+            const pending = Array.isArray(response.pendingConfirmations)
+                ? response.pendingConfirmations.map((item) => item.id)
+                : [];
+
+            const suffix = pending.length > 0
+                ? (isVi
+                    ? '\n\nCó thao tác rủi ro đang chờ xác nhận.'
+                    : '\n\nThere are risky actions waiting for confirmation.')
+                : '';
 
             const assistantMsg: Message = {
                 id: `ai-${Date.now()}`,
                 role: 'assistant',
-                content: response,
+                content: `${response.assistantText || ''}${suffix}`,
+                runtimeMessageId: response.messageId,
+                pendingActionIds: pending,
                 timestamp: new Date()
             };
 
@@ -144,6 +165,43 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
             }]);
         } finally {
             setIsTyping(false);
+        }
+    };
+
+    const handleConfirmPending = async (message: Message, approve: boolean) => {
+        if (!message.runtimeMessageId || !message.pendingActionIds || message.pendingActionIds.length === 0) return;
+        setConfirmingMessageId(message.id);
+        try {
+            const result = await confirmActions({
+                channel: 'bi',
+                messageId: message.runtimeMessageId,
+                approve,
+                actionIds: message.pendingActionIds,
+            });
+
+            const statusText = approve
+                ? (isVi ? 'Đã xác nhận và đang thực thi.' : 'Confirmed and executing.')
+                : (isVi ? 'Đã từ chối thao tác rủi ro.' : 'Risky action was rejected.');
+
+            setMessages(prev => prev.map((item) => (
+                item.id === message.id
+                    ? {
+                        ...item,
+                        content: `${item.content}\n\n${statusText}`,
+                        pendingActionIds: result.pendingConfirmations?.map((action) => action.id) || [],
+                    }
+                    : item
+            )));
+        } catch (err: any) {
+            const errText = err?.message || (isVi ? 'Không thể xác nhận thao tác.' : 'Cannot confirm action.');
+            setMessages(prev => [...prev, {
+                id: `err-confirm-${Date.now()}`,
+                role: 'assistant',
+                content: `${isVi ? 'Lỗi' : 'Error'}: ${errText}`,
+                timestamp: new Date()
+            }]);
+        } finally {
+            setConfirmingMessageId(null);
         }
     };
 
@@ -178,6 +236,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                         </div>
                     </div>
                     <button
+                        type="button"
                         onClick={() => setIsOpen(false)}
                         className="text-white/60 hover:text-white transition-colors p-2"
                     >
@@ -203,6 +262,26 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                                 }
                             `}>
                                 <div className="whitespace-pre-wrap">{msg.content}</div>
+                                {msg.role === 'assistant' && Array.isArray(msg.pendingActionIds) && msg.pendingActionIds.length > 0 && (
+                                    <div className="mt-2 flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleConfirmPending(msg, true)}
+                                            disabled={confirmingMessageId === msg.id}
+                                            className="px-2.5 py-1 rounded-md bg-emerald-600 text-white text-[10px] font-black uppercase tracking-wide disabled:opacity-50"
+                                        >
+                                            {isVi ? 'Xác nhận' : 'Approve'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleConfirmPending(msg, false)}
+                                            disabled={confirmingMessageId === msg.id}
+                                            className="px-2.5 py-1 rounded-md bg-red-600 text-white text-[10px] font-black uppercase tracking-wide disabled:opacity-50"
+                                        >
+                                            {isVi ? 'Từ chối' : 'Reject'}
+                                        </button>
+                                    </div>
+                                )}
                                 <div className={`text-[9px] mt-1.5 opacity-50 font-bold ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
                                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </div>
@@ -239,6 +318,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
                             rows={1}
                         />
                         <button
+                            type="button"
                             onClick={handleSend}
                             disabled={!input.trim() || isTyping}
                             className={`
@@ -257,6 +337,7 @@ const DashboardAIChat: React.FC<DashboardAIChatProps> = ({ dashboard }) => {
 
             {/* Floating Toggle Button */}
             <button
+                type="button"
                 onMouseDown={handleMouseDown}
                 onClick={handleToggle}
                 className={`

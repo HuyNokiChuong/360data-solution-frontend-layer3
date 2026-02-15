@@ -18,7 +18,6 @@ import { useFilterStore } from './store/filterStore';
 import { BIWidget, ChartType, Field, DataSource } from './types';
 import { useKeyboardShortcuts } from './utils/useKeyboardShortcuts';
 import PageTabs from './PageTabs';
-import DashboardAIChat from './DashboardAIChat';
 import { getAutoTitle } from './utils/widgetUtils';
 import { normalizeFieldType } from '../../utils/schema';
 import { getDefaultDataModel, getModelTables } from '../../services/dataModeling';
@@ -571,6 +570,53 @@ const BIMain: React.FC<BIMainProps> = ({
             }
         });
     };
+
+    useEffect(() => {
+        const onAssistantOpenFlow = (event: Event) => {
+            const custom = event as CustomEvent<any>;
+            const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
+            const tab = String(detail.tab || '').trim().toLowerCase();
+            if (tab !== 'bi') return;
+
+            const flow = String(detail.flow || '').trim().toLowerCase();
+            const args = detail.args && typeof detail.args === 'object' ? detail.args : {};
+            const requestedDashboardId = String(args.dashboardId || '').trim();
+            const requestedDashboardTitle = String(args.dashboardTitle || args.dashboardName || '').trim().toLowerCase();
+            const requestedWidgetId = String(args.widgetId || '').trim();
+
+            if (requestedDashboardId) {
+                setActiveDashboard(requestedDashboardId);
+            } else if (requestedDashboardTitle) {
+                const match = (dashboards || []).find((dashboard) => String(dashboard.title || '').trim().toLowerCase() === requestedDashboardTitle);
+                if (match?.id) {
+                    setActiveDashboard(match.id);
+                }
+            }
+
+            if (requestedWidgetId) {
+                setEditingWidget(requestedWidgetId);
+            }
+
+            if (flow.includes('calculated_field')) {
+                setRightPanelOpen(true);
+                setActiveVisualTab('calculations');
+                return;
+            }
+
+            if (
+                flow.includes('create_chart')
+                || flow.includes('create_widget')
+                || flow.includes('update_widget')
+                || flow.includes('delete_widget')
+            ) {
+                setRightPanelOpen(true);
+                setActiveVisualTab('data');
+            }
+        };
+
+        window.addEventListener('assistant:open-flow', onAssistantOpenFlow as EventListener);
+        return () => window.removeEventListener('assistant:open-flow', onAssistantOpenFlow as EventListener);
+    }, [dashboards, setActiveDashboard, setEditingWidget]);
 
     // DND Sensors
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -1752,6 +1798,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                 dashboards={dashboards}
                                 currentUserId={currentUser.id}
                                 currentUserEmail={currentUser.email}
+                                currentUserGroup={currentUser.groupName}
                                 activeDashboardId={activeDashboardId}
                                 onSelectDashboard={setActiveDashboard}
                                 onCreateFolder={handleCreateFolder}
@@ -1797,6 +1844,7 @@ const BIMain: React.FC<BIMainProps> = ({
                                 dashboardId={activeDashboard.id}
                                 currentUserId={currentUser.id}
                                 currentUserEmail={currentUser.email}
+                                currentUserGroup={currentUser.groupName}
                                 onExport={handleExport}
                                 onToggleVisualBuilder={() => setRightPanelOpen(!rightPanelOpen)}
                                 isVisualBuilderOpen={rightPanelOpen}
@@ -1960,8 +2008,6 @@ const BIMain: React.FC<BIMainProps> = ({
                     </div>
                 )}
 
-                {/* AI Advisor Chat */}
-                {activeDashboard && <DashboardAIChat dashboard={activeDashboard} />}
             </div>
             <DragOverlay dropAnimation={null}>
                 {dragFieldPreview ? (

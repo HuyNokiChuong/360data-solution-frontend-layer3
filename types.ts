@@ -70,6 +70,7 @@ export interface User {
   role: UserRole;
   status: 'Active' | 'Pending' | 'Disabled';
   joinedAt: string;
+  groupName?: string;
   jobTitle?: string;
   level?: string;
   department?: string;
@@ -115,6 +116,7 @@ export interface SyncedTable {
   sourceSheetId?: string;
   importTime?: string;
   lastSyncTime?: string;
+  accessMode?: 'public' | 'restricted';
 }
 
 export interface ReportSession {

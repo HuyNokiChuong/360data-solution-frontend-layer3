@@ -24,6 +24,7 @@ import {
 import { useLanguageStore } from '../../store/languageStore';
 import { AI_MODELS } from '../../constants';
 import { generateCalculatedFieldFormula } from '../../services/ai';
+import { isAssistantGeneratedDataSource } from './utils/dataSourceVisibility';
 
 interface BIVisualBuilderProps {
     activeWidget?: BIWidget;
@@ -1481,7 +1482,8 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     activeTab,
     setActiveTab
 }) => {
-    const { t } = useLanguageStore();
+    const { t, language } = useLanguageStore();
+    const isVi = language === 'vi';
     const { dataSources, selectedDataSourceId, setSelectedDataSource, connections, updateDataSource } = useDataStore();
     const { getActiveDashboard, updateWidget, updateDashboard, syncDashboardDataSource } = useDashboardStore();
 
@@ -1490,6 +1492,10 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
     const activePage = activeDashboard?.pages?.find(p => p.id === (activeDashboard as any).activePageId);
     const effectiveDataSourceId = activeWidget?.dataSourceId || activePage?.dataSourceId || activeDashboard?.dataSourceId || selectedDataSourceId;
+    const visibleDataSources = React.useMemo(
+        () => dataSources.filter((ds) => !isAssistantGeneratedDataSource(ds)),
+        [dataSources]
+    );
 
     React.useEffect(() => {
         const ds = effectiveDataSourceId
@@ -1530,6 +1536,8 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const [newCalcFormula, setNewCalcFormula] = useState('');
     const [dsSearchQuery, setDsSearchQuery] = useState('');
     const [selectedSourceKey, setSelectedSourceKey] = useState('');
+    const [visualSearchQuery, setVisualSearchQuery] = useState('');
+    const [visualMode, setVisualMode] = useState<'quick' | 'all'>('quick');
 
     const [editingCalcId, setEditingCalcId] = useState<string | null>(null);
 
@@ -1550,10 +1558,61 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         { type: 'area', icon: 'fa-chart-area', label: 'Area Chart' },
         { type: 'pie', icon: 'fa-chart-pie', label: 'Pie Chart' },
         { type: 'donut', icon: 'fa-circle-dot', label: 'Donut Chart' },
-        { type: 'scatter', icon: 'fa-braille', label: 'Scatter Plot' },
-
-        { type: 'pivot' as any, icon: 'fa-table-cells-large', label: 'Pivot Table' }
+        { type: 'scatter', icon: 'fa-braille', label: 'Scatter Plot' }
     ];
+
+    const widgetLibrary: Array<{ type: string; icon: string; label: string }> = [
+        { type: 'card', icon: 'fa-bolt', label: 'KPI Card' },
+        { type: 'table', icon: 'fa-table-list', label: 'Data Table' },
+        { type: 'slicer', icon: 'fa-filter', label: 'Filter Slicer' },
+        { type: 'date-range', icon: 'fa-calendar-days', label: 'Date Range' },
+        { type: 'search', icon: 'fa-magnifying-glass', label: 'Search Box' },
+        { type: 'pivot', icon: 'fa-table-cells', label: 'Pivot Table' }
+    ];
+
+    const normalizedVisualSearch = visualSearchQuery.trim().toLowerCase();
+    const filteredVisualizations = normalizedVisualSearch
+        ? visualizations.filter((viz) => `${viz.label} ${viz.type}`.toLowerCase().includes(normalizedVisualSearch))
+        : visualizations;
+    const filteredWidgetLibrary = normalizedVisualSearch
+        ? widgetLibrary.filter((widget) => `${widget.label} ${widget.type}`.toLowerCase().includes(normalizedVisualSearch))
+        : widgetLibrary;
+    const quickVisualizationTypes = new Set<ChartType>(['bar', 'line', 'pie', 'donut']);
+    const quickWidgetTypes = new Set<string>(['card', 'table', 'slicer']);
+    const quickVisualizations = filteredVisualizations.filter((viz) => quickVisualizationTypes.has(viz.type));
+    const quickWidgetLibrary = filteredWidgetLibrary.filter((widget) => quickWidgetTypes.has(widget.type));
+    const shouldShowFullVisualLibrary = visualMode === 'all' || normalizedVisualSearch.length > 0;
+    const visibleVisualizations = shouldShowFullVisualLibrary ? filteredVisualizations : quickVisualizations;
+    const visibleWidgetLibrary = shouldShowFullVisualLibrary ? filteredWidgetLibrary : quickWidgetLibrary;
+    const visualUi = isVi
+        ? {
+            quickPicks: 'Gợi ý nhanh',
+            fullLibrary: 'Toàn bộ thư viện',
+            quickHint: 'Bắt đầu với các visual phổ biến trước. Chuyển sang Toàn bộ thư viện để dùng loại nâng cao.',
+            charts: 'Biểu đồ',
+            recommendedCharts: 'Biểu đồ đề xuất',
+            widgets: 'Widgets',
+            recommendedWidgets: 'Widgets đề xuất',
+            noChartMatch: 'Không có loại biểu đồ phù hợp với từ khóa',
+            noRecommendedCharts: 'Không có biểu đồ đề xuất',
+            noWidgetMatch: 'Không có widget phù hợp với từ khóa',
+            noRecommendedWidgets: 'Không có widget đề xuất',
+            showFullLibrary: 'Hiển thị toàn bộ thư viện'
+        }
+        : {
+            quickPicks: 'Quick picks',
+            fullLibrary: 'Full library',
+            quickHint: 'Start with these common visuals first. Switch to Full library for advanced types.',
+            charts: 'Charts',
+            recommendedCharts: 'Recommended Charts',
+            widgets: 'Widgets',
+            recommendedWidgets: 'Recommended Widgets',
+            noChartMatch: 'No chart type matches your search',
+            noRecommendedCharts: 'No recommended charts available',
+            noWidgetMatch: 'No widget matches your search',
+            noRecommendedWidgets: 'No recommended widgets available',
+            showFullLibrary: 'Show full library'
+        };
 
     const handleUpdateWidget = (updates: Partial<BIWidget>) => {
         if (!activeWidget || !activeDashboard) return;
@@ -1750,6 +1809,14 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
     const handleAddVisualization = (chartType: ChartType) => {
         if (onAddWidget) {
             onAddWidget(chartType);
+            setActiveTab('data');
+        }
+    };
+
+    const handleAddWidget = (widgetType: string) => {
+        if (onAddWidget) {
+            onAddWidget(widgetType);
+            setActiveTab('data');
         }
     };
 
@@ -1969,7 +2036,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
         if (ds.connectionId) {
             return `conn:${ds.connectionId}`;
         }
-        if (['csv', 'json', 'manual', 'api'].includes(ds.type)) {
+        if (['csv', 'json', 'manual', 'ai_generated', 'api'].includes(ds.type)) {
             return `${ds.type}:local`;
         }
         return `${ds.type}:default`;
@@ -1984,6 +2051,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
             case 'bigquery': return 'BigQuery';
             case 'excel': return 'Excel';
             case 'semantic_model': return 'Semantic Model';
+            case 'ai_generated': return 'AI Generated';
             case 'csv': return 'CSV';
             case 'json': return 'JSON';
             case 'api': return 'API';
@@ -2014,15 +2082,15 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
 
     const sourceOptions = React.useMemo(() => {
         const seen = new Map<string, string>();
-        dataSources.forEach(ds => {
+        visibleDataSources.forEach(ds => {
             const key = getSourceKey(ds);
             if (!seen.has(key)) seen.set(key, getSourceLabel(ds));
         });
         return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
-    }, [dataSources, connections]);
+    }, [visibleDataSources, connections]);
 
     const normalizedDsSearchQuery = dsSearchQuery.toLowerCase().trim();
-    const tableOptions = dataSources
+    const tableOptions = visibleDataSources
         .filter(ds => !activeSourceKey || getSourceKey(ds) === activeSourceKey)
         .filter(ds => {
             if (!normalizedDsSearchQuery) return true;
@@ -2030,7 +2098,7 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
             return haystack.includes(normalizedDsSearchQuery);
         });
 
-    const selectedTableId = effectiveDataSourceId && dataSources.find(ds =>
+    const selectedTableId = effectiveDataSourceId && visibleDataSources.find(ds =>
         ds.id === effectiveDataSourceId && (!activeSourceKey || getSourceKey(ds) === activeSourceKey)
     )
         ? effectiveDataSourceId
@@ -2219,9 +2287,55 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                 {/* Visualizations Tab */}
                 {activeTab === 'visualizations' && (
                     <div className="space-y-3">
-                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider">Chart Types</h4>
+                        <div className="relative">
+                            <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]"></i>
+                            <input
+                                type="text"
+                                value={visualSearchQuery}
+                                onChange={(e) => setVisualSearchQuery(e.target.value)}
+                                placeholder="Search chart/widget..."
+                                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/50 pl-8 pr-3 py-2 text-[11px] text-slate-700 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            />
+                        </div>
+
                         <div className="grid grid-cols-2 gap-2">
-                            {visualizations.map((viz) => {
+                            <button
+                                type="button"
+                                onClick={() => setVisualMode('quick')}
+                                disabled={normalizedVisualSearch.length > 0}
+                                className={`rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider border transition-all ${
+                                    !shouldShowFullVisualLibrary
+                                        ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 text-indigo-600 dark:text-indigo-300'
+                                        : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400'
+                                } disabled:opacity-40 disabled:cursor-not-allowed`}
+                            >
+                                {visualUi.quickPicks}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setVisualMode('all')}
+                                className={`rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider border transition-all ${
+                                    shouldShowFullVisualLibrary
+                                        ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 text-indigo-600 dark:text-indigo-300'
+                                        : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400'
+                                }`}
+                            >
+                                {visualUi.fullLibrary}
+                            </button>
+                        </div>
+
+                        {!shouldShowFullVisualLibrary && (
+                            <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-[10px] text-indigo-200 flex items-start gap-2">
+                                <i className="fas fa-lightbulb mt-0.5"></i>
+                                <span>{visualUi.quickHint}</span>
+                            </div>
+                        )}
+
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                            {shouldShowFullVisualLibrary ? visualUi.charts : visualUi.recommendedCharts}
+                        </h4>
+                        <div className="grid grid-cols-2 gap-2">
+                            {visibleVisualizations.map((viz) => {
                                 const isActive = activeWidget && (
                                     (activeWidget.type === 'chart' && activeWidget.chartType === viz.type) ||
                                     (activeWidget.type === (viz.type as any))
@@ -2242,74 +2356,48 @@ const BIVisualBuilder: React.FC<BIVisualBuilderProps> = ({
                                 );
                             })}
                         </div>
+                        {visibleVisualizations.length === 0 && (
+                            <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 p-3 text-center text-[10px] text-slate-500">
+                                {normalizedVisualSearch.length > 0 ? visualUi.noChartMatch : visualUi.noRecommendedCharts}
+                            </div>
+                        )}
 
                         <div className="pt-3 border-t border-white/5">
-                            <button
-                                onClick={() => onAddWidget?.('card')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left ${activeWidget?.type === 'card'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-bolt text-lg ${activeWidget?.type === 'card' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'card' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>KPI Card</span>
-                            </button>
-
-                            <button
-                                onClick={() => onAddWidget?.('table')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left mt-2 ${activeWidget?.type === 'table'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-table-list text-lg ${activeWidget?.type === 'table' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'table' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>Data Table</span>
-                            </button>
-
-                            <button
-                                onClick={() => onAddWidget?.('slicer')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left mt-2 ${activeWidget?.type === 'slicer'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-filter text-lg ${activeWidget?.type === 'slicer' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'slicer' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>Filter Slicer</span>
-                            </button>
-
-                            <button
-                                onClick={() => onAddWidget?.('date-range')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left mt-2 ${activeWidget?.type === 'date-range'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-calendar-days text-lg ${activeWidget?.type === 'date-range' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'date-range' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>Date Range</span>
-                            </button>
-
-                            <button
-                                onClick={() => onAddWidget?.('search')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left mt-2 ${activeWidget?.type === 'search'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15_rgb(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-magnifying-glass text-lg ${activeWidget?.type === 'search' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'search' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>Search Box</span>
-                            </button>
-
-                            <button
-                                onClick={() => onAddWidget?.('pivot')}
-                                className={`w-full p-3 rounded-lg border transition-all text-left mt-2 ${activeWidget?.type === 'pivot'
-                                    ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
-                                    }`}
-                            >
-                                <i className={`fas fa-table-cells text-lg ${activeWidget?.type === 'pivot' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
-                                <span className={`text-xs font-bold ${activeWidget?.type === 'pivot' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>Pivot Table</span>
-                            </button>
+                            <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+                                {shouldShowFullVisualLibrary ? visualUi.widgets : visualUi.recommendedWidgets}
+                            </h4>
+                            {visibleWidgetLibrary.map((widget) => {
+                                const isActive = activeWidget?.type === widget.type;
+                                return (
+                                    <button
+                                        key={widget.type}
+                                        onClick={() => handleAddWidget(widget.type)}
+                                        className={`w-full p-3 rounded-lg border transition-all text-left ${isActive
+                                            ? 'bg-indigo-50 dark:bg-indigo-600/20 border-indigo-500 shadow-md dark:shadow-[0_0_15px_rgba(99,102,241,0.2)]'
+                                            : 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-white/10 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10'
+                                            } ${widget.type === 'card' ? '' : 'mt-2'}`}
+                                    >
+                                        <i className={`fas ${widget.icon} text-lg ${isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'} mr-2`}></i>
+                                        <span className={`text-xs font-bold ${isActive ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>{widget.label}</span>
+                                    </button>
+                                );
+                            })}
+                            {visibleWidgetLibrary.length === 0 && (
+                                <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/40 p-3 text-center text-[10px] text-slate-500">
+                                    {normalizedVisualSearch.length > 0 ? visualUi.noWidgetMatch : visualUi.noRecommendedWidgets}
+                                </div>
+                            )}
                         </div>
+
+                        {!shouldShowFullVisualLibrary && (
+                            <button
+                                type="button"
+                                onClick={() => setVisualMode('all')}
+                                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-900/50 hover:border-indigo-500/40 hover:text-indigo-600 dark:hover:text-indigo-300 transition-all px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400"
+                            >
+                                {visualUi.showFullLibrary}
+                            </button>
+                        )}
                     </div>
                 )}
 

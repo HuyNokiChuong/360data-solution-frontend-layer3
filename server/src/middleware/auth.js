@@ -38,7 +38,7 @@ const authenticate = async (req, res, next) => {
 
         // Verify user still exists and is active
         const result = await query(
-            'SELECT id, email, name, role, status, workspace_id FROM users WHERE id = $1',
+            'SELECT id, email, name, role, status, workspace_id, group_name FROM users WHERE id = $1',
             [decoded.id]
         );
 

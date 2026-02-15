@@ -2,6 +2,7 @@
 import React, { useMemo, useState } from 'react';
 import { useDataStore } from '../store/dataStore';
 import { DataSource } from '../types';
+import { isAssistantGeneratedDataSource } from '../utils/dataSourceVisibility';
 
 interface DataSourcesPanelProps {
     onSelectDataSource?: (id: string) => void;
@@ -15,7 +16,7 @@ const DataSourcesPanel: React.FC<DataSourcesPanelProps> = ({ onSelectDataSource,
     const [activeView, setActiveView] = useState<'tables' | 'logs'>('tables');
 
     const filteredDataSources = useMemo(() => {
-        let results = dataSources;
+        let results = dataSources.filter((ds) => !isAssistantGeneratedDataSource(ds));
         if (searchQuery.trim()) {
             const query = searchQuery.toLowerCase();
             results = results.filter(ds =>

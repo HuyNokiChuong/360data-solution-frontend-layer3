@@ -1166,6 +1166,7 @@ router.post('/query/plan', async (req, res) => {
         const plan = await buildSemanticQueryPlan({
             workspaceId: req.user.workspace_id,
             userEmail: req.user.email,
+            userGroupName: req.user.group_name,
             request: req.body || {},
         });
 
@@ -1189,6 +1190,7 @@ router.post('/query/execute', async (req, res) => {
         const execution = await executePostgresPlan({
             workspaceId: req.user.workspace_id,
             userEmail: req.user.email,
+            userGroupName: req.user.group_name,
             request: req.body || {},
         });
 

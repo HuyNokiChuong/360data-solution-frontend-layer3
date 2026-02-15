@@ -104,6 +104,7 @@ app.use('/api/sessions', require('./routes/session.routes'));
 app.use('/api/ai-settings', require('./routes/ai-settings.routes'));
 app.use('/api/logs', require('./routes/audit.routes'));
 app.use('/api/data-modeling', require('./routes/data-modeling.routes'));
+app.use('/api/assistant', require('./routes/assistant.routes'));
 
 // Health check
 app.get('/api/health', async (req, res) => {

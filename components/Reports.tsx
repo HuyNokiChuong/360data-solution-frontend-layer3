@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { SyncedTable, Connection, ReportSession } from '../types';
 import { ReportSidebar } from './reports/ReportSidebar';
 import { ChatInterface } from './reports/ChatInterface';
@@ -11,12 +11,14 @@ import {
 } from '../services/dataModeling';
 import { useLanguageStore } from '../store/languageStore';
 import { generateUUID } from '../utils/id';
+import { registerReportsAssistantBridge } from './reports/reportsAssistantBridge';
 
 interface PendingQuestion {
   id: string;
   text: string;
   model?: any;
   sessionId: string;
+  forcedTableIds?: string[];
 }
 
 interface ResolvedSourceScope {
@@ -63,31 +65,43 @@ const Reports: React.FC<ReportsProps> = ({
   currentUser
 }) => {
   const domain = currentUser.email.split('@')[1] || 'default';
+  const selectionStorageKey = `report_selection_${domain}`;
   const [isAuthRequired, setIsAuthRequired] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
 
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem(`report_selection_${domain}`);
-    return saved ? JSON.parse(saved) : [];
+    const saved = localStorage.getItem(selectionStorageKey);
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
   const { messages } = sessions.find(s => s.id === activeSessionId) || { messages: [] };
 
   // Persist selectedTableIds
   useEffect(() => {
-    localStorage.setItem(`report_selection_${domain}`, JSON.stringify(selectedTableIds));
-  }, [selectedTableIds, domain]);
+    localStorage.setItem(selectionStorageKey, JSON.stringify(selectedTableIds));
+  }, [selectedTableIds, selectionStorageKey]);
 
   // Initialize selectedTableIds with all tables ONLY IF it's the first time for this domain
   useEffect(() => {
-    const saved = localStorage.getItem(`report_selection_${domain}`);
-    if ((!saved || JSON.parse(saved).length === 0) && tables.length > 0) {
+    const saved = localStorage.getItem(selectionStorageKey);
+    // Only auto-select all when key does not exist yet.
+    // If key exists (including []), keep user's explicit choice.
+    if (saved === null && tables.length > 0) {
       setSelectedTableIds(tables.map(t => t.id));
     }
-  }, [tables, domain]);
+  }, [tables, selectionStorageKey]);
 
   // Remove stale selections when available tables change (e.g. table disabled in Data Assets)
   useEffect(() => {
+    // Keep current selection while table list is still loading.
+    if (tables.length === 0) return;
+
     const availableTableIds = new Set(tables.map((table) => table.id));
     setSelectedTableIds((prev) => {
       const next = prev.filter((id) => availableTableIds.has(id));
@@ -134,8 +148,11 @@ const Reports: React.FC<ReportsProps> = ({
     checkAuth();
   }, [googleToken, connections]);
 
-  const resolveSourceScopeForPrompt = (prompt: string): ResolvedSourceScope => {
-    const selectedTables = tables.filter((table) => selectedTableIds.includes(table.id));
+  const resolveSourceScopeForPrompt = (prompt: string, scopedSelectedTableIds?: string[]): ResolvedSourceScope => {
+    const effectiveSelectedTableIds = Array.isArray(scopedSelectedTableIds) && scopedSelectedTableIds.length > 0
+      ? scopedSelectedTableIds
+      : selectedTableIds;
+    const selectedTables = tables.filter((table) => effectiveSelectedTableIds.includes(table.id));
     if (selectedTables.length === 0) {
       return {
         targetConnection: connections.find((connection) => connection.type === 'BigQuery' && !!connection.projectId) || null,
@@ -326,8 +343,18 @@ const Reports: React.FC<ReportsProps> = ({
   };
 
   // Handle Send Message
-  const handleSend = async (text: string, model?: any, isRetry = false, providedToken?: string, forcedSessionId?: string) => {
+  const handleSend = async (
+    text: string,
+    model?: any,
+    isRetry = false,
+    providedToken?: string,
+    forcedSessionId?: string,
+    forcedTableIds?: string[]
+  ): Promise<{ sessionId: string; messageId?: string; visualData?: any } | void> => {
     if (!text.trim()) return;
+    const effectiveTableIds = Array.isArray(forcedTableIds) && forcedTableIds.length > 0
+      ? forcedTableIds
+      : selectedTableIds;
     if (loading && !isRetry) {
       setPendingQuestions((prev) => [
         ...prev,
@@ -335,7 +362,8 @@ const Reports: React.FC<ReportsProps> = ({
           id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           text,
           model,
-          sessionId: activeSessionId
+          sessionId: activeSessionId,
+          forcedTableIds: effectiveTableIds,
         }
       ]);
       return;
@@ -345,7 +373,7 @@ const Reports: React.FC<ReportsProps> = ({
       setLoading(true);
     }
 
-    const { targetConnection, scopedTables } = resolveSourceScopeForPrompt(text);
+    const { targetConnection, scopedTables } = resolveSourceScopeForPrompt(text, effectiveTableIds);
     const bqConn = (targetConnection && targetConnection.type === 'BigQuery' && targetConnection.projectId)
       ? targetConnection
       : (connections.find(c => c.type === 'BigQuery' && c.projectId) || null);
@@ -540,7 +568,7 @@ const Reports: React.FC<ReportsProps> = ({
         console.warn("Detected expired/invalid token. Attempting auto-reauth...");
         const newToken = await getGoogleToken(clientId);
         setGoogleToken(newToken);
-        return await handleSend(text, model, true, newToken, targetSessionId);
+        return await handleSend(text, model, true, newToken, targetSessionId, effectiveTableIds);
       }
 
       // 4. Add AI Response
@@ -569,6 +597,11 @@ const Reports: React.FC<ReportsProps> = ({
         });
       });
       abortControllerRef.current = null;
+      return {
+        sessionId: targetSessionId,
+        messageId: aiMsg.id,
+        visualData: result.dashboard,
+      };
 
     } catch (e: any) {
       console.error("Report Generation Error:", e);
@@ -578,7 +611,7 @@ const Reports: React.FC<ReportsProps> = ({
         try {
           const newToken = await getGoogleToken(clientId);
           setGoogleToken(newToken);
-          return await handleSend(text, model, true, newToken, targetSessionId);
+          return await handleSend(text, model, true, newToken, targetSessionId, effectiveTableIds);
         } catch (authErr) {
           console.error("Manual re-auth failed", authErr);
         }
@@ -586,11 +619,18 @@ const Reports: React.FC<ReportsProps> = ({
 
       const rawMsg = e.message || "Unknown error";
       const isLeaked = rawMsg.toLowerCase().includes('leaked');
+      const lowerRawMsg = rawMsg.toLowerCase();
+      const isOpenAIQuotaError =
+        lowerRawMsg.includes('insufficient_quota') ||
+        lowerRawMsg.includes('exceeded your current quota') ||
+        lowerRawMsg.includes('billing_hard_limit_reached');
       const errorMsg = {
         id: generateUUID(),
         role: 'assistant' as const,
         content: isLeaked
           ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
+          : isOpenAIQuotaError
+            ? `OpenAI API key hợp lệ nhưng tài khoản API đã hết quota/credit.\n\nLưu ý: gói ChatGPT Plus/Pro không bao gồm API credit.\n\nCách xử lý:\n1. Vào https://platform.openai.com/billing để nạp credit.\n2. Hoặc chuyển model sang Gemini/Claude ở góc phải trên.`
           : `Đã có lỗi xảy ra: ${rawMsg}. ${isAuthError ? "Có vẻ phiên làm việc của bạn đã hết hạn. Hãy thử lại để làm mới kết nối." : ""}`
       };
       setSessions((prev: ReportSession[]) => {
@@ -598,6 +638,9 @@ const Reports: React.FC<ReportsProps> = ({
         if (!sessionToUpdate) return prev;
         return prev.map(s => s.id === sessionToUpdate.id ? { ...s, timestamp: new Date().toISOString(), messages: [...s.messages, errorMsg] } : s);
       });
+      return {
+        sessionId: targetSessionId,
+      };
     } finally {
       if (!isRetry) {
         setLoading(false);
@@ -612,7 +655,7 @@ const Reports: React.FC<ReportsProps> = ({
 
     const [next, ...rest] = pendingQuestions;
     setPendingQuestions(rest);
-    void handleSend(next.text, next.model, false, undefined, next.sessionId);
+    void handleSend(next.text, next.model, false, undefined, next.sessionId, next.forcedTableIds);
   }, [loading, pendingQuestions]);
 
   const handleStop = () => {
@@ -673,12 +716,40 @@ const Reports: React.FC<ReportsProps> = ({
     }
   };
 
+  const createNewSession = useCallback((title?: string) => {
+    const newId = generateUUID();
+    const newSession: ReportSession = {
+      id: newId,
+      title: title || 'New Analysis',
+      timestamp: new Date().toLocaleDateString(),
+      messages: []
+    };
+    setSessions((prev: ReportSession[]) => [newSession, ...prev]);
+    setActiveSessionId(newId);
+    return { sessionId: newId };
+  }, [setSessions, setActiveSessionId]);
+
   // Handle Update Chart SQL
-  const handleUpdateChartSQL = async (messageId: string, chartIndex: number, newSQL: string, isRetry = false) => {
+  const handleUpdateChartSQL = async (messageId: string, chartIndex: number, newSQL?: string, isRetry = false) => {
     if (loading) return;
 
     try {
       setLoading(true);
+      const resolvedChartIndex = Number.isFinite(Number(chartIndex)) ? Math.max(0, Number(chartIndex)) : 0;
+      const activeSession = sessions.find(s => s.id === activeSessionId);
+      const latestChartMessage = [...(activeSession?.messages || [])]
+        .reverse()
+        .find(m => m.role === 'assistant' && Array.isArray(m.visualData?.charts) && m.visualData.charts.length > resolvedChartIndex);
+      const targetMessageId = messageId === 'latest' ? (latestChartMessage?.id || '') : messageId;
+
+      const targetMessage = (activeSession?.messages || []).find(m => m.id === targetMessageId);
+      const currentChartSql = String(targetMessage?.visualData?.charts?.[resolvedChartIndex]?.sql || '').trim();
+      const sqlToRun = String(newSQL || '').trim() || currentChartSql;
+
+      if (!targetMessageId || !sqlToRun) {
+        throw new Error('Không tìm thấy chart hoặc SQL để chạy lại.');
+      }
+
       const bqConn = connections.find(c => c.type === 'BigQuery' && c.projectId);
       let token = googleToken;
       const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
@@ -698,9 +769,9 @@ const Reports: React.FC<ReportsProps> = ({
       const { runQuery } = await import('../services/bigquery');
       let newData = [];
 
-      if (token && bqConn?.projectId && newSQL) {
+      if (token && bqConn?.projectId && sqlToRun) {
         try {
-          newData = await runQuery(token, bqConn.projectId, newSQL);
+          newData = await runQuery(token, bqConn.projectId, sqlToRun);
         } catch (err: any) {
           console.error("SQL Execution failed:", err);
 
@@ -708,7 +779,7 @@ const Reports: React.FC<ReportsProps> = ({
           if (err.message?.toLowerCase().includes('authentication') && !isRetry) {
             const newToken = await getGoogleToken(clientId);
             setGoogleToken(newToken);
-            return handleUpdateChartSQL(messageId, chartIndex, newSQL, true);
+            return handleUpdateChartSQL(targetMessageId, resolvedChartIndex, sqlToRun, true);
           }
 
           alert(`Query Failed: ${err.message}`);
@@ -723,13 +794,13 @@ const Reports: React.FC<ReportsProps> = ({
         return {
           ...s,
           messages: s.messages.map(m => {
-            if (m.id !== messageId || !m.visualData) return m;
+            if (m.id !== targetMessageId || !m.visualData) return m;
 
             const updatedCharts = [...m.visualData.charts];
-            updatedCharts[chartIndex] = {
-              ...updatedCharts[chartIndex],
-              sql: newSQL,
-              data: newData.length > 0 ? newData : updatedCharts[chartIndex].data
+            updatedCharts[resolvedChartIndex] = {
+              ...updatedCharts[resolvedChartIndex],
+              sql: sqlToRun,
+              data: newData.length > 0 ? newData : updatedCharts[resolvedChartIndex].data
             };
 
             return {
@@ -850,6 +921,51 @@ const Reports: React.FC<ReportsProps> = ({
     }
   };
 
+  useEffect(() => {
+    const activeSession = sessions.find(s => s.id === activeSessionId);
+    const latestChartMessage = [...(activeSession?.messages || [])]
+      .reverse()
+      .find(m => m.role === 'assistant' && Array.isArray(m.visualData?.charts) && m.visualData.charts.length > 0);
+
+    const unregister = registerReportsAssistantBridge({
+      newSession: (title?: string) => createNewSession(title),
+      ask: async (text: string, options?: { sessionId?: string; useAllTables?: boolean; tableIds?: string[] }) => {
+        const scopedTableIds = Array.isArray(options?.tableIds) && options.tableIds.length > 0
+          ? options.tableIds
+          : undefined;
+        const output = await handleSend(
+          text,
+          undefined,
+          false,
+          undefined,
+          options?.sessionId || activeSessionId,
+          scopedTableIds
+        );
+        return output || { sessionId: options?.sessionId || activeSessionId };
+      },
+      rerunChartSql: async (messageId: string, chartIndex: number, newSQL?: string) => {
+        await handleUpdateChartSQL(messageId, chartIndex, newSQL);
+        return { messageId, chartIndex };
+      },
+      getContext: () => ({
+        activeSessionId,
+        sessionCount: sessions.length,
+        selectedTableCount: selectedTableIds.length,
+        latestChartMessageId: latestChartMessage?.id || null,
+        defaultChartIndex: 0,
+      }),
+    });
+    return unregister;
+  }, [
+    activeSessionId,
+    createNewSession,
+    handleSend,
+    handleUpdateChartSQL,
+    tables,
+    selectedTableIds.length,
+    sessions,
+  ]);
+
   const activeSession = sessions.find(s => s.id === activeSessionId);
 
   return (
@@ -876,15 +992,7 @@ const Reports: React.FC<ReportsProps> = ({
           onRenameSession={handleRenameSession}
           onDeleteSession={handleDeleteSession}
           onNewSession={() => {
-            const newId = generateUUID();
-            const newSession: ReportSession = {
-              id: newId,
-              title: 'New Analysis',
-              timestamp: new Date().toLocaleDateString(),
-              messages: []
-            };
-            setSessions([newSession, ...sessions]);
-            setActiveSessionId(newId);
+            createNewSession('New Analysis');
           }}
         />
 

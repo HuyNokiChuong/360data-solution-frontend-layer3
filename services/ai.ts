@@ -115,27 +115,68 @@ async function callOpenAI(modelId: string, systemPrompt: string, userPrompt: str
   const apiKey = getApiKey('OpenAI');
   if (!apiKey) throw new Error("OpenAI API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      temperature: temperature,
-      response_format: { type: "json_object" }
-    }),
-    signal
-  });
+  const normalizeOpenAIError = (err: any): string => {
+    const rawMessage = err?.message || '';
+    const errCode = err?.code || '';
+    const errType = err?.type || '';
+    const lower = `${rawMessage} ${errCode} ${errType}`.toLowerCase();
 
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.choices[0].message.content;
+    if (
+      lower.includes('insufficient_quota') ||
+      lower.includes('exceeded your current quota') ||
+      lower.includes('billing_hard_limit_reached')
+    ) {
+      return "OpenAI API key hợp lệ nhưng tài khoản API đã hết quota/credit. ChatGPT Plus/Pro không bao gồm API credit. Vào platform.openai.com > Billing để nạp credit hoặc đổi sang model/provider khác.";
+    }
+
+    if (
+      lower.includes('model_not_found') ||
+      lower.includes('does not exist') ||
+      lower.includes('do not have access')
+    ) {
+      return `Tài khoản OpenAI chưa có quyền dùng model "${modelId}". Hãy chọn model khác (ví dụ gpt-5-mini) hoặc kiểm tra quyền truy cập model trong OpenAI dashboard.`;
+    }
+
+    if (
+      lower.includes('invalid_api_key') ||
+      lower.includes('incorrect api key') ||
+      lower.includes('unauthorized')
+    ) {
+      return "OpenAI API key không hợp lệ hoặc đã bị thu hồi. Hãy tạo key mới tại platform.openai.com/api-keys.";
+    }
+
+    return rawMessage || "Không thể gọi OpenAI API. Vui lòng kiểm tra API key và billing.";
+  };
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: temperature,
+        response_format: { type: "json_object" }
+      }),
+      signal
+    });
+
+    const data = await response.json();
+    if (!response.ok || data?.error) {
+      throw new Error(normalizeOpenAIError(data?.error || { message: `HTTP ${response.status}` }));
+    }
+
+    return data.choices[0].message.content;
+  } catch (e: any) {
+    if (e?.name === 'AbortError') throw e;
+    throw new Error(normalizeOpenAIError(e));
+  }
 }
 
 async function callAnthropic(modelId: string, systemPrompt: string, userPrompt: string, temperature: number = 0.7, signal?: AbortSignal) {
@@ -1547,12 +1588,47 @@ export async function testApiKey(provider: string, key: string): Promise<{ succe
       await model.generateContent("Hi");
       return { success: true, message: "Kết nối Google Gemini thành công!" };
     } else if (provider === 'OpenAI') {
-      const response = await fetch("https://api.openai.com/v1/models", {
-        headers: { "Authorization": `Bearer ${key}` }
+      const preferredModel = (() => {
+        const candidate = localStorage.getItem('preferred_ai_model') || 'gpt-5-mini';
+        if (candidate.startsWith('gpt') || candidate.startsWith('o1')) return candidate;
+        return 'gpt-5-mini';
+      })();
+
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model: preferredModel,
+          messages: [{ role: "user", content: "ping" }],
+          max_completion_tokens: 8
+        })
       });
       const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
-      return { success: true, message: "Kết nối OpenAI thành công!" };
+      if (!response.ok || data?.error) {
+        const rawMessage = data?.error?.message || `HTTP ${response.status}`;
+        const lower = `${rawMessage} ${data?.error?.code || ''} ${data?.error?.type || ''}`.toLowerCase();
+
+        if (
+          lower.includes('insufficient_quota') ||
+          lower.includes('exceeded your current quota') ||
+          lower.includes('billing_hard_limit_reached')
+        ) {
+          throw new Error("OpenAI key hợp lệ nhưng tài khoản API đã hết quota/credit. ChatGPT Plus/Pro không bao gồm API credit.");
+        }
+        if (
+          lower.includes('model_not_found') ||
+          lower.includes('does not exist') ||
+          lower.includes('do not have access')
+        ) {
+          throw new Error(`Không có quyền truy cập model "${preferredModel}". Hãy chọn model khác hoặc kiểm tra quyền trong OpenAI dashboard.`);
+        }
+        throw new Error(rawMessage);
+      }
+
+      return { success: true, message: `Kết nối OpenAI (${preferredModel}) thành công!` };
     } else if (provider === 'Anthropic') {
       const response = await fetch("https://api.anthropic.com/v1/models", {
         method: "GET",

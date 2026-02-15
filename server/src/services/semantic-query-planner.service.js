@@ -600,22 +600,41 @@ const resolveRlsTableBinding = (catalog, selectedTables, fieldName) => {
     return null;
 };
 
-const loadDashboardShareRlsContext = async ({ workspaceId, userEmail, dashboardId }) => {
+const permissionRankExpr = `
+CASE
+    WHEN ds.permission = 'admin' THEN 3
+    WHEN ds.permission = 'edit' THEN 2
+    ELSE 1
+END
+`;
+
+const loadDashboardShareRlsContext = async ({ workspaceId, userEmail, userGroupName, dashboardId }) => {
     if (!dashboardId || !userEmail) return null;
     const result = await query(
         `SELECT permission, allowed_page_ids, rls_config, d.pages
          FROM dashboard_shares ds
          JOIN dashboards d ON d.id = ds.dashboard_id
          WHERE ds.dashboard_id = $1
-           AND LOWER(ds.user_id) = LOWER($2)
-           AND d.workspace_id = $3
+           AND (
+                (
+                    COALESCE((to_jsonb(ds)->>'target_type'), 'user') = 'user'
+                    AND LOWER(COALESCE((to_jsonb(ds)->>'target_id'), ds.user_id)) = LOWER($2)
+                )
+                OR (
+                    COALESCE((to_jsonb(ds)->>'target_type'), 'user') = 'group'
+                    AND $3 <> ''
+                    AND LOWER(COALESCE((to_jsonb(ds)->>'target_id'), ds.user_id)) = LOWER($3)
+                )
+           )
+           AND d.workspace_id = $4
+         ORDER BY ${permissionRankExpr} DESC
          LIMIT 1`,
-        [dashboardId, userEmail, workspaceId]
+        [dashboardId, userEmail, String(userGroupName || '').trim(), workspaceId]
     );
     return result.rows[0] || null;
 };
 
-const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
+const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail, userGroupName }) => {
     const payload = request || {};
     const catalog = await loadModelCatalog(workspaceId, payload.dataModelId);
 
@@ -765,6 +784,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
     const shareContext = await loadDashboardShareRlsContext({
         workspaceId,
         userEmail,
+        userGroupName,
         dashboardId: payload.dashboardId,
     });
     if (shareContext && normalizeSharePermission(shareContext.permission) !== 'admin') {
@@ -933,7 +953,7 @@ const buildSemanticQueryPlan = async ({ workspaceId, request, userEmail }) => {
     };
 };
 
-const executePostgresPlan = async ({ workspaceId, request, userEmail }) => {
+const executePostgresPlan = async ({ workspaceId, request, userEmail, userGroupName }) => {
     const payload = request || {};
     const rawSql = typeof payload.rawSql === 'string' ? payload.rawSql.trim() : '';
 
@@ -958,6 +978,7 @@ const executePostgresPlan = async ({ workspaceId, request, userEmail }) => {
         const validationPlan = await buildSemanticQueryPlan({
             workspaceId,
             userEmail,
+            userGroupName,
             request: {
                 dataModelId: payload.dataModelId,
                 tableIds,
@@ -984,7 +1005,7 @@ const executePostgresPlan = async ({ workspaceId, request, userEmail }) => {
         };
     }
 
-    const plan = await buildSemanticQueryPlan({ workspaceId, request: payload, userEmail });
+    const plan = await buildSemanticQueryPlan({ workspaceId, request: payload, userEmail, userGroupName });
     if (plan.engine !== POSTGRES_ENGINE) {
         const err = new Error('Execution endpoint only supports postgres runtime. Use /query/plan for bigquery SQL.');
         err.status = 400;

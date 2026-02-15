@@ -10,13 +10,14 @@ const PERMISSION_ALIASES = {
 };
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
+const normalizeShareTargetType = (value) => (normalizeIdentity(value) === 'group' ? 'group' : 'user');
 
 const normalizeSharePermission = (value) => {
     const key = normalizeIdentity(value);
     return PERMISSION_ALIASES[key] || null;
 };
 
-const normalizeShareUserId = (value) => String(value || '').trim();
+const normalizeShareTargetId = (value) => String(value || '').trim();
 
 const ensureObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 
@@ -41,11 +42,13 @@ const normalizeSharePermissions = (permissions, options = {}) => {
     const byUser = new Map();
 
     permissions.forEach((entry, index) => {
-        const userId = normalizeShareUserId(entry?.userId);
+        const targetType = normalizeShareTargetType(entry?.targetType);
+        const fallbackId = targetType === 'group' ? entry?.groupId : entry?.userId;
+        const targetId = normalizeShareTargetId(entry?.targetId || fallbackId);
         const permission = normalizeSharePermission(entry?.permission);
 
-        if (!userId) {
-            const err = new Error(`permissions[${index}].userId is required`);
+        if (!targetId) {
+            const err = new Error(`permissions[${index}].targetId is required`);
             err.status = 400;
             throw err;
         }
@@ -57,7 +60,10 @@ const normalizeSharePermissions = (permissions, options = {}) => {
         }
 
         const normalized = {
-            userId,
+            targetType,
+            targetId,
+            userId: targetType === 'user' ? targetId : undefined,
+            groupId: targetType === 'group' ? targetId : undefined,
             permission,
         };
 
@@ -69,7 +75,7 @@ const normalizeSharePermissions = (permissions, options = {}) => {
             normalized.rls = ensureObject(entry?.rls);
         }
 
-        byUser.set(normalizeIdentity(userId), normalized);
+        byUser.set(`${targetType}:${normalizeIdentity(targetId)}`, normalized);
     });
 
     return Array.from(byUser.values());
@@ -77,6 +83,8 @@ const normalizeSharePermissions = (permissions, options = {}) => {
 
 module.exports = {
     normalizeIdentity,
+    normalizeShareTargetType,
+    normalizeShareTargetId,
     normalizeSharePermission,
     normalizeSharePermissions,
 };
