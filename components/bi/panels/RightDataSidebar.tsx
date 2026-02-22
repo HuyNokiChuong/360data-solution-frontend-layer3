@@ -108,8 +108,8 @@ const RightDataSidebar: React.FC<RightDataSidebarProps> = ({
             selectedForPage: 'bảng được chọn cho trang này',
             shown: 'hiển thị',
             queued: 'đang chờ',
-            selected: 'Bảng chọn',
-            selectedOnly: 'Chỉ bảng chọn',
+            selected: 'Lọc bảng chọn',
+            selectedOnly: 'Đang lọc bảng chọn',
             refreshing: 'Đang làm mới',
             refreshQueued: 'Làm mới chờ',
             refreshAll: 'Làm mới tất cả',
@@ -142,8 +142,8 @@ const RightDataSidebar: React.FC<RightDataSidebarProps> = ({
             selectedForPage: 'table(s) selected for this page',
             shown: 'shown',
             queued: 'queued',
-            selected: 'Selected',
-            selectedOnly: 'Selected only',
+            selected: 'Filter Selected',
+            selectedOnly: 'Selected Focus',
             refreshing: 'Refreshing',
             refreshQueued: 'Refresh queued',
             refreshAll: 'Refresh all',
@@ -340,12 +340,13 @@ const RightDataSidebar: React.FC<RightDataSidebarProps> = ({
                         <button
                             type="button"
                             onClick={() => setShowSelectedOnly((prev) => !prev)}
-                            className={`px-2 py-1 rounded-md text-[9px] font-bold uppercase tracking-wider border transition-all ${
+                            className={`px-2.5 py-1 rounded-md text-[10px] font-black border transition-all inline-flex items-center gap-1.5 ${
                                 showSelectedOnly
-                                    ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-500 dark:text-indigo-300'
-                                    : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                    ? 'bg-gradient-to-r from-indigo-600/35 to-fuchsia-500/30 border-indigo-400/70 text-indigo-100 shadow-[0_0_0_1px_rgba(129,140,248,0.45),0_8px_20px_rgba(79,70,229,0.25)]'
+                                    : 'bg-indigo-500/15 border-indigo-500/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/25 hover:border-indigo-400/60'
                             }`}
                         >
+                            <i className={`fas ${showSelectedOnly ? 'fa-bullseye' : 'fa-filter'} text-[9px]`}></i>
                             {showSelectedOnly
                                 ? ui.selectedOnly
                                 : ui.selected}

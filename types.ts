@@ -117,6 +117,13 @@ export interface SyncedTable {
   importTime?: string;
   lastSyncTime?: string;
   accessMode?: 'public' | 'restricted';
+  aiDefinition?: string;
+  aiDefinitionGeneratedAt?: string;
+  aiDefinitionSource?: 'ai' | 'heuristic' | 'manual' | string;
+  aiDefinitionProvider?: string;
+  aiDefinitionModelId?: string;
+  aiDefinitionConfidence?: number;
+  aiDefinitionSignals?: string[];
 }
 
 export interface ReportSession {
@@ -159,8 +166,9 @@ export interface ActionItem {
 
 
 export interface ChartInsight {
-  analysis: string; // What happened?
-  trend: string; // Why it happened? (Key Drivers)
+  analysis: string; // Current status and trend in numbers
+  trend: string; // Long-term trend vs short-term volatility
+  cause?: string; // Direct root causes/drivers from underlying variables
   action: string; // What to do next?
   highlight?: {
     index?: number; // Index of the data point to highlight

@@ -2,7 +2,7 @@
 // Connection Routes - CRUD + Tables
 // ============================================
 const express = require('express');
-const { query, getClient } = require('../config/db');
+const { query, getClient, isValidUUID } = require('../config/db');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const {
     normalizeTargetId,
@@ -58,6 +58,7 @@ const {
     registerPostgresSnapshotRuntime,
     upsertModelRuntimeTable,
 } = require('../services/runtime-materialization.service');
+const { generateTableDefinition } = require('../services/table-definition.service');
 
 const router = express.Router();
 
@@ -151,6 +152,128 @@ const toObject = (value) => {
         }
     }
     return value && typeof value === 'object' ? value : {};
+};
+
+const parseSchemaDefinition = (schemaDef) => {
+    if (!schemaDef) return [];
+    if (Array.isArray(schemaDef)) return schemaDef;
+    if (typeof schemaDef === 'string') {
+        try {
+            const parsed = JSON.parse(schemaDef);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_err) {
+            return [];
+        }
+    }
+    return [];
+};
+
+const parseJsonArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_err) {
+            return [];
+        }
+    }
+    return [];
+};
+
+const normalizeDefinitionSource = (value) => {
+    const token = String(value || '').trim().toLowerCase();
+    if (token === 'ai' || token === 'heuristic' || token === 'manual') return token;
+    return null;
+};
+
+const parseDefinitionSignals = (value) => {
+    return parseJsonArray(value)
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, 30);
+};
+
+const parseDefinitionConfidence = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    if (num < 0 || num > 1) return null;
+    return Math.round(num * 10000) / 10000;
+};
+
+const insertDefinitionHistory = async ({
+    workspaceId,
+    beforeRow,
+    afterRow,
+    changedBy,
+    changeReason,
+    metadata,
+}) => {
+    const oldDefinition = beforeRow?.ai_definition ?? null;
+    const newDefinition = afterRow?.ai_definition ?? null;
+    const oldSource = normalizeDefinitionSource(beforeRow?.ai_definition_source);
+    const newSource = normalizeDefinitionSource(afterRow?.ai_definition_source);
+
+    const oldSignals = JSON.stringify(parseDefinitionSignals(beforeRow?.ai_definition_signals));
+    const newSignals = JSON.stringify(parseDefinitionSignals(afterRow?.ai_definition_signals));
+    const oldConfidence = parseDefinitionConfidence(beforeRow?.ai_definition_confidence);
+    const newConfidence = parseDefinitionConfidence(afterRow?.ai_definition_confidence);
+
+    const isSameDefinition = oldDefinition === newDefinition;
+    const isSameSource = oldSource === newSource;
+    const isSameProvider = (beforeRow?.ai_definition_provider || null) === (afterRow?.ai_definition_provider || null);
+    const isSameModel = (beforeRow?.ai_definition_model_id || null) === (afterRow?.ai_definition_model_id || null);
+    const isSameConfidence = oldConfidence === newConfidence;
+    const isSameSignals = oldSignals === newSignals;
+
+    if (isSameDefinition && isSameSource && isSameProvider && isSameModel && isSameConfidence && isSameSignals) {
+        return;
+    }
+
+    await query(
+        `INSERT INTO synced_table_definition_history (
+            workspace_id,
+            synced_table_id,
+            connection_id,
+            dataset_name,
+            table_name,
+            old_definition,
+            new_definition,
+            old_source,
+            new_source,
+            provider,
+            model_id,
+            confidence,
+            signals,
+            changed_by,
+            change_reason,
+            metadata
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9, $10,
+            $11, $12, $13::jsonb, $14, $15, $16::jsonb
+        )`,
+        [
+            workspaceId,
+            afterRow?.id || beforeRow?.id || null,
+            afterRow?.connection_id || beforeRow?.connection_id || null,
+            afterRow?.dataset_name || beforeRow?.dataset_name || null,
+            afterRow?.table_name || beforeRow?.table_name || 'unknown_table',
+            oldDefinition,
+            newDefinition,
+            oldSource,
+            newSource,
+            afterRow?.ai_definition_provider || null,
+            afterRow?.ai_definition_model_id || null,
+            newConfidence,
+            newSignals,
+            changedBy || null,
+            String(changeReason || 'system').trim() || 'system',
+            JSON.stringify(metadata && typeof metadata === 'object' ? metadata : {}),
+        ]
+    );
 };
 
 const normalizeGoogleSheetsSyncConfig = (sync) => {
@@ -1950,6 +2073,34 @@ router.post('/:id/excel/import', async (req, res) => {
                     column_count = EXCLUDED.column_count,
                     status = 'Active',
                     schema_def = EXCLUDED.schema_def,
+                    ai_definition = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition
+                    END,
+                    ai_definition_source = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_source
+                    END,
+                    ai_definition_provider = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_provider
+                    END,
+                    ai_definition_model_id = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_model_id
+                    END,
+                    ai_definition_confidence = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_confidence
+                    END,
+                    ai_definition_signals = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN '[]'::jsonb
+                        ELSE synced_tables.ai_definition_signals
+                    END,
+                    ai_definition_generated_at = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_generated_at
+                    END,
                     last_sync = NOW(),
                     is_deleted = FALSE,
                     source_file_name = EXCLUDED.source_file_name,
@@ -2137,10 +2288,44 @@ router.post('/:id/tables', requireAdmin, async (req, res) => {
             const validTableId = t.id && UUID_RE.test(t.id) ? t.id : null;
             const result = await client.query(
                 `INSERT INTO synced_tables (id, connection_id, table_name, dataset_name, row_count, column_count, status, schema_def, is_deleted)
-         VALUES (COALESCE($1, uuid_generate_v4()), $2, $3, $4, $5, $6, $7, $8, FALSE)
-         ON CONFLICT (connection_id, dataset_name, table_name) 
-         DO UPDATE SET row_count = EXCLUDED.row_count, column_count = EXCLUDED.column_count, status = EXCLUDED.status, schema_def = EXCLUDED.schema_def, last_sync = NOW(), is_deleted = FALSE
-         RETURNING *`,
+                 VALUES (COALESCE($1, uuid_generate_v4()), $2, $3, $4, $5, $6, $7, $8, FALSE)
+                 ON CONFLICT (connection_id, dataset_name, table_name)
+                 DO UPDATE SET
+                    row_count = EXCLUDED.row_count,
+                    column_count = EXCLUDED.column_count,
+                    status = EXCLUDED.status,
+                    schema_def = EXCLUDED.schema_def,
+                    ai_definition = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition
+                    END,
+                    ai_definition_source = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_source
+                    END,
+                    ai_definition_provider = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_provider
+                    END,
+                    ai_definition_model_id = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_model_id
+                    END,
+                    ai_definition_confidence = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_confidence
+                    END,
+                    ai_definition_signals = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN '[]'::jsonb
+                        ELSE synced_tables.ai_definition_signals
+                    END,
+                    ai_definition_generated_at = CASE
+                        WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                        ELSE synced_tables.ai_definition_generated_at
+                    END,
+                    last_sync = NOW(),
+                    is_deleted = FALSE
+                 RETURNING *`,
                 [
                     validTableId,
                     connectionId,
@@ -2226,6 +2411,453 @@ router.patch('/tables/:id/status', requireAdmin, async (req, res) => {
     } catch (err) {
         console.error('Update table status error:', err);
         res.status(500).json({ success: false, message: 'Failed to update table status' });
+    }
+});
+
+/**
+ * POST /api/connections/tables/:id/ai-definition
+ * Generate table definition from schema columns and store result.
+ */
+router.post('/tables/:id/ai-definition', async (req, res) => {
+    try {
+        const tableId = String(req.params.id || '').trim();
+        if (!isValidUUID(tableId)) {
+            return res.status(400).json({ success: false, message: 'Invalid table id' });
+        }
+
+        const tableResult = await query(
+            `SELECT st.*
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [tableId, req.user.workspace_id]
+        );
+
+        if (tableResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        const allowed = await hasTableAccess({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            tableId,
+        });
+        if (!allowed) {
+            return res.status(403).json({ success: false, message: 'You do not have access to this table' });
+        }
+
+        const tableRow = tableResult.rows[0];
+        const schema = parseSchemaDefinition(tableRow.schema_def);
+        if (schema.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Schema is empty. Cannot infer table definition.',
+            });
+        }
+
+        const generated = await generateTableDefinition({
+            workspaceId: req.user.workspace_id,
+            userId: req.user.id,
+            tableName: tableRow.table_name,
+            datasetName: tableRow.dataset_name,
+            schema,
+        });
+        const definitionSource = generated.source === 'heuristic' ? 'heuristic' : 'ai';
+        const definitionSignals = Array.isArray(generated.signals) ? generated.signals : [];
+
+        const updated = await query(
+            `UPDATE synced_tables
+             SET ai_definition = $2,
+                 ai_definition_source = $3,
+                 ai_definition_provider = $4,
+                 ai_definition_model_id = $5,
+                 ai_definition_confidence = $6,
+                 ai_definition_signals = $7::jsonb,
+                 ai_definition_generated_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [
+                tableId,
+                generated.definition,
+                definitionSource,
+                generated.provider || null,
+                generated.modelId || null,
+                generated.confidence ?? null,
+                JSON.stringify(definitionSignals),
+            ]
+        );
+
+        const nextRow = updated.rows[0];
+        await insertDefinitionHistory({
+            workspaceId: req.user.workspace_id,
+            beforeRow: tableRow,
+            afterRow: nextRow,
+            changedBy: req.user.id,
+            changeReason: 'single_ai_generate',
+            metadata: {
+                generation: {
+                    source: generated.source || null,
+                    provider: generated.provider || null,
+                    modelId: generated.modelId || null,
+                    confidence: generated.confidence ?? null,
+                    signals: definitionSignals,
+                },
+            },
+        });
+
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, updated.rows);
+        const table = formatTable(rowsWithAccessMeta[0] || updated.rows[0]);
+
+        res.json({
+            success: true,
+            data: {
+                table,
+                generation: {
+                    source: generated.source || 'heuristic',
+                    provider: generated.provider || null,
+                    modelId: generated.modelId || null,
+                    confidence: generated.confidence ?? null,
+                    signals: Array.isArray(generated.signals) ? generated.signals : [],
+                },
+            },
+        });
+    } catch (err) {
+        console.error('Generate table definition error:', err);
+        res.status(500).json({ success: false, message: err.message || 'Failed to generate table definition' });
+    }
+});
+
+/**
+ * PUT /api/connections/tables/:id/ai-definition
+ * Manual override for table definition (user editable dictionary text).
+ */
+router.put('/tables/:id/ai-definition', async (req, res) => {
+    try {
+        const tableId = String(req.params.id || '').trim();
+        if (!isValidUUID(tableId)) {
+            return res.status(400).json({ success: false, message: 'Invalid table id' });
+        }
+
+        const rawDefinition = typeof req.body?.definition === 'string'
+            ? req.body.definition.trim()
+            : '';
+        if (rawDefinition.length > 3000) {
+            return res.status(400).json({
+                success: false,
+                message: 'definition is too long (max 3000 characters)',
+            });
+        }
+
+        const tableResult = await query(
+            `SELECT st.*
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [tableId, req.user.workspace_id]
+        );
+
+        if (tableResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        const allowed = await hasTableAccess({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            tableId,
+        });
+        if (!allowed) {
+            return res.status(403).json({ success: false, message: 'You do not have access to this table' });
+        }
+        const tableRow = tableResult.rows[0];
+        const definitionSource = rawDefinition ? 'manual' : null;
+
+        const updated = await query(
+            `UPDATE synced_tables
+             SET ai_definition = NULLIF($2, ''),
+                 ai_definition_source = $3,
+                 ai_definition_provider = NULL,
+                 ai_definition_model_id = NULL,
+                 ai_definition_confidence = NULL,
+                 ai_definition_signals = '[]'::jsonb,
+                 ai_definition_generated_at = CASE
+                    WHEN NULLIF($2, '') IS NULL THEN NULL
+                    ELSE NOW()
+                 END,
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [tableId, rawDefinition, definitionSource]
+        );
+
+        const nextRow = updated.rows[0];
+        await insertDefinitionHistory({
+            workspaceId: req.user.workspace_id,
+            beforeRow: tableRow,
+            afterRow: nextRow,
+            changedBy: req.user.id,
+            changeReason: rawDefinition ? 'manual_update' : 'manual_clear',
+            metadata: {
+                mode: 'manual',
+            },
+        });
+
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, updated.rows);
+        const table = formatTable(rowsWithAccessMeta[0] || updated.rows[0]);
+
+        res.json({
+            success: true,
+            data: {
+                table,
+                generation: {
+                    source: rawDefinition ? 'manual' : 'none',
+                    provider: null,
+                    modelId: null,
+                    confidence: null,
+                    signals: [],
+                },
+            },
+        });
+    } catch (err) {
+        console.error('Update table definition error:', err);
+        res.status(500).json({ success: false, message: err.message || 'Failed to update table definition' });
+    }
+});
+
+/**
+ * GET /api/connections/tables/:id/ai-definition/history?limit=50
+ * List definition change history for backup/audit.
+ */
+router.get('/tables/:id/ai-definition/history', async (req, res) => {
+    try {
+        const tableId = String(req.params.id || '').trim();
+        if (!isValidUUID(tableId)) {
+            return res.status(400).json({ success: false, message: 'Invalid table id' });
+        }
+
+        const tableResult = await query(
+            `SELECT st.id
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.id = $1
+               AND st.is_deleted = FALSE
+               AND c.workspace_id = $2
+               AND c.is_deleted = FALSE
+             LIMIT 1`,
+            [tableId, req.user.workspace_id]
+        );
+        if (tableResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Table not found' });
+        }
+
+        const allowed = await hasTableAccess({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            tableId,
+        });
+        if (!allowed) {
+            return res.status(403).json({ success: false, message: 'You do not have access to this table' });
+        }
+
+        const rawLimit = Number(req.query?.limit);
+        const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 500) : 100;
+
+        const historyResult = await query(
+            `SELECT *
+             FROM synced_table_definition_history
+             WHERE workspace_id = $1
+               AND synced_table_id = $2
+             ORDER BY created_at DESC
+             LIMIT $3`,
+            [req.user.workspace_id, tableId, limit]
+        );
+
+        res.json({
+            success: true,
+            data: historyResult.rows.map((row) => ({
+                id: row.id,
+                tableId: row.synced_table_id || null,
+                connectionId: row.connection_id || null,
+                datasetName: row.dataset_name || null,
+                tableName: row.table_name,
+                oldDefinition: row.old_definition || null,
+                newDefinition: row.new_definition || null,
+                oldSource: normalizeDefinitionSource(row.old_source) || null,
+                newSource: normalizeDefinitionSource(row.new_source) || null,
+                provider: row.provider || null,
+                modelId: row.model_id || null,
+                confidence: parseDefinitionConfidence(row.confidence),
+                signals: parseDefinitionSignals(row.signals),
+                changedBy: row.changed_by || null,
+                changeReason: row.change_reason || 'system',
+                metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+                createdAt: row.created_at,
+            })),
+        });
+    } catch (err) {
+        console.error('List table definition history error:', err);
+        res.status(500).json({ success: false, message: err.message || 'Failed to list table definition history' });
+    }
+});
+
+/**
+ * POST /api/connections/tables/ai-definition/bulk
+ * Bulk-generate table definitions for current workspace (optionally by tableIds).
+ */
+router.post('/tables/ai-definition/bulk', async (req, res) => {
+    try {
+        const tableIdsInput = Array.isArray(req.body?.tableIds) ? req.body.tableIds : [];
+        const requestedTableIds = Array.from(new Set(
+            tableIdsInput
+                .map((id) => String(id || '').trim())
+                .filter((id) => isValidUUID(id))
+        ));
+
+        const values = [req.user.workspace_id];
+        const tableFilter = requestedTableIds.length > 0 ? 'AND st.id = ANY($2::uuid[])' : '';
+        if (requestedTableIds.length > 0) values.push(requestedTableIds);
+
+        const tableResult = await query(
+            `SELECT st.*
+             FROM synced_tables st
+             JOIN connections c ON c.id = st.connection_id
+             WHERE st.is_deleted = FALSE
+               AND c.workspace_id = $1
+               AND c.is_deleted = FALSE
+               ${tableFilter}
+             ORDER BY st.dataset_name ASC, st.table_name ASC`,
+            values
+        );
+
+        const candidateRows = tableResult.rows || [];
+        if (candidateRows.length === 0) {
+            return res.json({
+                success: true,
+                data: {
+                    updatedTables: [],
+                    summary: {
+                        requestedCount: requestedTableIds.length,
+                        eligibleCount: 0,
+                        successCount: 0,
+                        failedCount: 0,
+                    },
+                    failures: [],
+                },
+            });
+        }
+
+        const allowedSet = await getAccessibleTableIds({
+            workspaceId: req.user.workspace_id,
+            user: req.user,
+            tableIds: candidateRows.map((row) => String(row.id || '').trim()).filter(Boolean),
+        });
+
+        const targetRows = candidateRows.filter((row) => allowedSet.has(String(row.id || '').trim()));
+        const updatedRows = [];
+        const failures = [];
+
+        for (const tableRow of targetRows) {
+            try {
+                const schema = parseSchemaDefinition(tableRow.schema_def);
+                if (schema.length === 0) {
+                    failures.push({
+                        tableId: tableRow.id,
+                        tableName: tableRow.table_name,
+                        datasetName: tableRow.dataset_name,
+                        reason: 'Schema is empty',
+                    });
+                    continue;
+                }
+
+                const generated = await generateTableDefinition({
+                    workspaceId: req.user.workspace_id,
+                    userId: req.user.id,
+                    tableName: tableRow.table_name,
+                    datasetName: tableRow.dataset_name,
+                    schema,
+                });
+
+                const definitionSource = generated.source === 'heuristic' ? 'heuristic' : 'ai';
+                const definitionSignals = Array.isArray(generated.signals) ? generated.signals : [];
+
+                const updated = await query(
+                    `UPDATE synced_tables
+                     SET ai_definition = $2,
+                         ai_definition_source = $3,
+                         ai_definition_provider = $4,
+                         ai_definition_model_id = $5,
+                         ai_definition_confidence = $6,
+                         ai_definition_signals = $7::jsonb,
+                         ai_definition_generated_at = NOW(),
+                         updated_at = NOW()
+                     WHERE id = $1
+                     RETURNING *`,
+                    [
+                        tableRow.id,
+                        generated.definition,
+                        definitionSource,
+                        generated.provider || null,
+                        generated.modelId || null,
+                        generated.confidence ?? null,
+                        JSON.stringify(definitionSignals),
+                    ]
+                );
+
+                const nextRow = updated.rows[0];
+                await insertDefinitionHistory({
+                    workspaceId: req.user.workspace_id,
+                    beforeRow: tableRow,
+                    afterRow: nextRow,
+                    changedBy: req.user.id,
+                    changeReason: 'bulk_ai_generate',
+                    metadata: {
+                        generation: {
+                            source: generated.source || null,
+                            provider: generated.provider || null,
+                            modelId: generated.modelId || null,
+                            confidence: generated.confidence ?? null,
+                            signals: definitionSignals,
+                        },
+                    },
+                });
+
+                updatedRows.push(nextRow);
+            } catch (err) {
+                failures.push({
+                    tableId: tableRow.id,
+                    tableName: tableRow.table_name,
+                    datasetName: tableRow.dataset_name,
+                    reason: err.message || 'Failed to generate definition',
+                });
+            }
+        }
+
+        const rowsWithAccessMeta = await attachTablePermissionMeta(req.user.workspace_id, updatedRows);
+
+        res.json({
+            success: true,
+            data: {
+                updatedTables: rowsWithAccessMeta.map(formatTable),
+                summary: {
+                    requestedCount: requestedTableIds.length > 0 ? requestedTableIds.length : candidateRows.length,
+                    eligibleCount: targetRows.length,
+                    successCount: updatedRows.length,
+                    failedCount: failures.length,
+                },
+                failures,
+            },
+        });
+    } catch (err) {
+        console.error('Bulk generate table definitions error:', err);
+        res.status(500).json({ success: false, message: err.message || 'Failed to bulk generate table definitions' });
     }
 });
 
@@ -2357,7 +2989,7 @@ router.get('/tables/:id/data', async (req, res) => {
                 limit,
                 totalRows,
                 hasMore: offset + rows.length < totalRows,
-                schema: typeof table.schema_def === 'string' ? JSON.parse(table.schema_def) : (table.schema_def || []),
+                schema: parseSchemaDefinition(table.schema_def),
                 rows,
             },
         });
@@ -2664,12 +3296,7 @@ function formatConnection(row) {
 }
 
 function formatTable(row) {
-    let schema = [];
-    try {
-        schema = typeof row.schema_def === 'string' ? JSON.parse(row.schema_def) : (row.schema_def || []);
-    } catch (err) {
-        schema = [];
-    }
+    const schema = parseSchemaDefinition(row.schema_def);
 
     return {
         id: row.id,
@@ -2690,6 +3317,13 @@ function formatTable(row) {
         importTime: row.upload_time || undefined,
         lastSyncTime: row.last_sync || undefined,
         accessMode: Number(row.permission_count || 0) > 0 ? 'restricted' : 'public',
+        aiDefinition: row.ai_definition || undefined,
+        aiDefinitionGeneratedAt: row.ai_definition_generated_at || undefined,
+        aiDefinitionSource: normalizeDefinitionSource(row.ai_definition_source) || undefined,
+        aiDefinitionProvider: row.ai_definition_provider || undefined,
+        aiDefinitionModelId: row.ai_definition_model_id || undefined,
+        aiDefinitionConfidence: parseDefinitionConfidence(row.ai_definition_confidence) ?? undefined,
+        aiDefinitionSignals: parseDefinitionSignals(row.ai_definition_signals),
     };
 }
 

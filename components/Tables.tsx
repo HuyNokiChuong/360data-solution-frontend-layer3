@@ -16,6 +16,7 @@ interface TablesProps {
   onToggleStatus: (id: string) => void;
   onDeleteTable: (id: string) => void;
   onDeleteTables?: (ids: string[]) => void;
+  onTableUpdated?: (table: SyncedTable) => void;
   googleToken: string | null;
   setGoogleToken: (token: string | null) => void;
 }
@@ -82,7 +83,23 @@ const formatCellValue = (value: any, columnType: string, preserveRaw = false): s
   return value.toString();
 };
 
-const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser, onToggleStatus, onDeleteTable, onDeleteTables, googleToken, setGoogleToken }) => {
+const truncateText = (value: string, max = 120): string => {
+  const safe = String(value || '').trim();
+  if (safe.length <= max) return safe;
+  return `${safe.slice(0, max - 3)}...`;
+};
+
+const toApiErrorMessage = (payload: any, fallback: string, isVi: boolean): string => {
+  const raw = String(payload?.message || '').trim();
+  if (raw.toLowerCase().includes('route not found')) {
+    return isVi
+      ? 'Backend chưa reload route mới. Hãy restart API server rồi thử lại.'
+      : 'Backend is running old routes. Restart the API server and try again.';
+  }
+  return raw || fallback;
+};
+
+const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser, onToggleStatus, onDeleteTable, onDeleteTables, onTableUpdated, googleToken, setGoogleToken }) => {
   const { language } = useLanguageStore();
   const isVi = language === 'vi';
   const isAdmin = currentUser.role === 'Admin';
@@ -100,6 +117,11 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
   const [previewData, setPreviewData] = useState<any[]>([]);
   const [previewSchema, setPreviewSchema] = useState<{ name: string, type: string }[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [definitionLoadingByTableId, setDefinitionLoadingByTableId] = useState<Record<string, boolean>>({});
+  const [editingDefinitionTableId, setEditingDefinitionTableId] = useState<string | null>(null);
+  const [editingDefinitionDraft, setEditingDefinitionDraft] = useState('');
+  const [definitionSavingByTableId, setDefinitionSavingByTableId] = useState<Record<string, boolean>>({});
+  const [isBulkDefinitionLoading, setIsBulkDefinitionLoading] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -274,6 +296,143 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
     setCurrentPage(1);
   };
 
+  const handleGenerateDefinition = async (table: SyncedTable) => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    setDefinitionLoadingByTableId((prev) => ({ ...prev, [table.id]: true }));
+    try {
+      const response = await fetch(`${API_BASE}/connections/tables/${table.id}/ai-definition`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(toApiErrorMessage(payload, 'Failed to generate table definition', isVi));
+      }
+
+      const nextTable = payload?.data?.table as SyncedTable | undefined;
+      if (nextTable) {
+        onTableUpdated?.(nextTable);
+        setPreviewTable((prev) => (prev && prev.id === nextTable.id ? nextTable : prev));
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || (isVi ? 'Không thể tạo định nghĩa bảng bằng AI' : 'Failed to generate AI table definition'));
+    } finally {
+      setDefinitionLoadingByTableId((prev) => ({ ...prev, [table.id]: false }));
+    }
+  };
+
+  const handleGenerateDefinitionsBulk = async () => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    const targetTableIds = filteredTables.map((table) => table.id).filter(Boolean);
+    if (targetTableIds.length === 0) {
+      alert(isVi ? 'Không có bảng nào để AI detect.' : 'No tables available for AI detection.');
+      return;
+    }
+
+    setIsBulkDefinitionLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/connections/tables/ai-definition/bulk`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ tableIds: targetTableIds }),
+      });
+
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(toApiErrorMessage(payload, 'Failed to bulk generate table definitions', isVi));
+      }
+
+      const updatedTables = Array.isArray(payload?.data?.updatedTables) ? payload.data.updatedTables as SyncedTable[] : [];
+      const updatedMap = new Map<string, SyncedTable>();
+      updatedTables.forEach((table) => {
+        updatedMap.set(table.id, table);
+        onTableUpdated?.(table);
+      });
+
+      setPreviewTable((prev) => {
+        if (!prev) return prev;
+        return updatedMap.get(prev.id) || prev;
+      });
+
+      const summary = payload?.data?.summary || {};
+      const successCount = Number(summary.successCount || 0);
+      const failedCount = Number(summary.failedCount || 0);
+
+      if (failedCount > 0) {
+        alert(
+          isVi
+            ? `AI detect hoàn tất: ${successCount} thành công, ${failedCount} thất bại.`
+            : `AI detect completed: ${successCount} succeeded, ${failedCount} failed.`
+        );
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || (isVi ? 'Không thể AI detect hàng loạt' : 'Failed to run bulk AI detection'));
+    } finally {
+      setIsBulkDefinitionLoading(false);
+    }
+  };
+
+  const startInlineDefinitionEdit = (table: SyncedTable) => {
+    setEditingDefinitionTableId(table.id);
+    setEditingDefinitionDraft(String(table.aiDefinition || ''));
+  };
+
+  const cancelInlineDefinitionEdit = () => {
+    setEditingDefinitionTableId(null);
+    setEditingDefinitionDraft('');
+  };
+
+  const handleSaveInlineDefinition = async (table: SyncedTable) => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    const trimmed = String(editingDefinitionDraft || '').trim();
+    if (trimmed.length > 3000) {
+      alert(isVi ? 'Định nghĩa tối đa 3000 ký tự.' : 'Definition must be 3000 characters or fewer.');
+      return;
+    }
+
+    setDefinitionSavingByTableId((prev) => ({ ...prev, [table.id]: true }));
+    try {
+      const response = await fetch(`${API_BASE}/connections/tables/${table.id}/ai-definition`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ definition: trimmed }),
+      });
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok || payload?.success === false) {
+        throw new Error(toApiErrorMessage(payload, 'Failed to save table definition', isVi));
+      }
+
+      const nextTable = payload?.data?.table as SyncedTable | undefined;
+      if (nextTable) {
+        onTableUpdated?.(nextTable);
+        setPreviewTable((prev) => (prev && prev.id === nextTable.id ? nextTable : prev));
+      }
+      cancelInlineDefinitionEdit();
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || (isVi ? 'Không thể lưu định nghĩa bảng' : 'Failed to save table definition'));
+    } finally {
+      setDefinitionSavingByTableId((prev) => ({ ...prev, [table.id]: false }));
+    }
+  };
+
   const availableUserEmails = useMemo(
     () => Array.from(new Set(users.map((user) => String(user.email || '').trim().toLowerCase()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
     [users]
@@ -424,6 +583,15 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
               ))}
             </select>
             <div className="w-px h-6 bg-slate-100 dark:bg-white/10"></div>
+            <button
+              onClick={handleGenerateDefinitionsBulk}
+              disabled={isBulkDefinitionLoading || filteredTables.length === 0}
+              className="px-4 py-2 bg-violet-600/10 text-violet-600 dark:text-violet-400 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-violet-600/20 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+            >
+              {isBulkDefinitionLoading
+                ? (isVi ? 'AI đang detect...' : 'AI detecting...')
+                : (isVi ? 'AI detect tất cả' : 'AI detect all')}
+            </button>
             <button className="px-4 py-2 bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-indigo-600/20 transition-all">
               {isVi ? 'Làm mới schema' : 'Refresh schema'}
             </button>
@@ -448,6 +616,7 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
                   </div>
                 </th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Thực thể nguồn' : 'Source Entity'}</th>
+                <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Định nghĩa AI' : 'AI Definition'}</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Kết nối' : 'Connection'}</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">{isVi ? 'Dung lượng' : 'Volume'}</th>
                 <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">{isVi ? 'Trạng thái' : 'Status'}</th>
@@ -459,6 +628,8 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
                 const conn = connections.find(c => c.id === table.connectionId);
                 const isSelected = selectedTableIds.has(table.id);
                 const effectiveAccessMode = accessModeOverrides[table.id] || table.accessMode || 'public';
+                const isEditingDefinition = editingDefinitionTableId === table.id;
+                const isSavingDefinition = Boolean(definitionSavingByTableId[table.id]);
                 return (
                   <tr
                     key={table.id}
@@ -496,6 +667,71 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
                           </div>
                         </div>
                       </div>
+                    </td>
+                    <td className="px-8 py-6 max-w-[480px]">
+                      {isEditingDefinition ? (
+                        <div className="space-y-2">
+                          <textarea
+                            autoFocus
+                            value={editingDefinitionDraft}
+                            onChange={(e) => setEditingDefinitionDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                                e.preventDefault();
+                                handleSaveInlineDefinition(table);
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                cancelInlineDefinitionEdit();
+                              }
+                            }}
+                            rows={4}
+                            maxLength={3000}
+                            className="w-full rounded-xl border border-cyan-500/30 bg-slate-50 dark:bg-black/30 text-slate-800 dark:text-slate-100 text-xs p-3 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-slate-500 font-bold">{editingDefinitionDraft.length}/3000</span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={cancelInlineDefinitionEdit}
+                                disabled={isSavingDefinition}
+                                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-200 disabled:opacity-60 transition-colors"
+                              >
+                                {isVi ? 'Hủy' : 'Cancel'}
+                              </button>
+                              <button
+                                onClick={() => handleSaveInlineDefinition(table)}
+                                disabled={isSavingDefinition}
+                                className="px-2.5 py-1.5 rounded-lg bg-cyan-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-cyan-500 disabled:opacity-60 transition-colors"
+                              >
+                                {isSavingDefinition ? (isVi ? 'Đang lưu...' : 'Saving...') : (isVi ? 'Lưu' : 'Save')}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : table.aiDefinition ? (
+                        <div className="space-y-1.5">
+                          <p
+                            onDoubleClick={() => startInlineDefinitionEdit(table)}
+                            className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed cursor-text"
+                            title={table.aiDefinition}
+                          >
+                            {truncateText(table.aiDefinition, 180)}
+                          </p>
+                          <div className="text-[9px] font-black uppercase tracking-widest text-cyan-500">
+                            {isVi ? 'Nhấp đúp để sửa' : 'Double-click to edit'}
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          onDoubleClick={() => startInlineDefinitionEdit(table)}
+                          className="flex items-center gap-2 cursor-text"
+                        >
+                          <span className="text-xs text-slate-400 italic">
+                            {isVi ? 'Chưa có định nghĩa. Nhấp đúp để nhập hoặc bấm nút AI để tạo.' : 'No definition yet. Double-click to type or use AI button to generate.'}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-8 py-6">
                       <span className="text-slate-400 font-bold text-sm">{conn?.name || (isVi ? 'Không xác định' : 'Unknown')}</span>
@@ -538,6 +774,14 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
                             <i className="fas fa-user-shield text-xs"></i>
                           </button>
                         )}
+                        <button
+                          onClick={() => handleGenerateDefinition(table)}
+                          disabled={Boolean(definitionLoadingByTableId[table.id])}
+                          className="w-10 h-10 bg-violet-600/10 rounded-xl text-violet-500 hover:bg-violet-600 hover:text-white transition-all flex items-center justify-center disabled:opacity-60 disabled:cursor-not-allowed"
+                          title={isVi ? 'AI tạo định nghĩa bảng từ cột dữ liệu' : 'AI infer table definition from columns'}
+                        >
+                          <i className={`fas ${definitionLoadingByTableId[table.id] ? 'fa-circle-notch fa-spin' : 'fa-wand-magic-sparkles'} text-xs`}></i>
+                        </button>
                         <button
                           onClick={() => handleOpenPreview(table)}
                           className="w-10 h-10 bg-indigo-600/10 rounded-xl text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center"
@@ -727,6 +971,14 @@ const Tables: React.FC<TablesProps> = ({ tables, connections, users, currentUser
                         {isLoadingPreview ? (isVi ? 'Đang lấy dữ liệu thực...' : 'Fetching Real Data...') : (isVi ? 'Dữ liệu thực tế' : 'Real Data Preview')}
                       </span>
                     </div>
+                    {previewTable.aiDefinition && (
+                      <div className="mt-2 max-w-4xl">
+                        <p className="text-xs text-slate-500">
+                          <span className="font-black uppercase tracking-widest text-[9px] mr-2 text-violet-500">{isVi ? 'Định nghĩa AI:' : 'AI Definition:'}</span>
+                          {previewTable.aiDefinition}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <button

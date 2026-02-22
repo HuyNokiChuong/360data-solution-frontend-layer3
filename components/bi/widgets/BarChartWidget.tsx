@@ -35,6 +35,7 @@ interface BarChartWidgetProps {
 import ChartContextMenu from './ChartContextMenu';
 import AIAnalysisModal from '../modals/AIAnalysisModal';
 import { analyzeChartTrend } from '../../../services/ai';
+import { useLanguageStore } from '../../../store/languageStore';
 
 const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     widget,
@@ -49,6 +50,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
 }) => {
     // ... existing hooks ...
     const isStackedType = widget.chartType === 'stackedBar' || widget.stacked === true;
+    const { language } = useLanguageStore();
     const { getDataSource } = useDataStore();
     const { crossFilters: allDashboardFilters, getFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
     const drillDowns = useFilterStore(state => state.drillDowns);
@@ -71,13 +73,14 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
     const [aiIsLoading, setAiIsLoading] = React.useState(false);
     const [aiResult, setAiResult] = React.useState<string | null>(null);
     const [aiError, setAiError] = React.useState<string | null>(null);
+    const [aiOutputLanguage, setAiOutputLanguage] = React.useState<'vi' | 'en'>(language === 'en' ? 'en' : 'vi');
 
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY });
     };
 
-    const handleAnalyzeTrend = async (provider?: string, modelId?: string) => {
+    const handleAnalyzeTrend = async (provider?: string, modelId?: string, outputLanguage?: string) => {
         setIsAIModalOpen(true);
 
         // If called without provider (initial click), just open modal and reset state
@@ -107,7 +110,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                 chartData,
                 dataKeys,
                 context,
-                { provider, modelId }
+                { provider, modelId, language, outputLanguage: outputLanguage || language }
             );
             setAiResult(result);
             setAiError(null);
@@ -118,6 +121,11 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         }
     };
     // -------------------------
+
+    const handleAnalyzeFromContextMenu = (outputLanguage: 'vi' | 'en') => {
+        setAiOutputLanguage(outputLanguage);
+        handleAnalyzeTrend(undefined, undefined, outputLanguage);
+    };
 
     const xFieldDisplay = useMemo(() => {
         if (!xField) return '_autoCategory';
@@ -659,7 +667,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                         x={contextMenu.x}
                         y={contextMenu.y}
                         onClose={() => setContextMenu(null)}
-                        onAnalyze={handleAnalyzeTrend}
+                        onAnalyze={handleAnalyzeFromContextMenu}
                     />
                 )}
 
@@ -671,6 +679,8 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                     analysisResult={aiResult}
                     error={aiError}
                     title={widget.title || "Chart Analysis"}
+                    defaultOutputLanguage={aiOutputLanguage}
+                    uiLanguage={language}
                     onReAnalyze={handleAnalyzeTrend}
                 />
             </div>

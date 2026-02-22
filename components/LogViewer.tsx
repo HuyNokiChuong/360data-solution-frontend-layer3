@@ -1,7 +1,6 @@
 
 import React from 'react';
 import { useDataStore } from './bi/store/dataStore';
-import { useLanguageStore } from '../store/languageStore';
 import { API_BASE } from '../services/api';
 
 type AuditLogRow = {
@@ -19,37 +18,107 @@ const LogViewer: React.FC = () => {
     const { clearLogs } = useDataStore();
     const [logs, setLogs] = React.useState<AuditLogRow[]>([]);
     const [loading, setLoading] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
     const [searchQuery, setSearchQuery] = React.useState('');
     const [filterType, setFilterType] = React.useState<'all' | 'info' | 'error' | 'success'>('all');
     const [lastRefreshedAt, setLastRefreshedAt] = React.useState<string | null>(null);
 
-    const fetchAuditLogs = React.useCallback(async (withLoading = false) => {
+    const getScopeQuery = () => {
+        try {
+            const raw = localStorage.getItem('auth_user');
+            const user = raw ? JSON.parse(raw) : null;
+            const email = String(user?.email || '').toLowerCase();
+            const role = String(user?.role || '').toLowerCase();
+            const isSuper = email === 'admin@360data-solutions.ai' || role.includes('super');
+            return isSuper ? 'scope=all&includeSystem=true' : 'scope=workspace&includeSystem=false';
+        } catch {
+            return 'scope=workspace&includeSystem=false';
+        }
+    };
+
+    const fetchAuditLogs = React.useCallback(async (withLoading = false, incremental = false) => {
         const token = localStorage.getItem('auth_token');
-        if (!token) return;
+        if (!token) {
+            setLogs([]);
+            setError('Missing auth token. Please login again.');
+            return;
+        }
 
         if (withLoading) setLoading(true);
         try {
-            const res = await fetch(`${API_BASE}/logs?limit=500&offset=0`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            const data = await res.json();
-            setLogs(Array.isArray(data?.data) ? data.data : []);
+            const baseQuery = getScopeQuery();
+
+            if (incremental) {
+                const res = await fetch(`${API_BASE}/logs?limit=200&offset=0&${baseQuery}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) {
+                    const detail = await res.text();
+                    throw new Error(detail || `Failed to fetch logs (${res.status})`);
+                }
+                const data = await res.json();
+                const latestRows: AuditLogRow[] = Array.isArray(data?.data) ? data.data : [];
+
+                setLogs((prev) => {
+                    const map = new Map<string, AuditLogRow>();
+                    latestRows.forEach((item) => map.set(item.id, item));
+                    prev.forEach((item) => {
+                        if (!map.has(item.id)) map.set(item.id, item);
+                    });
+                    return Array.from(map.values())
+                        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                        .slice(0, 20000);
+                });
+            } else {
+                const pageSize = 1000;
+                let offset = 0;
+                let total = Number.POSITIVE_INFINITY;
+                const allRows: AuditLogRow[] = [];
+
+                while (offset < total) {
+                    const res = await fetch(`${API_BASE}/logs?limit=${pageSize}&offset=${offset}&${baseQuery}`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                    });
+
+                    if (!res.ok) {
+                        const detail = await res.text();
+                        throw new Error(detail || `Failed to fetch logs (${res.status})`);
+                    }
+
+                    const data = await res.json();
+                    const rows: AuditLogRow[] = Array.isArray(data?.data) ? data.data : [];
+                    const pageTotal = Number(data?.pagination?.total ?? rows.length);
+
+                    allRows.push(...rows);
+                    total = Number.isFinite(pageTotal) ? pageTotal : allRows.length;
+
+                    if (rows.length < pageSize) break;
+                    offset += rows.length;
+
+                    // Guardrail for unusually large datasets
+                    if (allRows.length >= 50000) break;
+                }
+
+                setLogs(allRows);
+            }
+
+            setError(null);
             setLastRefreshedAt(new Date().toISOString());
-        } catch {
-            setLogs([]);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to fetch logs');
         } finally {
             if (withLoading) setLoading(false);
         }
     }, []);
 
     React.useEffect(() => {
-        fetchAuditLogs(true);
+        fetchAuditLogs(true, false);
     }, [fetchAuditLogs]);
 
     React.useEffect(() => {
         // Poll logs every ~12s for near real-time updates.
         const timer = setInterval(() => {
-            fetchAuditLogs(false);
+            fetchAuditLogs(false, true);
         }, 12000);
 
         return () => {
@@ -85,6 +154,7 @@ const LogViewer: React.FC = () => {
                     {lastRefreshedAt && (
                         <p className="text-slate-600 text-[11px] mt-1">Auto-refresh every 12s • Last sync: {new Date(lastRefreshedAt).toLocaleTimeString()}</p>
                     )}
+                    <p className="text-slate-500 text-[11px] mt-1">Loaded logs: {logs.length}</p>
                 </div>
                 <div className="flex items-center gap-3">
                     <button
@@ -128,6 +198,11 @@ const LogViewer: React.FC = () => {
                 {loading && (
                     <div className="max-w-5xl mx-auto text-slate-400 text-sm">Loading logs...</div>
                 )}
+                {error && (
+                    <div className="max-w-5xl mx-auto text-red-300 text-sm bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+                        {error}
+                    </div>
+                )}
                 {filteredLogs.length === 0 && (
                     <div className="h-full flex flex-col items-center justify-center text-slate-600 opacity-50 py-20">
                         <div className="w-20 h-20 bg-slate-900 rounded-[2rem] flex items-center justify-center mb-6 border border-white/5">
@@ -155,7 +230,7 @@ const LogViewer: React.FC = () => {
 
                             <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-3">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${log.type === 'error' ? 'bg-red-500/20 text-red-400' :
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${type === 'error' ? 'bg-red-500/20 text-red-400' :
                                         type === 'success' ? 'bg-emerald-500/20 text-emerald-400' :
                                             'bg-blue-500/20 text-blue-400'
                                         }`}>

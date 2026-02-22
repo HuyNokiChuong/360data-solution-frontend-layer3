@@ -35,6 +35,7 @@ interface PieChartWidgetProps {
 import ChartContextMenu from './ChartContextMenu';
 import AIAnalysisModal from '../modals/AIAnalysisModal';
 import { analyzeChartTrend } from '../../../services/ai';
+import { useLanguageStore } from '../../../store/languageStore';
 
 const PieChartWidget: React.FC<PieChartWidgetProps> = ({
     widget,
@@ -47,6 +48,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
     isDraggingOrResizing = false,
     onClick
 }) => {
+    const { language } = useLanguageStore();
     const { getDataSource } = useDataStore(); // Kept if needed
     const { crossFilters: allDashboardFilters, getFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
     const drillDowns = useFilterStore(state => state.drillDowns);
@@ -70,13 +72,14 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
     const [aiIsLoading, setAiIsLoading] = React.useState(false);
     const [aiResult, setAiResult] = React.useState<string | null>(null);
     const [aiError, setAiError] = React.useState<string | null>(null);
+    const [aiOutputLanguage, setAiOutputLanguage] = React.useState<'vi' | 'en'>(language === 'en' ? 'en' : 'vi');
 
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY });
     };
 
-    const handleAnalyzeTrend = async (provider?: string, modelId?: string) => {
+    const handleAnalyzeTrend = async (provider?: string, modelId?: string, outputLanguage?: string) => {
         setIsAIModalOpen(true);
 
         // If called without provider (initial click), just open modal and reset state
@@ -104,7 +107,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                 chartData,
                 [valueField],
                 context,
-                { provider, modelId }
+                { provider, modelId, language, outputLanguage: outputLanguage || language }
             );
             setAiResult(result);
             setAiError(null);
@@ -115,6 +118,11 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
         }
     };
     // -------------------------
+
+    const handleAnalyzeFromContextMenu = (outputLanguage: 'vi' | 'en') => {
+        setAiOutputLanguage(outputLanguage);
+        handleAnalyzeTrend(undefined, undefined, outputLanguage);
+    };
 
     const categoryField = useMemo(() => {
         if (drillDownState?.mode === 'expand' && xFields.length > 1) return '_combinedAxis';
@@ -350,7 +358,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                         x={contextMenu.x}
                         y={contextMenu.y}
                         onClose={() => setContextMenu(null)}
-                        onAnalyze={handleAnalyzeTrend}
+                        onAnalyze={handleAnalyzeFromContextMenu}
                     />
                 )}
 
@@ -362,6 +370,8 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                     analysisResult={aiResult}
                     error={aiError}
                     title={widget.title || "Chart Analysis"}
+                    defaultOutputLanguage={aiOutputLanguage}
+                    uiLanguage={language}
                     onReAnalyze={handleAnalyzeTrend}
                 />
             </div>

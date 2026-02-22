@@ -1,6 +1,22 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAssistantRuntime } from './AssistantRuntimeProvider';
 import type { AssistantMessage } from './types';
+
+const MAX_PARALLEL_GLOBAL_REQUESTS = 3;
+const FLOATING_CHAT_POSITION_KEY = 'global_assistant_chat_offset_v1';
+
+interface DragState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startOffsetX: number;
+  startOffsetY: number;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  moved: boolean;
+}
 
 const getStatusTone = (status: string) => {
   if (status === 'done' || status === 'undone') return 'text-emerald-400';
@@ -32,8 +48,47 @@ export const GlobalAssistantChat: React.FC = () => {
   const [timelineLoaded, setTimelineLoaded] = useState(false);
   const [isCommandBusy, setIsCommandBusy] = useState(false);
   const [localMessages, setLocalMessages] = useState<AssistantMessage[]>([]);
+  const [queuedPrompts, setQueuedPrompts] = useState<string[]>([]);
+  const [inFlightPrompts, setInFlightPrompts] = useState(0);
+  const inFlightPromptsRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const isChatBusy = isBusyGlobal || isCommandBusy;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragStateRef = useRef<DragState | null>(null);
+  const suppressToggleRef = useRef(false);
+  const [floatingOffset, setFloatingOffset] = useState<{ x: number; y: number }>(() => {
+    try {
+      const raw = localStorage.getItem(FLOATING_CHAT_POSITION_KEY);
+      if (!raw) return { x: 0, y: 0 };
+      const parsed = JSON.parse(raw);
+      const x = Number(parsed?.x);
+      const y = Number(parsed?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return { x: 0, y: 0 };
+      return { x, y };
+    } catch {
+      return { x: 0, y: 0 };
+    }
+  });
+  const hasActiveGlobalWork = isBusyGlobal || inFlightPrompts > 0 || queuedPrompts.length > 0;
+  const isInputDisabled = isCommandBusy;
+
+  const clampOffsetToViewport = useCallback((offset: { x: number; y: number }) => {
+    const container = containerRef.current;
+    if (!container) return offset;
+
+    const rect = container.getBoundingClientRect();
+    const baseLeft = rect.left - offset.x;
+    const baseTop = rect.top - offset.y;
+    const margin = 8;
+    const minX = margin - baseLeft;
+    const maxX = window.innerWidth - rect.width - margin - baseLeft;
+    const minY = margin - baseTop;
+    const maxY = window.innerHeight - rect.height - margin - baseTop;
+
+    return {
+      x: Math.min(maxX, Math.max(minX, offset.x)),
+      y: Math.min(maxY, Math.max(minY, offset.y)),
+    };
+  }, []);
 
   const appendLocalAssistantMessage = (content: string, status: AssistantMessage['status'] = 'done') => {
     setLocalMessages((prev) => [
@@ -55,6 +110,28 @@ export const GlobalAssistantChat: React.FC = () => {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [globalMessages, isBusyGlobal, isCommandBusy, localMessages, open]);
+
+  useEffect(() => {
+    const ensureInsideViewport = () => {
+      setFloatingOffset((prev) => {
+        const next = clampOffsetToViewport(prev);
+        if (next.x === prev.x && next.y === prev.y) return prev;
+        try {
+          localStorage.setItem(FLOATING_CHAT_POSITION_KEY, JSON.stringify(next));
+        } catch {
+          // noop
+        }
+        return next;
+      });
+    };
+
+    const rafId = requestAnimationFrame(ensureInsideViewport);
+    window.addEventListener('resize', ensureInsideViewport);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', ensureInsideViewport);
+    };
+  }, [clampOffsetToViewport, open]);
 
   useEffect(() => {
     if (!open || timelineLoaded) return;
@@ -100,6 +177,7 @@ export const GlobalAssistantChat: React.FC = () => {
       setIsCommandBusy(true);
       try {
         await startNewSession('global', 'Global Assistant');
+        setQueuedPrompts([]);
         setLocalMessages([]);
         appendLocalAssistantMessage('Đã clear cuộc trò chuyện hiện tại.');
       } catch (err: any) {
@@ -153,9 +231,39 @@ export const GlobalAssistantChat: React.FC = () => {
     return false;
   };
 
+  const runPrompt = useCallback(async (text: string) => {
+    inFlightPromptsRef.current += 1;
+    setInFlightPrompts(inFlightPromptsRef.current);
+    try {
+      await sendMessage({
+        channel: 'global',
+        text,
+        autoExecute: true,
+      });
+    } catch (err: any) {
+      console.error('[assistant] send message failed', err);
+    } finally {
+      inFlightPromptsRef.current = Math.max(0, inFlightPromptsRef.current - 1);
+      setInFlightPrompts(inFlightPromptsRef.current);
+    }
+  }, [sendMessage]);
+
+  useEffect(() => {
+    const availableSlots = Math.max(0, MAX_PARALLEL_GLOBAL_REQUESTS - inFlightPrompts);
+    if (availableSlots <= 0 || queuedPrompts.length === 0) return;
+
+    const batch = queuedPrompts.slice(0, availableSlots);
+    if (batch.length === 0) return;
+
+    setQueuedPrompts((prev) => prev.slice(batch.length));
+    batch.forEach((text) => {
+      void runPrompt(text);
+    });
+  }, [inFlightPrompts, queuedPrompts, runPrompt]);
+
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || isChatBusy) return;
+    if (!text || isCommandBusy) return;
     setInput('');
     try {
       if (text.startsWith('/')) {
@@ -163,11 +271,12 @@ export const GlobalAssistantChat: React.FC = () => {
         if (handled) return;
       }
 
-      await sendMessage({
-        channel: 'global',
-        text,
-        autoExecute: true,
-      });
+      if (inFlightPromptsRef.current >= MAX_PARALLEL_GLOBAL_REQUESTS) {
+        setQueuedPrompts((prev) => [...prev, text]);
+        return;
+      }
+
+      void runPrompt(text);
     } catch (err: any) {
       console.error('[assistant] send message failed', err);
     }
@@ -189,15 +298,88 @@ export const GlobalAssistantChat: React.FC = () => {
     }
   };
 
+  const handleFabPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const baseLeft = rect.left - floatingOffset.x;
+    const baseTop = rect.top - floatingOffset.y;
+    const margin = 8;
+    const minX = margin - baseLeft;
+    const maxX = window.innerWidth - rect.width - margin - baseLeft;
+    const minY = margin - baseTop;
+    const maxY = window.innerHeight - rect.height - margin - baseTop;
+
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startOffsetX: floatingOffset.x,
+      startOffsetY: floatingOffset.y,
+      minX,
+      maxX,
+      minY,
+      maxY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleFabPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    const nextX = Math.min(drag.maxX, Math.max(drag.minX, drag.startOffsetX + dx));
+    const nextY = Math.min(drag.maxY, Math.max(drag.minY, drag.startOffsetY + dy));
+
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      drag.moved = true;
+      suppressToggleRef.current = true;
+    }
+
+    setFloatingOffset({ x: nextX, y: nextY });
+    event.preventDefault();
+  };
+
+  const handleFabPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    try {
+      localStorage.setItem(FLOATING_CHAT_POSITION_KEY, JSON.stringify(floatingOffset));
+    } catch {
+      // noop
+    }
+
+    if (drag.moved) {
+      window.setTimeout(() => {
+        suppressToggleRef.current = false;
+      }, 0);
+    }
+  };
+
   return (
-    <div className="fixed bottom-6 right-6 z-[220]">
+    <div
+      ref={containerRef}
+      className="fixed bottom-6 right-6 z-[220]"
+      style={{ transform: `translate(${floatingOffset.x}px, ${floatingOffset.y}px)` }}
+    >
       {open && (
-        <div className="w-[380px] max-w-[calc(100vw-2rem)] h-[560px] bg-[#061127] border border-indigo-500/40 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden flex flex-col">
+        <div className="w-[430px] max-w-[calc(100vw-2rem)] h-[560px] bg-[#061127] border border-indigo-500/40 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden flex flex-col">
           <div className="h-14 px-4 flex items-center justify-between bg-indigo-600/90 border-b border-indigo-500/50">
             <div>
               <div className="text-[12px] font-black tracking-widest uppercase text-white">Global Assistant</div>
               <div className="text-[9px] uppercase tracking-[0.18em] text-indigo-100/90">
-                {isBusyGlobal ? 'Executing...' : 'Actionable mode'}
+                {hasActiveGlobalWork ? 'Executing...' : 'Actionable mode'}
               </div>
             </div>
             <button
@@ -270,6 +452,7 @@ export const GlobalAssistantChat: React.FC = () => {
                 className="w-full rounded-xl bg-[#020817] border border-indigo-500/40 text-slate-100 text-[12px] px-3 py-2 pr-12 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/70"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
+                disabled={isInputDisabled}
                 rows={2}
                 placeholder="Yêu cầu thao tác trên hệ thống... (gõ /help để xem lệnh)"
                 onKeyDown={(event) => {
@@ -282,7 +465,7 @@ export const GlobalAssistantChat: React.FC = () => {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!input.trim() || isChatBusy}
+                disabled={!input.trim() || isInputDisabled}
                 className="absolute right-2 bottom-2 w-8 h-8 rounded-lg bg-indigo-600 text-white disabled:opacity-50"
                 title="Send"
               >
@@ -295,10 +478,20 @@ export const GlobalAssistantChat: React.FC = () => {
 
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onPointerDown={handleFabPointerDown}
+        onPointerMove={handleFabPointerMove}
+        onPointerUp={handleFabPointerUp}
+        onPointerCancel={handleFabPointerUp}
+        onClick={() => {
+          if (suppressToggleRef.current) {
+            suppressToggleRef.current = false;
+            return;
+          }
+          setOpen((prev) => !prev);
+        }}
         className={`ml-auto mt-3 w-14 h-14 rounded-full shadow-xl transition-all ${
           open ? 'bg-slate-800 text-white' : 'bg-indigo-600 text-white hover:scale-105'
-        }`}
+        } touch-none cursor-grab active:cursor-grabbing`}
         title="Global Assistant"
       >
         <i className={`fas ${open ? 'fa-times' : 'fa-robot'} text-xl`}></i>

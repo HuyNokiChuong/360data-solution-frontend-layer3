@@ -1,7 +1,7 @@
 import React from 'react';
-import { ChatMessage as ChatMessageType, KPIConfig, DashboardConfig } from '../../types';
+import { ChatMessage as ChatMessageType } from '../../types';
 import { ChartRenderer } from './ChartRenderer';
-import { useLanguageStore } from '../../store/languageStore';
+import { stripBigQueryProjectPrefixFromSql } from '../../utils/sql';
 
 interface ChatMessageProps {
     message: ChatMessageType;
@@ -11,15 +11,17 @@ interface ChatMessageProps {
 }
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChartSQL, onUpdateMainSQL, onEdit }) => {
-    const { language } = useLanguageStore();
-    const isVi = language === 'vi';
     const isUser = message.role === 'user';
     const { visualData, sqlTrace } = message;
     const [showMainSQL, setShowMainSQL] = React.useState(false);
-    const [editedMainSQL, setEditedMainSQL] = React.useState(sqlTrace || '');
+    const [editedMainSQL, setEditedMainSQL] = React.useState(stripBigQueryProjectPrefixFromSql(sqlTrace || ''));
     const [isExecuting, setIsExecuting] = React.useState(false);
     const [isEditing, setIsEditing] = React.useState(false);
     const [editedContent, setEditedContent] = React.useState(message.content);
+
+    React.useEffect(() => {
+        setEditedMainSQL(stripBigQueryProjectPrefixFromSql(sqlTrace || ''));
+    }, [sqlTrace]);
 
     const handleExecuteMainSQL = async () => {
         if (!onUpdateMainSQL) return;
@@ -47,7 +49,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                     </div>
                     <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${isUser ? 'text-indigo-400' : 'text-slate-500'
                         }`}>
-                        {isUser ? (isVi ? 'Bạn' : 'You') : (isVi ? 'AI Chính xác' : 'Precision AI')}
+                        {isUser ? 'Bạn' : 'AI Chính xác'}
                     </span>
                 </div>
 
@@ -61,7 +63,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                         <button
                             onClick={() => setIsEditing(true)}
                             className="absolute -left-12 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-indigo-600/20 text-indigo-400 opacity-0 group-hover/bubble:opacity-100 transition-all hover:bg-indigo-600 hover:text-white flex items-center justify-center border border-indigo-500/30"
-                            title={isVi ? 'Sửa ngữ cảnh' : 'Edit context'}
+                            title="Sửa ngữ cảnh"
                         >
                             <i className="fas fa-edit text-[10px]"></i>
                         </button>
@@ -81,13 +83,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                     onClick={() => { setIsEditing(false); setEditedContent(message.content); }}
                                     className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-indigo-600 dark:hover:text-white transition-colors"
                                 >
-                                    {isVi ? 'Hủy' : 'Cancel'}
+                                    Hủy
                                 </button>
                                 <button
                                     onClick={handleSaveEdit}
                                     className="px-4 py-2 text-[10px] font-black uppercase tracking-widest bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/20"
                                 >
-                                    {isVi ? 'Lưu & chạy lại' : 'Save & Re-run'}
+                                    Lưu & chạy lại
                                 </button>
                             </div>
                         </div>
@@ -110,7 +112,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                     <button
                                         onClick={() => setShowMainSQL(!showMainSQL)}
                                         className="bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 p-2 rounded-lg transition-all flex items-center gap-2 border border-indigo-500/20"
-                                        title={isVi ? 'Gỡ lỗi SQL KPI' : 'Debug KPI SQL'}
+                                        title="Gỡ lỗi SQL KPI"
                                     >
                                         <i className="fas fa-code text-[10px]"></i>
                                         <span className="text-[9px] font-black uppercase tracking-widest">KPI SQL</span>
@@ -124,7 +126,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                     <div className="flex justify-between items-center">
                                         <h5 className="text-[10px] font-black text-slate-900 dark:text-white uppercase tracking-widest flex items-center gap-2">
                                             <i className="fas fa-terminal text-indigo-500"></i>
-                                            {isVi ? 'Trình gỡ lỗi SQL chính (KPI)' : 'Main SQL Debugger (KPIs)'}
+                                            Trình gỡ lỗi SQL chính (KPI)
                                         </h5>
                                         <button onClick={() => setShowMainSQL(false)} className="text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
                                     </div>
@@ -132,7 +134,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                         value={editedMainSQL}
                                         onChange={(e) => setEditedMainSQL(e.target.value)}
                                         className="w-full h-40 bg-slate-50 dark:bg-black border border-slate-200 dark:border-white/10 rounded-xl p-4 text-[10px] font-mono text-emerald-600 dark:text-emerald-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none"
-                                        placeholder={isVi ? 'Nhập SQL cho KPI...' : 'Enter SQL for KPIs...'}
+                                        placeholder="Nhập SQL cho KPI..."
                                     />
                                     <button
                                         onClick={handleExecuteMainSQL}
@@ -140,7 +142,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                         className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-600/30"
                                     >
                                         {isExecuting ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-play"></i>}
-                                        {isExecuting ? (isVi ? 'Đang chạy truy vấn...' : 'Running Query...') : (isVi ? 'Cập nhật toàn bộ KPI' : 'Update All KPIs')}
+                                        {isExecuting ? 'Đang chạy truy vấn...' : 'Cập nhật toàn bộ KPI'}
                                     </button>
                                 </div>
                             )}
@@ -203,7 +205,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                         <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-600/30">
                                             <i className="fas fa-brain text-lg"></i>
                                         </div>
-                                        <h4 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-widest">{isVi ? 'Tổng hợp chiến lược' : 'Strategic Synthesis'}</h4>
+                                        <h4 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-widest">Tổng hợp chiến lược</h4>
                                     </div>
 
                                     <div className="space-y-6">
@@ -212,7 +214,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onUpdateChart
                                                 <h5 className="text-sm font-black text-indigo-600 dark:text-indigo-300 uppercase tracking-[0.1em] mb-2">{ins.title}</h5>
                                                 <p className="text-sm text-slate-600 dark:text-slate-300 mb-3 font-medium leading-relaxed">{ins.analysis}</p>
                                                 <div className="bg-slate-100 dark:bg-white/5 rounded-lg p-4 w-full">
-                                                    <div className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-2">{isVi ? 'Khuyến nghị:' : 'Recommendation:'}</div>
+                                                    <div className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-2">Khuyến nghị:</div>
                                                     <div className="text-sm text-slate-900 dark:text-white font-bold">
                                                         {ins.recommendation.match(/\d+\./) ? (
                                                             <ul className="list-none space-y-2 mt-1">

@@ -253,6 +253,34 @@ const saveSyncedTable = async ({
             status = 'Active',
             last_sync = NOW(),
             schema_def = EXCLUDED.schema_def,
+            ai_definition = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition
+            END,
+            ai_definition_source = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition_source
+            END,
+            ai_definition_provider = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition_provider
+            END,
+            ai_definition_model_id = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition_model_id
+            END,
+            ai_definition_confidence = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition_confidence
+            END,
+            ai_definition_signals = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN '[]'::jsonb
+                ELSE synced_tables.ai_definition_signals
+            END,
+            ai_definition_generated_at = CASE
+                WHEN synced_tables.schema_def IS DISTINCT FROM EXCLUDED.schema_def THEN NULL
+                ELSE synced_tables.ai_definition_generated_at
+            END,
             is_deleted = FALSE
          RETURNING *`,
         [

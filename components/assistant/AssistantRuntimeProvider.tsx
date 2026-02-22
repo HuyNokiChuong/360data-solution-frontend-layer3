@@ -42,9 +42,9 @@ const emptySessions = (): Record<AssistantChannel, AssistantSession | null> => (
   bi: null,
 });
 
-const emptyBusy = (): Record<AssistantChannel, boolean> => ({
-  global: false,
-  bi: false,
+const emptyBusyCount = (): Record<AssistantChannel, number> => ({
+  global: 0,
+  bi: 0,
 });
 
 const upsertMessageList = (
@@ -84,6 +84,33 @@ const resolveActionFocus = (action: AssistantAction): { tab: string; flow: strin
   return null;
 };
 
+type PendingInputState = {
+  messageId: string;
+  missingInput: any;
+  actionPlan: AssistantAction[];
+};
+
+const resolvePendingInputState = (messages: AssistantMessage[]): PendingInputState | null => {
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const message = messages[idx];
+    if (!String(message?.id || '').trim()) continue;
+
+    const missingInputs = Array.isArray(message?.missingInputs) ? message.missingInputs : [];
+    const actionPlan = Array.isArray(message?.actionPlan) ? message.actionPlan : [];
+    if (missingInputs.length === 0 || actionPlan.length === 0) continue;
+
+    const hasWaitingInputAction = actionPlan.some((action) => action.status === 'waiting_input');
+    if (!hasWaitingInputAction && message.status !== 'waiting_input') continue;
+
+    return {
+      messageId: message.id,
+      missingInput: missingInputs[0],
+      actionPlan,
+    };
+  }
+  return null;
+};
+
 export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> = ({
   children,
   bindings,
@@ -91,7 +118,7 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
   const location = useLocation();
   const [messagesByChannel, setMessagesByChannel] = useState<Record<AssistantChannel, AssistantMessage[]>>(emptyMessages);
   const [sessionsByChannel, setSessionsByChannel] = useState<Record<AssistantChannel, AssistantSession | null>>(emptySessions);
-  const [busyByChannel, setBusyByChannel] = useState<Record<AssistantChannel, boolean>>(emptyBusy);
+  const [busyCountByChannel, setBusyCountByChannel] = useState<Record<AssistantChannel, number>>(emptyBusyCount);
   const sessionsRef = useRef<Record<AssistantChannel, AssistantSession | null>>(emptySessions());
   const sessionLoadRef = useRef<Record<AssistantChannel, Promise<string> | null>>({
     global: null,
@@ -99,7 +126,7 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
   });
   const undoStackRef = useRef<AssistantUndoEntry[]>([]);
   const undoCandidateMapRef = useRef<Set<string>>(new Set());
-  const pendingInputRef = useRef<Record<AssistantChannel, { missingInput: any; actionPlan: AssistantAction[] } | null>>({
+  const pendingInputRef = useRef<Record<AssistantChannel, PendingInputState | null>>({
     global: null,
     bi: null,
   });
@@ -151,7 +178,12 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
   }, [mergedBindings, pushUndo]);
 
   const markBusy = useCallback((channel: AssistantChannel, busy: boolean) => {
-    setBusyByChannel((prev) => ({ ...prev, [channel]: busy }));
+    setBusyCountByChannel((prev) => {
+      const current = Number(prev[channel] || 0);
+      const nextValue = busy ? (current + 1) : Math.max(0, current - 1);
+      if (nextValue === current) return prev;
+      return { ...prev, [channel]: nextValue };
+    });
   }, []);
 
   const appendLocalMessage = useCallback((channel: AssistantChannel, message: AssistantMessage) => {
@@ -294,7 +326,10 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
       });
 
       try {
-        const result = await actionRegistry.execute({ ...action, status: 'running' });
+        const result = await actionRegistry.execute(
+          { ...action, status: 'running' },
+          { channel, messageId }
+        );
         const callback = await submitAssistantClientActionResult(action.id, {
           success: true,
           result: result || {},
@@ -362,6 +397,7 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
       focusActionPlan(result.actionPlan || []);
       if (Array.isArray(result.missingInputs) && result.missingInputs.length > 0 && Array.isArray(result.actionPlan) && result.actionPlan.length > 0) {
         pendingInputRef.current[channel] = {
+          messageId: result.messageId,
           missingInput: result.missingInputs[0],
           actionPlan: result.actionPlan,
         };
@@ -430,13 +466,13 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
   const refreshTimeline = useCallback(async (channel: AssistantChannel) => {
     const sessionId = await ensureSession(channel);
     const timeline = await getAssistantTimeline(sessionId);
+    const serverMessages = Array.isArray(timeline.messages) ? timeline.messages : [];
     sessionsRef.current = { ...sessionsRef.current, [channel]: timeline.session };
     setSessionsByChannel((prev) => ({
       ...prev,
       [channel]: timeline.session,
     }));
     setMessagesByChannel((prev) => {
-      const serverMessages = Array.isArray(timeline.messages) ? timeline.messages : [];
       const localMessages = prev[channel].filter((message) => {
         if (!String(message.id || '').startsWith('local-')) return false;
         return !serverMessages.some((serverMessage) => (
@@ -449,8 +485,19 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
         [channel]: [...serverMessages, ...localMessages],
       };
     });
-    pendingInputRef.current[channel] = null;
-    return Array.isArray(timeline.messages) ? timeline.messages : [];
+    const pendingFromServer = resolvePendingInputState(serverMessages);
+    const currentPending = pendingInputRef.current[channel];
+    if (pendingFromServer) {
+      pendingInputRef.current[channel] = pendingFromServer;
+    } else if (!currentPending) {
+      pendingInputRef.current[channel] = null;
+    } else {
+      const pendingMessageExistsOnServer = serverMessages.some((message) => message.id === currentPending.messageId);
+      if (pendingMessageExistsOnServer) {
+        pendingInputRef.current[channel] = null;
+      }
+    }
+    return serverMessages;
   }, [ensureSession]);
 
   const startNewSession = useCallback(async (channel: AssistantChannel, title?: string) => {
@@ -476,15 +523,15 @@ export const AssistantRuntimeProvider: React.FC<AssistantRuntimeProviderProps> =
   const value = useMemo<AssistantRuntimeContextValue>(() => ({
     globalMessages: messagesByChannel.global,
     biMessages: messagesByChannel.bi,
-    isBusyGlobal: busyByChannel.global,
-    isBusyBi: busyByChannel.bi,
+    isBusyGlobal: (busyCountByChannel.global || 0) > 0,
+    isBusyBi: (busyCountByChannel.bi || 0) > 0,
     sendMessage: sendMessageHandler,
     confirmActions: confirmActionsHandler,
     refreshTimeline,
     startNewSession,
   }), [
-    busyByChannel.bi,
-    busyByChannel.global,
+    busyCountByChannel.bi,
+    busyCountByChannel.global,
     confirmActionsHandler,
     messagesByChannel.bi,
     messagesByChannel.global,

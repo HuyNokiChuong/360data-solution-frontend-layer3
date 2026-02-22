@@ -38,6 +38,15 @@ const normalizeToken = (value) => normalizeText(value).toLowerCase();
 const lowerText = (value) => normalizeText(value).toLowerCase();
 const containsAny = (text, tokens) => tokens.some((token) => text.includes(token));
 
+const FALLBACK_ACTION_GUIDANCE = [
+    'Tôi có thể thao tác trực tiếp theo module.',
+    'Ví dụ:',
+    '- "Tạo dashboard phân tích doanh thu và thêm widget KPI"',
+    '- "Active lại user hieu@company.com"',
+    '- "Tạo calculated field loi_nhuan = doanh_thu - chi_phi"',
+    '- "Nối modeling: orders.customer_id -> customers.id"',
+].join('\n');
+
 const extractFirstQuotedText = (text) => {
     const match = String(text || '').match(/"([^"]+)"|'([^']+)'/);
     if (!match) return '';
@@ -66,9 +75,9 @@ const parseTabTarget = (text) => {
     if (containsAny(t, ['connections', 'kết nối'])) return 'connections';
     if (containsAny(t, ['tables', 'data assets', 'bảng'])) return 'tables';
     if (containsAny(t, ['reports', 'ask ai', 'phân tích'])) return 'reports';
-    if (containsAny(t, ['data modeling', 'semantic'])) return 'data-modeling';
+    if (containsAny(t, ['data modeling', 'data-modeling', 'semantic', 'modeling'])) return 'data-modeling';
     if (containsAny(t, ['dashboard', 'bi'])) return 'bi';
-    if (containsAny(t, ['users', 'người dùng'])) return 'users';
+    if (containsAny(t, ['users', 'user', 'người dùng', 'tài khoản', 'tai khoan', 'account'])) return 'users';
     if (containsAny(t, ['logs', 'audit'])) return 'logs';
     if (containsAny(t, ['ai setting', 'ai config'])) return 'ai-config';
     return '';
@@ -76,11 +85,18 @@ const parseTabTarget = (text) => {
 
 const parseFormulaSpec = (text) => {
     const raw = normalizeText(text);
-    const equalMatch = raw.match(/([a-zA-Z_][\w\s]*)\s*=\s*([^\n]+)/);
-    if (!equalMatch) return null;
+    const equalIndex = raw.indexOf('=');
+    if (equalIndex <= 0) return null;
 
-    const name = String(equalMatch[1] || '').trim().replace(/\s+/g, '_');
-    const formula = String(equalMatch[2] || '').trim();
+    const left = raw.slice(0, equalIndex).trim();
+    const right = raw.slice(equalIndex + 1).trim();
+    if (!left || !right) return null;
+
+    const nameMatch = left.match(/([a-zA-Z_][\w]*)\s*$/);
+    if (!nameMatch) return null;
+
+    const name = String(nameMatch[1] || '').trim();
+    const formula = right;
     if (!name || !formula) return null;
     return { name, formula };
 };
@@ -93,6 +109,328 @@ const parseEmail = (text) => {
 const parseProjectId = (text) => {
     const match = String(text || '').match(/\b[a-z][a-z0-9-]{4,}[a-z0-9]\b/);
     return match ? match[0] : '';
+};
+
+const sanitizeUserTargetToken = (rawValue) => {
+    const value = String(rawValue || '')
+        .trim()
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .replace(/^@+/, '')
+        .replace(/[.,!?;:]+$/g, '');
+    if (value.length < 2) return '';
+
+    const normalized = value.toLowerCase();
+    const blocked = new Set([
+        'user',
+        'users',
+        'account',
+        'acc',
+        'tai',
+        'khoan',
+        'tài',
+        'khoản',
+        'status',
+        'active',
+        'activate',
+        'inactive',
+        'deactivate',
+        'disable',
+        'enable',
+        'toggle',
+        'cho',
+        'toi',
+        'tôi',
+        'tao',
+        'phat',
+        'giup',
+        'giúp',
+        'dum',
+        'dùm',
+        'nhe',
+        'nhé',
+        'nha',
+        'nhá',
+    ]);
+    if (blocked.has(normalized)) return '';
+    return value;
+};
+
+const parseUserTarget = (text) => {
+    const userId = extractUuid(text);
+    if (userId) return { userId, email: '', userName: '' };
+
+    const email = parseEmail(text);
+    if (email) return { userId: '', email, userName: '' };
+
+    const raw = String(text || '');
+    const mention = raw.match(/@([a-zA-Z0-9._-]{2,})/);
+    if (mention) {
+        const userName = sanitizeUserTargetToken(mention[1]);
+        if (userName) return { userId: '', email: '', userName };
+    }
+
+    const quoted = extractFirstQuotedText(raw);
+    if (quoted) {
+        const userName = sanitizeUserTargetToken(quoted);
+        if (userName) return { userId: '', email: '', userName };
+    }
+
+    const userTokenMatch = raw.match(/(?:users?|account|acount|accout|acc|tài khoản|tai khoan)\b\s*(?:là|la|tên|ten|name|:)?\s*([a-zA-Z0-9._-]{2,})/i);
+    if (userTokenMatch) {
+        const userName = sanitizeUserTargetToken(userTokenMatch[1]);
+        if (userName) return { userId: '', email: '', userName };
+    }
+
+    const statusTokenMatch = raw.match(/(?:active|activate|inactive|deactivate|disable|enable|khóa|khoa|mở khóa|mo khoa|kích hoạt|kich hoat|vô hiệu hóa|vo hieu hoa)\s+(?:lại\s+|lai\s+)?(?:users?|account|acount|accout|acc|tài khoản|tai khoan)\b\s*([a-zA-Z0-9._-]{2,})/i);
+    if (statusTokenMatch) {
+        const userName = sanitizeUserTargetToken(statusTokenMatch[1]);
+        if (userName) return { userId: '', email: '', userName };
+    }
+
+    const plainText = normalizeText(raw);
+    const plainLower = plainText.toLowerCase();
+    const hasActionKeyword = containsAny(plainLower, [
+        'active',
+        'activate',
+        'inactive',
+        'deactivate',
+        'disable',
+        'enable',
+        'user',
+        'account',
+        'tài khoản',
+        'tai khoan',
+        'khóa',
+        'khoa',
+        'mở khóa',
+        'mo khoa',
+        'delete',
+        'remove',
+        'xóa',
+        'xoa',
+        'update',
+        'cập nhật',
+        'cap nhat',
+    ]);
+    if (!hasActionKeyword && plainText) {
+        const wholeTextCandidate = sanitizeUserTargetToken(plainText);
+        if (wholeTextCandidate) return { userId: '', email: '', userName: wholeTextCandidate };
+    }
+
+    return { userId: '', email: '', userName: '' };
+};
+
+const isUserStatusToggleIntent = (text) => {
+    const t = lowerText(text);
+    const hasKnownToken = containsAny(t, [
+        'disable user',
+        'enable user',
+        'toggle user status',
+        'khóa user',
+        'khoa user',
+        'mở khóa user',
+        'mo khoa user',
+        'khóa tài khoản',
+        'khoa tai khoan',
+        'mở khóa tài khoản',
+        'mo khoa tai khoan',
+        'active user',
+        'activate user',
+        'inactive user',
+        'deactivate user',
+        'deactive user',
+        'active account',
+        'activate account',
+        'inactive account',
+        'deactivate account',
+        'deactive account',
+        'active lại account',
+        'active lai account',
+        'inactive lại account',
+        'inactive lai account',
+        'kích hoạt tài khoản',
+        'kich hoat tai khoan',
+        'vô hiệu hóa tài khoản',
+        'vo hieu hoa tai khoan',
+    ]);
+    if (hasKnownToken) return true;
+
+    const statusPattern = /\b(active|activate|enable|inactive|disable|deactivate|deactive|kh[oó]a|khoa|m[oơ]\s*kh[oó]a|mo\s*khoa|k[ií]ch\s*ho[aạ]t|vo\s*hieu\s*hoa|v[oô]\s*hi[eệ]u\s*h[oó]a)\b/i;
+    const accountPattern = /\b(user|users|account|acount|accout|acc|t[aà]i\s*kho[aả]n)\b/i;
+    return statusPattern.test(String(text || '')) && accountPattern.test(String(text || ''));
+};
+
+const inferDesiredUserStatus = (text) => {
+    const t = lowerText(text);
+    const wantsDisabled = containsAny(t, [
+        'disable',
+        'inactive',
+        'deactivate',
+        'deactive',
+        'khóa',
+        'khoa',
+        'vô hiệu',
+        'vo hieu',
+        'tắt user',
+        'tat user',
+        'tắt tài khoản',
+        'tat tai khoan',
+    ]);
+    if (wantsDisabled) return 'Disabled';
+
+    const wantsActive = containsAny(t, [
+        'enable',
+        'active',
+        'activate',
+        'mở khóa',
+        'mo khoa',
+        'kích hoạt',
+        'kich hoat',
+        'bật user',
+        'bat user',
+        'mở lại',
+        'mo lai',
+    ]);
+    if (wantsActive) return 'Active';
+
+    return undefined;
+};
+
+const isCreateRelationshipIntent = (text) => {
+    const t = lowerText(text);
+    if (containsAny(t, ['create relationship', 'tạo relationship', 'tao relationship'])) return true;
+    if (containsAny(t, ['connect modeling', 'nối modeling', 'noi modeling', 'connect model', 'nối model', 'noi model'])) return true;
+    if (containsAny(t, ['nối bảng', 'noi bang', 'link table', 'map table', 'join table']) && containsAny(t, ['model', 'modeling', 'semantic', 'relationship'])) return true;
+    return false;
+};
+
+const isAutoDetectRelationshipIntent = (text) => {
+    const t = lowerText(text);
+    return containsAny(t, [
+        'auto detect relationship',
+        'auto detect relationships',
+        'tự động dò relationship',
+        'tu dong do relationship',
+        'tự động nối bảng',
+        'tu dong noi bang',
+        'auto relationship',
+    ]);
+};
+
+const isDeleteRelationshipIntent = (text) => {
+    const t = lowerText(text);
+    return containsAny(t, [
+        'delete relationship',
+        'xóa relationship',
+        'xoá relationship',
+        'xoa relationship',
+        'remove relationship',
+        'gỡ relationship',
+        'go relationship',
+    ]);
+};
+
+const isSystemOperationIntent = (text) => {
+    const t = lowerText(text);
+    if (!t) return false;
+
+    if (isUserStatusToggleIntent(t)) return true;
+    if (isCreateRelationshipIntent(t) || isAutoDetectRelationshipIntent(t) || isDeleteRelationshipIntent(t)) return true;
+
+    return containsAny(t, [
+        'dashboard',
+        'widget',
+        'calculated field',
+        'calculation field',
+        'phép tính',
+        'phep tinh',
+        'công thức',
+        'cong thuc',
+        'table',
+        'bảng',
+        'bang',
+        'connection',
+        'kết nối',
+        'ket noi',
+        'user',
+        'users',
+        'tài khoản',
+        'tai khoan',
+        'account',
+        'acount',
+        'accout',
+        'acc ',
+        'modeling',
+        'model',
+        'relationship',
+        'active ',
+        'inactive',
+        'enable',
+        'disable',
+        'deactivate',
+        'delete',
+        'remove',
+        'xóa',
+        'xoa',
+        'create',
+        'tạo',
+        'tao',
+        'update',
+        'cập nhật',
+        'cap nhat',
+    ]);
+};
+
+const normalizeTabName = (tab) => {
+    const token = normalizeToken(tab);
+    if (!token) return '';
+    if (token === 'data_modeling' || token === 'semantic') return 'data-modeling';
+    return token;
+};
+
+const resolveTabFromActionType = (actionType) => {
+    const token = normalizeToken(actionType);
+    if (!token) return '';
+    if (token.startsWith('bi.')) return 'bi';
+    if (token.startsWith('connections.')) return 'connections';
+    if (token.startsWith('tables.')) return 'tables';
+    if (token.startsWith('users.')) return 'users';
+    if (token.startsWith('data_modeling.')) return 'data-modeling';
+    if (token.startsWith('reports.')) return 'reports';
+    return '';
+};
+
+const ensureNavigationForPlannedActions = (actions, activeTab = '') => {
+    const list = Array.isArray(actions) ? actions.filter((action) => action && typeof action === 'object') : [];
+    if (list.length === 0) return [];
+
+    const currentTab = normalizeTabName(activeTab);
+    const existingNavTabs = new Set();
+    list.forEach((action) => {
+        if (normalizeToken(action.actionType) !== 'nav.go_to_tab') return;
+        const args = action.args && typeof action.args === 'object' ? action.args : {};
+        const tab = normalizeTabName(args.tab || args.target || args.route);
+        if (tab) existingNavTabs.add(tab);
+    });
+
+    const firstOperationalAction = list.find((action) => normalizeToken(action.actionType) !== 'nav.go_to_tab');
+    if (!firstOperationalAction) return list;
+
+    const targetTab = resolveTabFromActionType(firstOperationalAction.actionType);
+    if (!targetTab) return list;
+    if (existingNavTabs.has(targetTab)) return list;
+    if (currentTab && currentTab === targetTab) return list;
+
+    return [
+        {
+            actionType: 'nav.go_to_tab',
+            args: {
+                tab: targetTab,
+                flow: String(firstOperationalAction.actionType || '').replace(/\./g, '_'),
+            },
+        },
+        ...list,
+    ];
 };
 
 const parseRelationshipSpec = (text) => {
@@ -350,6 +688,62 @@ const makeMissingInput = (key, question, expectedType = 'string') => ({
     expectedType,
 });
 
+const deriveFollowupMissingInputs = (actions) => {
+    const list = Array.isArray(actions) ? actions : [];
+    for (const action of list) {
+        const actionType = normalizeToken(action?.actionType);
+        const args = action?.args && typeof action.args === 'object' ? action.args : {};
+
+        if (actionType === 'bi.create_calculated_field') {
+            if (!normalizeText(args.name) || !normalizeText(args.formula)) {
+                return [makeMissingInput(
+                    'formulaSpec',
+                    'Hãy cho công thức theo dạng: ten_truong = bieu_thuc',
+                    'string'
+                )];
+            }
+        }
+
+        if (actionType === 'data_modeling.create_relationship') {
+            if (!normalizeText(args.dataModelId)) {
+                return [makeMissingInput(
+                    'dataModelTarget',
+                    'Bạn muốn nối ở Data Model nào? (gửi dataModelId hoặc tên model)',
+                    'string'
+                )];
+            }
+            if (!normalizeText(args.fromTableName) || !normalizeText(args.fromColumn) || !normalizeText(args.toTableName) || !normalizeText(args.toColumn)) {
+                return [makeMissingInput(
+                    'relationshipSpec',
+                    'Hãy gửi theo dạng: tableA.columnA -> tableB.columnB',
+                    'string'
+                )];
+            }
+        }
+
+        if (actionType === 'data_modeling.auto_detect_relationships' && !normalizeText(args.dataModelId)) {
+            return [makeMissingInput(
+                'dataModelTarget',
+                'Bạn muốn thao tác trên Data Model nào? (gửi dataModelId hoặc tên model)',
+                'string'
+            )];
+        }
+
+        if (actionType.startsWith('users.')) {
+            const hasUserTarget = normalizeText(args.userId) || normalizeText(args.email) || normalizeText(args.userName);
+            if (!hasUserTarget) {
+                return [makeMissingInput(
+                    'userTarget',
+                    'Bạn muốn thao tác user nào? (email, userId, hoặc tên user)',
+                    'string'
+                )];
+            }
+        }
+    }
+
+    return [];
+};
+
 const parseBooleanAnswer = (raw) => {
     const value = normalizeToken(raw);
     if (!value) return null;
@@ -401,6 +795,7 @@ const resolvePendingActionsFromContext = ({ text, context }) => {
                 missingInputs: [makeMissingInput('dashboardTarget', question, 'string')],
                 modelProvider: null,
                 modelId: null,
+                activeTab: safeContext.activeTab,
             });
         }
 
@@ -424,9 +819,13 @@ const resolvePendingActionsFromContext = ({ text, context }) => {
                 { actionType: 'bi.create_dashboard', args: { title: createTitle } },
                 ...patchedActions,
             ],
-            missingInputs: [],
+            missingInputs: deriveFollowupMissingInputs([
+                { actionType: 'bi.create_dashboard', args: { title: createTitle } },
+                ...patchedActions,
+            ]),
             modelProvider: null,
             modelId: null,
+            activeTab: safeContext.activeTab,
         });
     }
 
@@ -442,6 +841,24 @@ const resolvePendingActionsFromContext = ({ text, context }) => {
                 args.name = spec.name;
                 args.formula = spec.formula;
             }
+        } else if (missingKey === 'relationshipSpec' && next.actionType === 'data_modeling.create_relationship') {
+            const spec = parseRelationshipSpec(String(providedValue));
+            if (spec) {
+                args.fromTableName = spec.fromTableName;
+                args.fromColumn = spec.fromColumn;
+                args.toTableName = spec.toTableName;
+                args.toColumn = spec.toColumn;
+            }
+        } else if (missingKey === 'userTarget' && String(next.actionType || '').startsWith('users.')) {
+            const target = parseUserTarget(String(providedValue));
+            if (target.userId) args.userId = target.userId;
+            if (target.email) args.email = target.email;
+            if (target.userName) args.userName = target.userName;
+        } else if (missingKey === 'userTarget') {
+            next.args = args;
+            return next;
+        } else if (missingKey === 'dataModelTarget' && String(next.actionType || '').startsWith('data_modeling.')) {
+            args.dataModelId = String(providedValue);
         } else {
             args[missingKey] = providedValue;
         }
@@ -450,12 +867,14 @@ const resolvePendingActionsFromContext = ({ text, context }) => {
         return next;
     });
 
+    const followupMissingInputs = deriveFollowupMissingInputs(patchedActions);
     return finalizePlan({
         assistantText: 'Đã nhận đủ thông tin. Tôi bắt đầu thực thi ngay.',
         actions: patchedActions,
-        missingInputs: [],
+        missingInputs: followupMissingInputs,
         modelProvider: null,
         modelId: null,
+        activeTab: safeContext.activeTab,
     });
 };
 
@@ -487,8 +906,10 @@ const finalizePlan = ({
     missingInputs,
     modelProvider = null,
     modelId = null,
+    activeTab = '',
 }) => {
-    const normalizedActions = normalizePlannedActions(Array.isArray(actions) ? actions : []);
+    const actionsWithNavigation = ensureNavigationForPlannedActions(actions, activeTab);
+    const normalizedActions = normalizePlannedActions(Array.isArray(actionsWithNavigation) ? actionsWithNavigation : []);
     const normalizedMissing = normalizeMissingInputs(missingInputs).slice(0, 1);
     const pendingConfirmations = collectPendingConfirmations(normalizedActions);
 
@@ -505,7 +926,7 @@ const finalizePlan = ({
 
     if (normalizedActions.length === 0) {
         return {
-            assistantText: normalizeText(assistantText) || 'Tôi đã hiểu yêu cầu. Hãy nói rõ module và hành động cần thực thi.',
+            assistantText: normalizeText(assistantText) || FALLBACK_ACTION_GUIDANCE,
             actions: [],
             missingInputs: [],
             pendingConfirmations: [],
@@ -545,6 +966,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
     const lower = lowerText(text);
     const safeContext = context && typeof context === 'object' ? context : {};
     const activeTab = String(safeContext.activeTab || '').toLowerCase();
+    const activeDataModelId = normalizeText(safeContext.activeDataModelId || safeContext.dataModelId);
     const reportsContext = safeContext.reportsContext && typeof safeContext.reportsContext === 'object'
         ? safeContext.reportsContext
         : {};
@@ -565,6 +987,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
             assistantText: 'Vui lòng mô tả yêu cầu bạn muốn tôi thực hiện.',
             actions: [],
             missingInputs: [makeMissingInput('text', 'Bạn muốn tôi thực hiện việc gì?', 'string')],
+            activeTab,
         });
     }
 
@@ -703,7 +1126,18 @@ const buildRuleBasedPlan = ({ text, context }) => {
         });
     }
 
-    if (containsAny(lower, ['calculated field', 'phép tính', 'calculation field', 'công thức'])) {
+    if (containsAny(lower, [
+        'calculated field',
+        'calculation field',
+        'calculated',
+        'field tính toán',
+        'truong tinh toan',
+        'phép tính',
+        'phep tinh',
+        'công thức',
+        'cong thuc',
+        'measure formula',
+    ])) {
         const formulaSpec = parseFormulaSpec(rawText);
         const activeTab = String(safeContext.activeTab || '').toLowerCase();
         const activeDashboardId = String(safeContext.activeDashboardId || '').trim();
@@ -815,14 +1249,28 @@ const buildRuleBasedPlan = ({ text, context }) => {
         pushAction('tables.delete', { tableId, tableName });
     }
 
-    if (containsAny(lower, ['auto detect relationship', 'tự động dò relationship', 'auto detect relationships'])) {
+    if (isAutoDetectRelationshipIntent(rawText)) {
+        if (!activeDataModelId) {
+            missingInputs.push(makeMissingInput(
+                'dataModelTarget',
+                'Bạn muốn thao tác trên Data Model nào? (gửi dataModelId hoặc tên model)',
+                'string'
+            ));
+        }
         pushAction('data_modeling.auto_detect_relationships', {
-            dataModelId: safeContext.dataModelId,
+            dataModelId: activeDataModelId || undefined,
         });
     }
 
-    if (containsAny(lower, ['create relationship', 'tạo relationship'])) {
+    if (isCreateRelationshipIntent(rawText)) {
         const spec = parseRelationshipSpec(rawText);
+        if (!activeDataModelId) {
+            missingInputs.push(makeMissingInput(
+                'dataModelTarget',
+                'Bạn muốn nối ở Data Model nào? (gửi dataModelId hoặc tên model)',
+                'string'
+            ));
+        }
         if (!spec) {
             missingInputs.push(makeMissingInput(
                 'relationshipSpec',
@@ -831,7 +1279,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
             ));
         }
         pushAction('data_modeling.create_relationship', {
-            dataModelId: safeContext.dataModelId,
+            dataModelId: activeDataModelId || undefined,
             fromTableName: spec?.fromTableName,
             fromColumn: spec?.fromColumn,
             toTableName: spec?.toTableName,
@@ -839,7 +1287,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
         });
     }
 
-    if (containsAny(lower, ['delete relationship', 'xóa relationship'])) {
+    if (isDeleteRelationshipIntent(rawText)) {
         const relationshipId = extractUuid(rawText);
         if (!relationshipId) {
             missingInputs.push(makeMissingInput('relationshipId', 'Bạn muốn xóa relationship nào? (gửi relationshipId)', 'string'));
@@ -864,9 +1312,20 @@ const buildRuleBasedPlan = ({ text, context }) => {
         pushAction('users.invite', { email, name, role });
     }
 
-    if (containsAny(lower, ['update user', 'cập nhật user', 'sửa user'])) {
-        const email = parseEmail(rawText);
-        const userId = extractUuid(rawText);
+    if (containsAny(lower, [
+        'update user',
+        'cập nhật user',
+        'cap nhat user',
+        'sửa user',
+        'sua user',
+        'update account',
+        'cập nhật tài khoản',
+        'cap nhat tai khoan',
+    ])) {
+        const target = parseUserTarget(rawText);
+        const email = target.email;
+        const userId = target.userId;
+        const userName = target.userName;
         const role = containsAny(lower, [' admin '])
             ? 'Admin'
             : containsAny(lower, [' editor '])
@@ -875,33 +1334,42 @@ const buildRuleBasedPlan = ({ text, context }) => {
                     ? 'Viewer'
                     : undefined;
 
-        if (!email && !userId) {
-            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn cập nhật user nào? (email hoặc userId)', 'string'));
+        if (!email && !userId && !userName) {
+            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn cập nhật user nào? (email, userId, hoặc tên user)', 'string'));
         }
 
         pushAction('users.update', {
             email,
             userId,
+            userName,
             role,
         });
     }
 
-    if (containsAny(lower, ['disable user', 'enable user', 'toggle user status', 'khóa user', 'mở khóa user'])) {
-        const email = parseEmail(rawText);
-        const userId = extractUuid(rawText);
-        if (!email && !userId) {
-            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn đổi trạng thái user nào? (email hoặc userId)', 'string'));
+    if (isUserStatusToggleIntent(rawText)) {
+        const target = parseUserTarget(rawText);
+        const desiredStatus = inferDesiredUserStatus(rawText);
+        if (!target.email && !target.userId && !target.userName) {
+            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn active/inactive tài khoản nào? (email, userId, hoặc tên user)', 'string'));
         }
-        pushAction('users.toggle_status', { email, userId });
+        pushAction('users.toggle_status', {
+            email: target.email,
+            userId: target.userId,
+            userName: target.userName,
+            desiredStatus,
+        });
     }
 
-    if (containsAny(lower, ['delete user', 'xóa user', 'xoá user'])) {
-        const email = parseEmail(rawText);
-        const userId = extractUuid(rawText);
-        if (!email && !userId) {
-            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn xóa user nào? (email hoặc userId)', 'string'));
+    if (containsAny(lower, ['delete user', 'xóa user', 'xoá user', 'xoa user', 'delete account', 'xóa account', 'xoa account', 'xóa tài khoản', 'xoa tai khoan'])) {
+        const target = parseUserTarget(rawText);
+        if (!target.email && !target.userId && !target.userName) {
+            missingInputs.push(makeMissingInput('userTarget', 'Bạn muốn xóa user nào? (email, userId, hoặc tên user)', 'string'));
         }
-        pushAction('users.delete', { email, userId });
+        pushAction('users.delete', {
+            email: target.email,
+            userId: target.userId,
+            userName: target.userName,
+        });
     }
 
     const wantsReportsScope = activeTab === 'reports' || containsAny(lower, ['reports', 'report', 'trong reports']);
@@ -969,7 +1437,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
     if (
         activeTab === 'reports'
         && plannedActions.length === 0
-        && !containsAny(lower, ['create', 'delete', 'update', 'toggle', 'invite', 'relationship'])
+        && !isSystemOperationIntent(rawText)
     ) {
         pushAction('reports.ask', { text: rawText });
     }
@@ -980,6 +1448,7 @@ const buildRuleBasedPlan = ({ text, context }) => {
         missingInputs,
         modelProvider: null,
         modelId: null,
+        activeTab,
     });
 };
 
@@ -1155,6 +1624,7 @@ const tryAiPlanner = async ({ text, context, user }) => {
         missingInputs: Array.isArray(data.missingInputs) ? data.missingInputs : [],
         modelProvider: credential.provider,
         modelId: credential.model_id || null,
+        activeTab: context?.activeTab,
     });
 };
 

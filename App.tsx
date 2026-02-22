@@ -115,6 +115,17 @@ const App: React.FC = () => {
         return parsed.map((table) => ({
           ...table,
           schema: normalizeSchema(table?.schema || []),
+          aiDefinition: typeof table?.aiDefinition === 'string' ? table.aiDefinition : undefined,
+          aiDefinitionGeneratedAt: typeof table?.aiDefinitionGeneratedAt === 'string' ? table.aiDefinitionGeneratedAt : undefined,
+          aiDefinitionSource: typeof table?.aiDefinitionSource === 'string' ? table.aiDefinitionSource : undefined,
+          aiDefinitionProvider: typeof table?.aiDefinitionProvider === 'string' ? table.aiDefinitionProvider : undefined,
+          aiDefinitionModelId: typeof table?.aiDefinitionModelId === 'string' ? table.aiDefinitionModelId : undefined,
+          aiDefinitionConfidence: Number.isFinite(Number(table?.aiDefinitionConfidence))
+            ? Number(table.aiDefinitionConfidence)
+            : undefined,
+          aiDefinitionSignals: Array.isArray(table?.aiDefinitionSignals)
+            ? table.aiDefinitionSignals.map((item: any) => String(item || '').trim()).filter(Boolean)
+            : undefined,
         }));
       } catch (err) {
         return [];
@@ -175,6 +186,17 @@ const App: React.FC = () => {
   const normalizeSyncedTable = (table: SyncedTable): SyncedTable => ({
     ...table,
     schema: normalizeSchema(table?.schema || []),
+    aiDefinition: typeof table?.aiDefinition === 'string' ? table.aiDefinition : undefined,
+    aiDefinitionGeneratedAt: typeof table?.aiDefinitionGeneratedAt === 'string' ? table.aiDefinitionGeneratedAt : undefined,
+    aiDefinitionSource: typeof table?.aiDefinitionSource === 'string' ? table.aiDefinitionSource : undefined,
+    aiDefinitionProvider: typeof table?.aiDefinitionProvider === 'string' ? table.aiDefinitionProvider : undefined,
+    aiDefinitionModelId: typeof table?.aiDefinitionModelId === 'string' ? table.aiDefinitionModelId : undefined,
+    aiDefinitionConfidence: Number.isFinite(Number(table?.aiDefinitionConfidence))
+      ? Number(table.aiDefinitionConfidence)
+      : undefined,
+    aiDefinitionSignals: Array.isArray(table?.aiDefinitionSignals)
+      ? table.aiDefinitionSignals.map((item: any) => String(item || '').trim()).filter(Boolean)
+      : undefined,
   });
 
   const pruneDuplicateEmptySessions = (input: ReportSession[]): { kept: ReportSession[]; removed: ReportSession[] } => {
@@ -1384,6 +1406,11 @@ const App: React.FC = () => {
                       onToggleStatus={toggleTableStatus}
                       onDeleteTable={deleteTable}
                       onDeleteTables={deleteTables}
+                      onTableUpdated={(updatedTable) => {
+                        setTables((prev) => prev.map((table) => (
+                          table.id === updatedTable.id ? normalizeSyncedTable(updatedTable) : table
+                        )));
+                      }}
                       googleToken={googleToken}
                       setGoogleToken={setGoogleToken}
                     />

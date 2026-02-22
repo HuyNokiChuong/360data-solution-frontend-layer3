@@ -2,7 +2,13 @@ export interface ReportsAssistantBridge {
   newSession: (title?: string) => Promise<{ sessionId: string } | void> | { sessionId: string } | void;
   ask: (
     text: string,
-    options?: { sessionId?: string; useAllTables?: boolean; tableIds?: string[] }
+    options?: {
+      sessionId?: string;
+      useAllTables?: boolean;
+      tableIds?: string[];
+      forceNewSession?: boolean;
+      sessionTitle?: string;
+    }
   ) => Promise<any> | any;
   rerunChartSql: (messageId: string, chartIndex: number, newSQL?: string) => Promise<any> | any;
   getContext?: () => Record<string, any>;

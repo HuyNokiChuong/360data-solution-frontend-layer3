@@ -9,7 +9,6 @@ import {
   getModelTables,
   getRelationships,
 } from '../services/dataModeling';
-import { useLanguageStore } from '../store/languageStore';
 import { generateUUID } from '../utils/id';
 import { registerReportsAssistantBridge } from './reports/reportsAssistantBridge';
 
@@ -17,8 +16,10 @@ interface PendingQuestion {
   id: string;
   text: string;
   model?: any;
+  modelId?: string;
   sessionId: string;
   forcedTableIds?: string[];
+  resumeFromExisting?: boolean;
 }
 
 interface ResolvedSourceScope {
@@ -31,11 +32,19 @@ interface ScopedTableResolution {
   ambiguous: boolean;
 }
 
+interface BigQueryScopeLookup {
+  exact: Map<string, Set<string>>;
+  relaxed: Map<string, Set<string>>;
+}
+
 const DEFAULT_REPORT_SESSION_TITLES = new Set([
   'new analysis',
+  'phân tích mới',
   'data exploration hub',
   'untitled session',
+  'phiên chưa đặt tên',
 ]);
+const MAX_PARALLEL_AI_TASKS = 3;
 
 interface ReportsProps {
   tables: SyncedTable[];
@@ -66,9 +75,15 @@ const Reports: React.FC<ReportsProps> = ({
 }) => {
   const domain = currentUser.email.split('@')[1] || 'default';
   const selectionStorageKey = `report_selection_${domain}`;
+  const pendingJobsStorageKey = `report_pending_jobs_${domain}`;
   const [isAuthRequired, setIsAuthRequired] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Set<AbortController>>(new Set());
+  const inFlightCountRef = useRef(0);
+  const [inFlightCount, setInFlightCount] = useState(0);
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
+  const pendingJobsRef = useRef<Map<string, PendingQuestion>>(new Map());
+  const hasRestoredPendingJobsRef = useRef(false);
+  const isPageReloadingRef = useRef(false);
 
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>(() => {
     const saved = localStorage.getItem(selectionStorageKey);
@@ -80,7 +95,90 @@ const Reports: React.FC<ReportsProps> = ({
       return [];
     }
   });
-  const { messages } = sessions.find(s => s.id === activeSessionId) || { messages: [] };
+
+  const persistPendingJobsToStorage = useCallback(() => {
+    try {
+      const serializable = Array.from(pendingJobsRef.current.values()).map((job) => ({
+        id: job.id,
+        text: String(job.text || ''),
+        sessionId: String(job.sessionId || ''),
+        forcedTableIds: Array.isArray(job.forcedTableIds) ? [...job.forcedTableIds] : undefined,
+        resumeFromExisting: job.resumeFromExisting === true,
+        modelId: String(job.modelId || ''),
+      }));
+      if (serializable.length === 0) {
+        localStorage.removeItem(pendingJobsStorageKey);
+      } else {
+        localStorage.setItem(pendingJobsStorageKey, JSON.stringify(serializable));
+      }
+    } catch (err) {
+      console.warn('Failed to persist pending report jobs:', err);
+    }
+  }, [pendingJobsStorageKey]);
+
+  const upsertPendingJob = useCallback((job: PendingQuestion) => {
+    const normalized: PendingQuestion = {
+      id: String(job.id || '').trim(),
+      text: String(job.text || ''),
+      sessionId: String(job.sessionId || '').trim(),
+      forcedTableIds: Array.isArray(job.forcedTableIds) ? [...job.forcedTableIds] : undefined,
+      resumeFromExisting: job.resumeFromExisting === true,
+      modelId: String(job.model?.id || job.modelId || '').trim() || undefined,
+      model: undefined,
+    };
+    if (!normalized.id || !normalized.text || !normalized.sessionId) return;
+    pendingJobsRef.current.set(normalized.id, normalized);
+    persistPendingJobsToStorage();
+  }, [persistPendingJobsToStorage]);
+
+  const removePendingJob = useCallback((jobId: string) => {
+    const id = String(jobId || '').trim();
+    if (!id) return;
+    if (pendingJobsRef.current.delete(id)) {
+      persistPendingJobsToStorage();
+    }
+  }, [persistPendingJobsToStorage]);
+
+  const clearPendingJobs = useCallback(() => {
+    pendingJobsRef.current.clear();
+    try {
+      localStorage.removeItem(pendingJobsStorageKey);
+    } catch {
+      // noop
+    }
+  }, [pendingJobsStorageKey]);
+
+  useEffect(() => {
+    pendingJobsRef.current.clear();
+    hasRestoredPendingJobsRef.current = false;
+  }, [pendingJobsStorageKey]);
+
+  useEffect(() => {
+    const markPageReloading = () => {
+      isPageReloadingRef.current = true;
+    };
+
+    window.addEventListener('beforeunload', markPageReloading);
+    window.addEventListener('pagehide', markPageReloading);
+    return () => {
+      window.removeEventListener('beforeunload', markPageReloading);
+      window.removeEventListener('pagehide', markPageReloading);
+    };
+  }, []);
+
+  const beginAiTask = () => {
+    inFlightCountRef.current += 1;
+    setInFlightCount(inFlightCountRef.current);
+    setLoading(true);
+  };
+
+  const endAiTask = () => {
+    inFlightCountRef.current = Math.max(0, inFlightCountRef.current - 1);
+    setInFlightCount(inFlightCountRef.current);
+    if (inFlightCountRef.current === 0) {
+      setLoading(false);
+    }
+  };
 
   // Persist selectedTableIds
   useEffect(() => {
@@ -111,6 +209,87 @@ const Reports: React.FC<ReportsProps> = ({
       return next;
     });
   }, [tables]);
+
+  useEffect(() => {
+    if (hasRestoredPendingJobsRef.current) return;
+    if (sessions.length === 0) return;
+    hasRestoredPendingJobsRef.current = true;
+
+    let parsed: any[] = [];
+    try {
+      const raw = localStorage.getItem(pendingJobsStorageKey);
+      if (raw) {
+        const data = JSON.parse(raw);
+        parsed = Array.isArray(data) ? data : [];
+      }
+    } catch (err) {
+      console.warn('Failed to restore pending report jobs:', err);
+    }
+
+    if (parsed.length === 0) {
+      clearPendingJobs();
+      return;
+    }
+
+    const resolveResumeMode = (session: ReportSession, jobText: string): 'resume' | 'requeue' | 'skip' => {
+      const text = String(jobText || '').trim();
+      if (!text) return 'skip';
+      const list = Array.isArray(session.messages) ? session.messages : [];
+      let matchedUserIndex = -1;
+
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const item = list[i];
+        if (item?.role !== 'user') continue;
+        if (String(item.content || '').trim() !== text) continue;
+        matchedUserIndex = i;
+        break;
+      }
+
+      if (matchedUserIndex === -1) return 'requeue';
+      const hasAssistantAfter = list.slice(matchedUserIndex + 1).some((msg) => msg?.role === 'assistant');
+      return hasAssistantAfter ? 'skip' : 'resume';
+    };
+
+    const restoredJobs: PendingQuestion[] = parsed
+      .map((item) => {
+        const id = String(item?.id || '').trim();
+        const text = String(item?.text || '');
+        const sessionId = String(item?.sessionId || '').trim();
+        const forcedTableIds = Array.isArray(item?.forcedTableIds) ? item.forcedTableIds.map((value: any) => String(value || '').trim()).filter(Boolean) : undefined;
+        const modelId = String(item?.modelId || '').trim() || undefined;
+        if (!id || !text || !sessionId) return null;
+
+        const session = sessions.find((entry) => entry.id === sessionId);
+        if (!session) return null;
+        const resumeMode = resolveResumeMode(session, text);
+        if (resumeMode === 'skip') return null;
+
+        return {
+          id,
+          text,
+          sessionId,
+          forcedTableIds,
+          modelId,
+          model: undefined,
+          resumeFromExisting: resumeMode === 'resume',
+        } as PendingQuestion;
+      })
+      .filter(Boolean) as PendingQuestion[];
+
+    pendingJobsRef.current = new Map(restoredJobs.map((job) => [job.id, job]));
+    persistPendingJobsToStorage();
+
+    if (restoredJobs.length === 0) return;
+    setPendingQuestions((prev) => {
+      const existing = new Set(prev.map((job) => job.id));
+      const merged = [...prev];
+      restoredJobs.forEach((job) => {
+        if (existing.has(job.id)) return;
+        merged.push(job);
+      });
+      return merged;
+    });
+  }, [sessions, pendingJobsStorageKey, clearPendingJobs, persistPendingJobsToStorage]);
 
   // Proactively check token validity once on mount or when googleToken changes
   useEffect(() => {
@@ -227,11 +406,127 @@ const Reports: React.FC<ReportsProps> = ({
   const normalizeSqlIdentifier = (value: string): string => {
     return String(value || '')
       .trim()
-      .replace(/^`|`$/g, '')
-      .replace(/^"|"$/g, '')
-      .replace(/^\[|\]$/g, '')
+      .replace(/`/g, '')
+      .replace(/"/g, '')
+      .replace(/\[/g, '')
+      .replace(/\]/g, '')
       .trim()
       .toLowerCase();
+  };
+
+  const normalizeRelaxedIdentifier = (value: string): string => {
+    return normalizeSqlIdentifier(value).replace(/[^a-z0-9]/g, '');
+  };
+
+  const detectPromptLanguage = (input: string): 'en' | 'vi' => {
+    const raw = String(input || '').trim();
+    if (!raw) return 'vi';
+
+    // Reliable signal: Vietnamese diacritics.
+    if (/[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(raw)) {
+      return 'vi';
+    }
+
+    const latin = raw
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd');
+    const words = latin.match(/[a-z]+/g) || [];
+    if (words.length === 0) return 'vi';
+
+    const viKeywords = new Set([
+      'toi', 'tao', 'ban', 'giup', 'hay', 'vui', 'long', 'lam', 'cho', 'voi',
+      'bao', 'nhieu', 'phan', 'tich', 'du', 'lieu', 'bang', 'doanh', 'thu', 'chi',
+      'phi', 'loi', 'nhuan', 'tang', 'giam', 'theo', 'ngay', 'thang', 'nam',
+      'nhu', 'nao', 'tai', 'sao', 'can', 'duoc', 'khong'
+    ]);
+    const enKeywords = new Set([
+      'what', 'how', 'why', 'please', 'show', 'analyze', 'analysis', 'report',
+      'dashboard', 'table', 'dataset', 'revenue', 'cost', 'profit', 'trend',
+      'compare', 'between', 'from', 'with', 'for', 'daily', 'monthly', 'weekly'
+    ]);
+
+    let viScore = 0;
+    let enScore = 0;
+    words.forEach((word) => {
+      if (viKeywords.has(word)) viScore += 1;
+      if (enKeywords.has(word)) enScore += 1;
+    });
+
+    if (/\b(the|and|for|with|from|to|of|in)\b/.test(latin)) enScore += 1;
+    if (/\b(bao|nhieu|phan|tich|doanh|thu|chi|phi|loi|nhuan|nhu|nao|tai|sao)\b/.test(latin)) viScore += 1;
+
+    if (enScore > viScore) return 'en';
+    return 'vi';
+  };
+
+  const splitInlineAliasInBacktickRef = (rawIdentifier: string): { tableIdentifier: string; inlineAlias: string } => {
+    const identifier = String(rawIdentifier || '').trim();
+    if (!identifier.startsWith('`') || !identifier.endsWith('`')) {
+      return { tableIdentifier: identifier, inlineAlias: '' };
+    }
+
+    const unquoted = identifier.slice(1, -1).trim();
+    if (!unquoted || !/\s/.test(unquoted)) {
+      return { tableIdentifier: identifier, inlineAlias: '' };
+    }
+
+    const aliasMatch = unquoted.match(/^([^\s]+)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)$/i);
+    if (!aliasMatch) {
+      return { tableIdentifier: identifier, inlineAlias: '' };
+    }
+
+    return {
+      tableIdentifier: `\`${aliasMatch[1]}\``,
+      inlineAlias: ` ${aliasMatch[2]}`,
+    };
+  };
+
+  const collectReferenceCandidates = (identifier: string): string[] => {
+    const cleaned = normalizeSqlIdentifier(identifier)
+      .split(/\s+/)[0]
+      .replace(/[),;]+$/g, '');
+    if (!cleaned) return [];
+
+    const candidates = new Set<string>([cleaned]);
+    const segments = cleaned.split('.').map((part) => part.trim()).filter(Boolean);
+    if (segments.length === 0) return Array.from(candidates);
+
+    candidates.add(segments[segments.length - 1]);
+    if (segments.length >= 2) {
+      candidates.add(segments.slice(-2).join('.'));
+    }
+    if (segments.length >= 3) {
+      candidates.add(segments.slice(0, 3).join('.'));
+    }
+    if (segments.length >= 4) {
+      const prefixedTable = segments.slice(2).join('_');
+      if (prefixedTable) {
+        candidates.add(`${segments[0]}.${segments[1]}.${prefixedTable}`);
+        candidates.add(`${segments[1]}.${prefixedTable}`);
+        candidates.add(prefixedTable);
+      }
+
+      const tailTable = segments.slice(-2).join('_');
+      if (tailTable) {
+        candidates.add(`${segments[0]}.${segments[1]}.${tailTable}`);
+        candidates.add(`${segments[1]}.${tailTable}`);
+        candidates.add(tailTable);
+      }
+    }
+
+    return Array.from(candidates).filter(Boolean);
+  };
+
+  const formatTableReferenceForUi = (reference: string): string => {
+    const normalized = normalizeSqlIdentifier(reference);
+    if (!normalized) return String(reference || '').trim();
+    const segments = normalized.split('.').map((part) => part.trim()).filter(Boolean);
+    if (segments.length >= 3) {
+      return segments.slice(1).join('.');
+    }
+    return normalized;
   };
 
   const collectCteNames = (sql: string): Set<string> => {
@@ -247,15 +542,26 @@ const Reports: React.FC<ReportsProps> = ({
   const buildBigQueryScopeLookup = (
     scopeTables: SyncedTable[],
     fallbackConnection: Connection | null
-  ): Map<string, Set<string>> => {
-    const lookup = new Map<string, Set<string>>();
+  ): BigQueryScopeLookup => {
+    const lookup: BigQueryScopeLookup = {
+      exact: new Map<string, Set<string>>(),
+      relaxed: new Map<string, Set<string>>(),
+    };
 
     const add = (key: string, canonical: string) => {
       const normalized = normalizeSqlIdentifier(key);
-      if (!normalized) return;
-      const set = lookup.get(normalized) || new Set<string>();
-      set.add(canonical);
-      lookup.set(normalized, set);
+      if (normalized) {
+        const exactSet = lookup.exact.get(normalized) || new Set<string>();
+        exactSet.add(canonical);
+        lookup.exact.set(normalized, exactSet);
+      }
+
+      const relaxed = normalizeRelaxedIdentifier(key);
+      if (relaxed) {
+        const relaxedSet = lookup.relaxed.get(relaxed) || new Set<string>();
+        relaxedSet.add(canonical);
+        lookup.relaxed.set(relaxed, relaxedSet);
+      }
     };
 
     scopeTables.forEach((table) => {
@@ -269,6 +575,14 @@ const Reports: React.FC<ReportsProps> = ({
       add(canonical, canonical);
       add(`${datasetName}.${tableName}`, canonical);
       add(tableName, canonical);
+
+      // Some models output a synthetic "schema.table" segment (e.g. dtm.sales -> dtm_sales).
+      const underscoreTableName = tableName.replace(/\./g, '_');
+      if (underscoreTableName !== tableName) {
+        add(`${projectId}.${datasetName}.${underscoreTableName}`, canonical);
+        add(`${datasetName}.${underscoreTableName}`, canonical);
+        add(underscoreTableName, canonical);
+      }
     });
 
     return lookup;
@@ -276,71 +590,101 @@ const Reports: React.FC<ReportsProps> = ({
 
   const resolveScopedTable = (
     identifier: string,
-    lookup: Map<string, Set<string>>
+    lookup: BigQueryScopeLookup
   ): ScopedTableResolution => {
-    const normalized = normalizeSqlIdentifier(identifier);
-    const candidates = lookup.get(normalized);
-    if (!candidates || candidates.size === 0) {
-      return { canonical: null, ambiguous: false };
+    const candidates = collectReferenceCandidates(identifier);
+
+    const exactMatches = new Set<string>();
+    candidates.forEach((candidate) => {
+      const matchSet = lookup.exact.get(normalizeSqlIdentifier(candidate));
+      if (!matchSet) return;
+      matchSet.forEach((item) => exactMatches.add(item));
+    });
+    if (exactMatches.size === 1) {
+      return { canonical: Array.from(exactMatches)[0], ambiguous: false };
     }
-    if (candidates.size > 1) {
+    if (exactMatches.size > 1) {
       return { canonical: null, ambiguous: true };
     }
-    return { canonical: Array.from(candidates)[0], ambiguous: false };
+
+    const relaxedMatches = new Set<string>();
+    candidates.forEach((candidate) => {
+      const matchSet = lookup.relaxed.get(normalizeRelaxedIdentifier(candidate));
+      if (!matchSet) return;
+      matchSet.forEach((item) => relaxedMatches.add(item));
+    });
+    if (relaxedMatches.size === 1) {
+      return { canonical: Array.from(relaxedMatches)[0], ambiguous: false };
+    }
+    if (relaxedMatches.size > 1) {
+      return { canonical: null, ambiguous: true };
+    }
+
+    return { canonical: null, ambiguous: false };
   };
 
   const enforceBigQueryRawScope = (
     rawSql: string,
     scopeTables: SyncedTable[],
-    fallbackConnection: Connection | null
+    fallbackConnection: Connection | null,
+    language: 'en' | 'vi' = 'vi'
   ): string => {
     const sql = String(rawSql || '');
     if (!sql.trim() || scopeTables.length === 0) return sql;
 
     const lookup = buildBigQueryScopeLookup(scopeTables, fallbackConnection);
-    if (lookup.size === 0) return sql;
+    if (lookup.exact.size === 0) return sql;
 
     const cteNames = collectCteNames(sql);
     const blockedRefs = new Set<string>();
     const ambiguousRefs = new Set<string>();
 
-    const tableRefRegex = /\b(FROM|JOIN|UPDATE|INTO|MERGE\s+INTO|DELETE\s+FROM)\s+(`[^`]+`|[A-Za-z_][A-Za-z0-9_.-]*)/gi;
+    const tableRefRegex = /\b(FROM|JOIN|UPDATE|INTO|MERGE\s+INTO|DELETE\s+FROM)\s+((?:`[^`]+`(?:\s*\.\s*`[^`]+`)*)|[A-Za-z_][A-Za-z0-9_.-]*)/gi;
     const rewrittenSql = sql.replace(tableRefRegex, (full, keyword, identifier) => {
       const originalRef = String(identifier || '').trim();
       if (!originalRef || originalRef.startsWith('(')) return full;
 
-      const normalizedRef = normalizeSqlIdentifier(originalRef);
+      const { tableIdentifier, inlineAlias } = splitInlineAliasInBacktickRef(originalRef);
+      const normalizedRef = normalizeSqlIdentifier(tableIdentifier);
       if (!normalizedRef || normalizedRef === 'unnest' || normalizedRef.startsWith('unnest(')) {
         return full;
       }
       if (cteNames.has(normalizedRef)) return full;
 
-      const resolved = resolveScopedTable(originalRef, lookup);
+      const resolved = resolveScopedTable(tableIdentifier, lookup);
       if (resolved.ambiguous) {
-        ambiguousRefs.add(originalRef);
+        ambiguousRefs.add(tableIdentifier);
         return full;
       }
       if (!resolved.canonical) {
-        blockedRefs.add(originalRef);
+        blockedRefs.add(tableIdentifier);
         return full;
       }
 
-      return `${keyword} \`${resolved.canonical}\``;
+      return `${keyword} \`${resolved.canonical}\`${inlineAlias}`;
     });
 
     if (ambiguousRefs.size > 0) {
+      const refsForUi = Array.from(ambiguousRefs).map(formatTableReferenceForUi);
       throw new Error(
-        `Ambiguous table reference: ${Array.from(ambiguousRefs).join(', ')}. Please use dataset.table or project.dataset.table.`
+        language === 'en'
+          ? `Ambiguous table reference: ${refsForUi.join(', ')}. Please use dataset.table or project.dataset.table.`
+          : `Tham chiếu bảng bị mơ hồ: ${refsForUi.join(', ')}. Vui lòng dùng dataset.table hoặc project.dataset.table.`
       );
     }
     if (blockedRefs.size > 0) {
+      const refsForUi = Array.from(blockedRefs).map(formatTableReferenceForUi);
       throw new Error(
-        `Query blocked: only selected raw tables are allowed. Invalid reference(s): ${Array.from(blockedRefs).join(', ')}.`
+        language === 'en'
+          ? `Query blocked: only selected raw tables are allowed. Invalid reference(s): ${refsForUi.join(', ')}.`
+          : `Query bị chặn: chỉ được dùng các bảng raw đã chọn. Tham chiếu không hợp lệ: ${refsForUi.join(', ')}.`
       );
     }
 
     return rewrittenSql;
   };
+
+  const messages = sessions.find((session) => session.id === activeSessionId)?.messages || [];
 
   // Handle Send Message
   const handleSend = async (
@@ -349,44 +693,59 @@ const Reports: React.FC<ReportsProps> = ({
     isRetry = false,
     providedToken?: string,
     forcedSessionId?: string,
-    forcedTableIds?: string[]
+    forcedTableIds?: string[],
+    requestId?: string
   ): Promise<{ sessionId: string; messageId?: string; visualData?: any } | void> => {
     if (!text.trim()) return;
+    const requestLanguage = detectPromptLanguage(text);
+    const isEnglishRequest = requestLanguage === 'en';
+    const effectiveRequestId = String(requestId || `rq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
+    if (!isRetry && inFlightCountRef.current >= MAX_PARALLEL_AI_TASKS) {
+      const effectiveTableIds = Array.isArray(forcedTableIds) && forcedTableIds.length > 0
+        ? [...forcedTableIds]
+        : undefined;
+      const targetQueueSessionId = forcedSessionId || activeSessionId;
+      const queuedJob: PendingQuestion = {
+        id: effectiveRequestId,
+        text,
+        model,
+        modelId: String(model?.id || '').trim() || undefined,
+        sessionId: targetQueueSessionId,
+        forcedTableIds: effectiveTableIds,
+        resumeFromExisting: false,
+      };
+      setPendingQuestions((prev) => {
+        if (prev.some((item) => item.id === queuedJob.id)) return prev;
+        return [...prev, queuedJob];
+      });
+      upsertPendingJob(queuedJob);
+      return { sessionId: targetQueueSessionId };
+    }
+
+    const requestAbortController = new AbortController();
+    abortControllersRef.current.add(requestAbortController);
+    beginAiTask();
+
     const effectiveTableIds = Array.isArray(forcedTableIds) && forcedTableIds.length > 0
       ? forcedTableIds
       : selectedTableIds;
-    if (loading && !isRetry) {
-      setPendingQuestions((prev) => [
-        ...prev,
-        {
-          id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          text,
-          model,
-          sessionId: activeSessionId,
-          forcedTableIds: effectiveTableIds,
-        }
-      ]);
-      return;
-    }
-
-    if (!isRetry) {
-      setLoading(true);
-    }
-
-    const { targetConnection, scopedTables } = resolveSourceScopeForPrompt(text, effectiveTableIds);
-    const bqConn = (targetConnection && targetConnection.type === 'BigQuery' && targetConnection.projectId)
-      ? targetConnection
-      : (connections.find(c => c.type === 'BigQuery' && c.projectId) || null);
-    const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
-    const clientId = getGoogleClientId();
-
-    abortControllerRef.current = new AbortController();
-
+    let bqConn: Connection | null = null;
+    let clientId = '';
     let targetSessionId = forcedSessionId || activeSessionId;
+
+    upsertPendingJob({
+      id: effectiveRequestId,
+      text,
+      model: undefined,
+      modelId: String(model?.id || '').trim() || undefined,
+      sessionId: targetSessionId,
+      forcedTableIds: effectiveTableIds,
+      resumeFromExisting: isRetry,
+    });
 
     const deriveSessionTitle = (input: string): string => {
       const compact = String(input || '').replace(/\s+/g, ' ').trim();
-      if (!compact) return 'New Analysis';
+      if (!compact) return 'Phân tích mới';
       const maxLength = 50;
       if (compact.length <= maxLength) return compact;
       return `${compact.slice(0, maxLength - 3).trimEnd()}...`;
@@ -397,50 +756,57 @@ const Reports: React.FC<ReportsProps> = ({
       return !normalized || DEFAULT_REPORT_SESSION_TITLES.has(normalized);
     };
 
-    // 1. Add User Message (only if not a retry)
-    if (!isRetry) {
-      const userMsg = { id: generateUUID(), role: 'user' as const, content: text };
-      const nextTitle = deriveSessionTitle(text);
-      const nextTimestamp = new Date().toISOString();
-
-      setSessions((prev: ReportSession[]) => {
-        // Find current session
-        const sessionExists = prev.some(s => s.id === targetSessionId);
-
-        if (!sessionExists) {
-          console.warn('⚠️ Active session not found. Falling back to first or new session.');
-          if (prev.length > 0) {
-            targetSessionId = prev[0].id; // Update the tracking ID
-            setActiveSessionId(targetSessionId);
-          } else {
-            // Create a new session if none exist
-            const newId = generateUUID();
-            targetSessionId = newId; // Update the tracking ID
-            const newSession: ReportSession = {
-              id: newId,
-              title: nextTitle,
-              timestamp: nextTimestamp,
-              messages: [userMsg]
-            };
-            setActiveSessionId(newId);
-            return [newSession];
-          }
-        }
-
-        return prev.map(s =>
-          s.id === targetSessionId
-            ? {
-              ...s,
-              messages: [...s.messages, userMsg],
-              timestamp: nextTimestamp,
-              title: shouldAutoSetTitle(s.title) ? nextTitle : s.title
-            }
-            : s
-        );
-      });
-    }
-
     try {
+      const { targetConnection, scopedTables } = resolveSourceScopeForPrompt(text, effectiveTableIds);
+      bqConn = (targetConnection && targetConnection.type === 'BigQuery' && targetConnection.projectId)
+        ? targetConnection
+        : (connections.find(c => c.type === 'BigQuery' && c.projectId) || null);
+      const { getTokenForConnection, getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
+      clientId = getGoogleClientId();
+
+      // 1. Add User Message (only if not a retry)
+      if (!isRetry) {
+        const userMsg = { id: generateUUID(), role: 'user' as const, content: text };
+        const nextTitle = deriveSessionTitle(text);
+        const nextTimestamp = new Date().toISOString();
+
+        setSessions((prev: ReportSession[]) => {
+          // Find current session
+          const sessionExists = prev.some(s => s.id === targetSessionId);
+
+          if (!sessionExists) {
+            console.warn('⚠️ Active session not found. Falling back to first or new session.');
+            if (prev.length > 0) {
+              targetSessionId = prev[0].id; // Update the tracking ID
+              setActiveSessionId(targetSessionId);
+            } else {
+              // Create a new session if none exist
+              const newId = generateUUID();
+              targetSessionId = newId; // Update the tracking ID
+              const newSession: ReportSession = {
+                id: newId,
+                title: nextTitle,
+                timestamp: nextTimestamp,
+                messages: [userMsg]
+              };
+              setActiveSessionId(newId);
+              return [newSession];
+            }
+          }
+
+          return prev.map(s =>
+            s.id === targetSessionId
+              ? {
+                ...s,
+                messages: [...s.messages, userMsg],
+                timestamp: nextTimestamp,
+                title: shouldAutoSetTitle(s.title) ? nextTitle : s.title
+              }
+              : s
+          );
+        });
+      }
+
       const activeTables = scopedTables.length > 0 ? scopedTables : tables.filter(t => selectedTableIds.includes(t.id));
       const tableNames = (activeTables || []).map(t => t.tableName);
 
@@ -448,9 +814,7 @@ const Reports: React.FC<ReportsProps> = ({
       if (activeTables && activeTables.length > 0) {
         schemaStr = activeTables.map(t => {
           const cols = (t.schema || []).map(s => `${s.name}(${s.type})`).join(',');
-          const tableConn = connections.find((connection) => connection.id === t.connectionId);
-          const prefix = tableConn?.projectId ? `${tableConn.projectId}.` : "";
-          return `${prefix}${t.datasetName}.${t.tableName}: [${cols}]`;
+          return `${t.datasetName}.${t.tableName}: [${cols}]`;
         }).join(' | ');
       }
 
@@ -476,7 +840,7 @@ const Reports: React.FC<ReportsProps> = ({
 
           const engineSet = new Set(activeModelTables.map((table) => table.runtimeEngine));
           if (engineSet.size > 1) {
-            throw new Error('Cross-source query is blocked: selected tables must belong to the same runtime engine.');
+            throw new Error('Đã chặn truy vấn cross-source: các bảng được chọn phải cùng runtime engine.');
           }
           semanticEngine = Array.from(engineSet)[0] as any;
 
@@ -493,7 +857,7 @@ const Reports: React.FC<ReportsProps> = ({
             ? relScope.map((rel) =>
               `- ${rel.fromTable}.${rel.fromColumn} -> ${rel.toTable}.${rel.toColumn} (${rel.relationshipType}, ${rel.crossFilterDirection}, ${rel.validationStatus})`
             ).join('\n')
-            : '- (No relationship in current table scope)';
+            : '- (Không có relationship trong phạm vi bảng hiện tại)';
 
           semanticContext = `Data Model: ${defaultModel.name}\nTables:\n${tableContext}\nRelationships:\n${relationshipContext}`;
           schemaStr = activeModelTables.map((table) => {
@@ -525,14 +889,15 @@ const Reports: React.FC<ReportsProps> = ({
       }
 
       const options: any = {
-        signal: abortControllerRef.current.signal,
+        signal: requestAbortController.signal,
         semanticContext,
+        language: requestLanguage,
       };
       if (semanticEngine === 'postgres') {
         options.semanticEngine = 'postgres';
         options.executeSql = async (sql: string) => {
           if (!semanticModelId || semanticTableScope.length === 0) {
-            throw new Error('Missing semantic table scope for postgres execution');
+            throw new Error('Thiếu semantic table scope cho truy vấn postgres.');
           }
           const executed = await executeSemanticRawSql({
             dataModelId: semanticModelId,
@@ -551,8 +916,8 @@ const Reports: React.FC<ReportsProps> = ({
         options.projectId = bqConn.projectId;
         options.executeSql = async (sql: string) => {
           const { runQuery } = await import('../services/bigquery');
-          const scopedSql = enforceBigQueryRawScope(sql, scopedBigQueryTables, bqConn);
-          return runQuery(token, bqConn.projectId!, scopedSql, abortControllerRef.current?.signal);
+          const scopedSql = enforceBigQueryRawScope(sql, scopedBigQueryTables, bqConn, requestLanguage);
+          return runQuery(token, bqConn.projectId!, scopedSql, requestAbortController.signal);
         };
       }
 
@@ -596,16 +961,25 @@ const Reports: React.FC<ReportsProps> = ({
           };
         });
       });
-      abortControllerRef.current = null;
       return {
         sessionId: targetSessionId,
         messageId: aiMsg.id,
-        visualData: result.dashboard,
+        visualData: aiMsg.visualData,
       };
 
     } catch (e: any) {
       console.error("Report Generation Error:", e);
-      const isAuthError = e.message?.toLowerCase().includes('authentication') || e.message?.toLowerCase().includes('credentials') || e.message?.toLowerCase().includes('unauthorized');
+      const lowerErrorMessage = String(e?.message || '').toLowerCase();
+      const isAbortError =
+        e?.name === 'AbortError'
+        || lowerErrorMessage.includes('aborterror')
+        || lowerErrorMessage.includes('aborted');
+      if (isAbortError) {
+        return {
+          sessionId: targetSessionId,
+        };
+      }
+      const isAuthError = e?.message?.toLowerCase().includes('authentication') || e?.message?.toLowerCase().includes('credentials') || e?.message?.toLowerCase().includes('unauthorized');
 
       if (isAuthError && !isRetry && bqConn) {
         try {
@@ -624,14 +998,23 @@ const Reports: React.FC<ReportsProps> = ({
         lowerRawMsg.includes('insufficient_quota') ||
         lowerRawMsg.includes('exceeded your current quota') ||
         lowerRawMsg.includes('billing_hard_limit_reached');
+      const leakedMessage = isEnglishRequest
+        ? `⚠️ SECURITY ERROR: Your Gemini API key has been flagged as leaked and disabled by Google.\n\nHOW TO FIX:\n1. Go to https://aistudio.google.com/\n2. Create a new API key.\n3. Update it in the 'AI Setting' tab.`
+        : `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`;
+      const quotaMessage = isEnglishRequest
+        ? `Your OpenAI API key is valid, but the API account has no remaining quota/credit.\n\nNote: ChatGPT Plus/Pro does not include API credit.\n\nHow to fix:\n1. Add credit at https://platform.openai.com/billing.\n2. Or switch model to Gemini/Claude in the top-right corner.`
+        : `OpenAI API key hợp lệ nhưng tài khoản API đã hết quota/credit.\n\nLưu ý: gói ChatGPT Plus/Pro không bao gồm API credit.\n\nCách xử lý:\n1. Vào https://platform.openai.com/billing để nạp credit.\n2. Hoặc chuyển model sang Gemini/Claude ở góc phải trên.`;
+      const genericMessage = isEnglishRequest
+        ? `An error occurred: ${rawMsg}. ${isAuthError ? "Your session may have expired. Please retry to refresh the connection." : ""}`
+        : `Đã có lỗi xảy ra: ${rawMsg}. ${isAuthError ? "Có vẻ phiên làm việc của bạn đã hết hạn. Hãy thử lại để làm mới kết nối." : ""}`;
       const errorMsg = {
         id: generateUUID(),
         role: 'assistant' as const,
         content: isLeaked
-          ? `⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. \n\nCÁCH KHẮC PHỤC:\n1. Truy cập https://aistudio.google.com/ \n2. Tạo API Key mới.\n3. Cập nhật vào tab 'AI Setting'.`
+          ? leakedMessage
           : isOpenAIQuotaError
-            ? `OpenAI API key hợp lệ nhưng tài khoản API đã hết quota/credit.\n\nLưu ý: gói ChatGPT Plus/Pro không bao gồm API credit.\n\nCách xử lý:\n1. Vào https://platform.openai.com/billing để nạp credit.\n2. Hoặc chuyển model sang Gemini/Claude ở góc phải trên.`
-          : `Đã có lỗi xảy ra: ${rawMsg}. ${isAuthError ? "Có vẻ phiên làm việc của bạn đã hết hạn. Hãy thử lại để làm mới kết nối." : ""}`
+            ? quotaMessage
+          : genericMessage
       };
       setSessions((prev: ReportSession[]) => {
         const sessionToUpdate = prev.find(s => s.id === targetSessionId) || prev[0];
@@ -642,28 +1025,46 @@ const Reports: React.FC<ReportsProps> = ({
         sessionId: targetSessionId,
       };
     } finally {
-      if (!isRetry) {
-        setLoading(false);
-        abortControllerRef.current = null;
+      abortControllersRef.current.delete(requestAbortController);
+      endAiTask();
+      if (!isPageReloadingRef.current) {
+        removePendingJob(effectiveRequestId);
       }
     }
   };
 
   useEffect(() => {
-    if (loading) return;
     if (pendingQuestions.length === 0) return;
+    const availableSlots = Math.max(0, MAX_PARALLEL_AI_TASKS - inFlightCount);
+    if (availableSlots <= 0) return;
 
-    const [next, ...rest] = pendingQuestions;
-    setPendingQuestions(rest);
-    void handleSend(next.text, next.model, false, undefined, next.sessionId, next.forcedTableIds);
-  }, [loading, pendingQuestions]);
+    const batch = pendingQuestions.slice(0, availableSlots);
+    if (batch.length === 0) return;
+
+    setPendingQuestions((prev) => prev.slice(batch.length));
+    batch.forEach((item) => {
+      void handleSend(
+        item.text,
+        item.model,
+        item.resumeFromExisting === true,
+        undefined,
+        item.sessionId,
+        item.forcedTableIds,
+        item.id
+      );
+    });
+  }, [pendingQuestions, inFlightCount]);
 
   const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    if (abortControllersRef.current.size > 0) {
+      abortControllersRef.current.forEach((controller) => controller.abort());
+      abortControllersRef.current.clear();
+      inFlightCountRef.current = 0;
+      setInFlightCount(0);
       setLoading(false);
     }
+    setPendingQuestions([]);
+    clearPendingJobs();
   };
 
   const handleEditMessage = (messageId: string, newText: string) => {
@@ -700,7 +1101,7 @@ const Reports: React.FC<ReportsProps> = ({
       const newId = generateUUID();
       setSessions([{
         id: newId,
-        title: 'New Analysis',
+        title: 'Phân tích mới',
         timestamp: new Date().toLocaleDateString(),
         messages: []
       }]);
@@ -720,7 +1121,7 @@ const Reports: React.FC<ReportsProps> = ({
     const newId = generateUUID();
     const newSession: ReportSession = {
       id: newId,
-      title: title || 'New Analysis',
+      title: title || 'Phân tích mới',
       timestamp: new Date().toLocaleDateString(),
       messages: []
     };
@@ -914,10 +1315,10 @@ const Reports: React.FC<ReportsProps> = ({
       const { getGoogleToken, getGoogleClientId } = await import('../services/googleAuth');
       const token = await getGoogleToken(getGoogleClientId());
       setGoogleToken(token);
-      alert("BigQuery Link Refreshed Successfully!");
+      alert("Đã làm mới liên kết BigQuery thành công!");
     } catch (e: any) {
       console.error("Re-auth failed:", e);
-      alert("Re-authentication failed. Please check your browser settings and try again.");
+      alert("Xác thực lại thất bại. Vui lòng kiểm tra trình duyệt rồi thử lại.");
     }
   };
 
@@ -929,19 +1330,31 @@ const Reports: React.FC<ReportsProps> = ({
 
     const unregister = registerReportsAssistantBridge({
       newSession: (title?: string) => createNewSession(title),
-      ask: async (text: string, options?: { sessionId?: string; useAllTables?: boolean; tableIds?: string[] }) => {
+      ask: async (
+        text: string,
+        options?: {
+          sessionId?: string;
+          useAllTables?: boolean;
+          tableIds?: string[];
+          forceNewSession?: boolean;
+          sessionTitle?: string;
+        }
+      ) => {
         const scopedTableIds = Array.isArray(options?.tableIds) && options.tableIds.length > 0
           ? options.tableIds
           : undefined;
+        const resolvedSessionId = options?.forceNewSession
+          ? createNewSession(options?.sessionTitle || 'Phân tích mới').sessionId
+          : (options?.sessionId || activeSessionId);
         const output = await handleSend(
           text,
           undefined,
           false,
           undefined,
-          options?.sessionId || activeSessionId,
+          resolvedSessionId,
           scopedTableIds
         );
-        return output || { sessionId: options?.sessionId || activeSessionId };
+        return output || { sessionId: resolvedSessionId };
       },
       rerunChartSql: async (messageId: string, chartIndex: number, newSQL?: string) => {
         await handleUpdateChartSQL(messageId, chartIndex, newSQL);
@@ -966,21 +1379,19 @@ const Reports: React.FC<ReportsProps> = ({
     sessions,
   ]);
 
-  const activeSession = sessions.find(s => s.id === activeSessionId);
-
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {isAuthRequired && (
         <div className="bg-indigo-600 px-10 py-2 flex items-center justify-between text-[10px] font-black uppercase tracking-widest animate-in slide-in-from-top duration-500 z-[60]">
           <div className="flex items-center gap-3 text-white">
             <i className="fas fa-lock animate-pulse"></i>
-            <span>BigQuery Connection Expired or Invalid</span>
+            <span>Kết nối BigQuery đã hết hạn hoặc không hợp lệ</span>
           </div>
           <button
             onClick={handleReauth}
             className="bg-white text-indigo-600 px-4 py-1 rounded-lg hover:bg-white/90 transition-all shadow-lg active:scale-95"
           >
-            Re-Link Account
+            Liên kết lại tài khoản
           </button>
         </div>
       )}
@@ -992,12 +1403,12 @@ const Reports: React.FC<ReportsProps> = ({
           onRenameSession={handleRenameSession}
           onDeleteSession={handleDeleteSession}
           onNewSession={() => {
-            createNewSession('New Analysis');
+            createNewSession('Phân tích mới');
           }}
         />
 
         <ChatInterface
-          messages={activeSession ? activeSession.messages : []}
+          messages={messages}
           isLoading={loading}
           queuedCount={pendingQuestions.length}
           onSend={handleSend}

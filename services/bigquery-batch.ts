@@ -8,6 +8,8 @@ export interface TableMetadata {
     schema: { name: string, type: string }[];
 }
 
+const ROW_COUNT_CONCURRENCY = 8;
+
 export const fetchBatchTableMetadata = async (
     token: string,
     projectId: string,
@@ -24,35 +26,39 @@ export const fetchBatchTableMetadata = async (
 
         if (tableIds.length === 0) return result;
 
-        // 1. Batch fetch row counts using __TABLES__
+        // 1. Fetch row counts from Table metadata API (numRows).
+        // This avoids frequent 400 errors from querying __TABLES__ on some projects.
         try {
-            const tableIdsFilter = tableIds.map(t => `'${t}'`).join(', ');
-            const countQuery = `SELECT table_id, row_count FROM \`${projectId}.${datasetId}.__TABLES__\` WHERE table_id IN (${tableIdsFilter})`;
-            const countResponse = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ query: countQuery, useLegacySql: false }),
-            });
+            for (let i = 0; i < tableIds.length; i += ROW_COUNT_CONCURRENCY) {
+                const chunk = tableIds.slice(i, i + ROW_COUNT_CONCURRENCY);
+                await Promise.all(chunk.map(async (tableId) => {
+                    const encodedTableId = encodeURIComponent(tableId);
+                    const tableResponse = await fetch(
+                        `https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/datasets/${datasetId}/tables/${encodedTableId}`,
+                        {
+                            method: 'GET',
+                            headers: {
+                                Authorization: `Bearer ${token}`,
+                            },
+                        }
+                    );
 
-            if (!countResponse.ok) {
-                if (countResponse.status === 401) throw new Error('UNAUTHORIZED');
-                throw new Error(`Row count query failed: ${countResponse.statusText}`);
-            }
-
-            if (countResponse.ok) {
-                const countData = await countResponse.json();
-                (countData.rows || []).forEach((row: any) => {
-                    const tid = row.f[0].v;
-                    const count = parseInt(row.f[1].v) || 0;
-                    if (result[tid]) {
-                        result[tid].rowCount = count;
+                    if (!tableResponse.ok) {
+                        if (tableResponse.status === 401) throw new Error('UNAUTHORIZED');
+                        if (tableResponse.status === 404) return;
+                        const errorPayload = await tableResponse.json().catch(() => ({}));
+                        const details = errorPayload?.error?.message || tableResponse.statusText;
+                        throw new Error(`Row count metadata failed for ${tableId}: ${details}`);
                     }
-                });
-                console.log(`✅ Batch fetched row counts for ${tableIds.length} tables in ${datasetId}`);
+
+                    const tableMeta = await tableResponse.json().catch(() => ({}));
+                    const numRows = Number.parseInt(String(tableMeta?.numRows ?? '0'), 10);
+                    if (result[tableId]) {
+                        result[tableId].rowCount = Number.isFinite(numRows) ? numRows : 0;
+                    }
+                }));
             }
+            console.log(`✅ Batch fetched row counts for ${tableIds.length} tables in ${datasetId}`);
         } catch (e) {
             console.warn("Failed to batch fetch row counts:", e);
         }

@@ -1,10 +1,9 @@
 
-import React, { useRef, useEffect, useMemo, useState } from 'react';
+import React, { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChatMessage as ChatMessageType, SyncedTable, Connection } from '../../types';
 import { ChatMessage } from './ChatMessage';
 import { AI_MODELS } from '../../constants';
-import { useLanguageStore } from '../../store/languageStore';
 
 interface ChatInterfaceProps {
     messages: ChatMessageType[];
@@ -44,8 +43,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     isAdmin
 }) => {
     const navigate = useNavigate();
-    const { language } = useLanguageStore();
-    const isVi = language === 'vi';
     const [input, setInput] = useState('');
     const [activeTab, setActiveTab] = useState<'analysis' | 'data'>('analysis');
     const [isSaving, setIsSaving] = useState(false);
@@ -53,8 +50,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const [showModelSelector, setShowModelSelector] = useState(false);
     const [assetSearch, setAssetSearch] = useState('');
 
+    const analysisScrollRef = useRef<HTMLDivElement>(null);
     const endRef = useRef<HTMLDivElement>(null);
     const modelSelectorRef = useRef<HTMLDivElement>(null);
+    const shouldStickToBottomRef = useRef(true);
+    const previousMessageCountRef = useRef(0);
+    const previousLastMessageIdRef = useRef('');
+    const previousLoadingRef = useRef(false);
 
     const connectionNameById = useMemo(() => {
         const map = new Map<string, string>();
@@ -76,11 +78,60 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         );
     }, [availableTables, assetSearch, connectionNameById]);
 
+    const isNearBottom = useCallback(() => {
+        const container = analysisScrollRef.current;
+        if (!container) return true;
+        const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
+        return remaining <= 120;
+    }, []);
+
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+        const container = analysisScrollRef.current;
+        if (!container) return;
+        container.scrollTo({
+            top: container.scrollHeight,
+            behavior,
+        });
+    }, []);
+
     useEffect(() => {
-        if (activeTab === 'analysis') {
-            endRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (activeTab !== 'analysis') return;
+        const container = analysisScrollRef.current;
+        if (!container) return;
+
+        const handleScroll = () => {
+            shouldStickToBottomRef.current = isNearBottom();
+        };
+
+        handleScroll();
+        container.addEventListener('scroll', handleScroll, { passive: true });
+        return () => {
+            container.removeEventListener('scroll', handleScroll);
+        };
+    }, [activeTab, isNearBottom]);
+
+    const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+    const lastMessageId = String(lastMessage?.id || '');
+    const lastMessageRole = String(lastMessage?.role || '');
+
+    useEffect(() => {
+        const hasNewMessage = messages.length !== previousMessageCountRef.current
+            || (lastMessageId && lastMessageId !== previousLastMessageIdRef.current);
+        const loadingStarted = isLoading && !previousLoadingRef.current;
+        const shouldAutoScroll = activeTab === 'analysis'
+            && (shouldStickToBottomRef.current || hasNewMessage || loadingStarted || lastMessageRole === 'user');
+
+        if (shouldAutoScroll) {
+            const useSmooth = hasNewMessage || loadingStarted;
+            requestAnimationFrame(() => {
+                scrollToBottom(useSmooth ? 'smooth' : 'auto');
+            });
         }
-    }, [messages, isLoading, activeTab]);
+
+        previousMessageCountRef.current = messages.length;
+        previousLastMessageIdRef.current = lastMessageId;
+        previousLoadingRef.current = isLoading;
+    }, [activeTab, messages.length, lastMessageId, lastMessageRole, isLoading, scrollToBottom]);
 
     useEffect(() => {
         const onAssistantOpenFlow = (event: Event) => {
@@ -143,7 +194,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     <div className="flex items-center gap-4">
                         <div className={`w-2.5 h-2.5 rounded-full ${isLoading ? 'bg-amber-500 animate-ping' : 'bg-emerald-500 shadow-[0_0_10px_#10b981]'}`}></div>
                         <h2 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-[0.4em]">
-                            {isLoading ? (isVi ? 'Đang xử lý truy vấn...' : 'Processing Query...') : '360DATA AI ENGINE'}
+                            {isLoading ? 'Đang xử lý truy vấn...' : '360DATA AI ENGINE'}
                         </h2>
                     </div>
 
@@ -151,10 +202,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         <button
                             onClick={onReauth}
                             className="text-[9px] font-black text-slate-500 uppercase tracking-widest hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-2 border border-slate-200 dark:border-white/5 px-3 py-1.5 rounded-lg"
-                            title={isVi ? 'Làm mới kết nối BigQuery' : 'Refresh BigQuery Connection'}
+                            title="Làm mới kết nối BigQuery"
                         >
                             <i className="fas fa-sync-alt text-[8px]"></i>
-                            {isVi ? 'Làm mới liên kết' : 'Refresh Link'}
+                            Làm mới liên kết
                         </button>
                     )}
                 </div>
@@ -173,7 +224,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                         {showModelSelector && (
                             <div className="absolute top-12 mt-2 right-0 w-64 bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl p-2 z-[60] animate-in fade-in zoom-in-95 duration-200">
-                                <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest px-3 py-2 mb-1">{isVi ? 'Chọn engine' : 'Select Engine'}</div>
+                                <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest px-3 py-2 mb-1">Chọn engine</div>
                                 {AI_MODELS.map(m => (
                                     <button
                                         key={m.id}
@@ -192,7 +243,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                         onClick={() => navigate('/ai-config')}
                                         className="w-full p-2 text-[8px] font-black text-indigo-400 uppercase tracking-widest hover:text-indigo-300 transition-colors"
                                     >
-                                        {isVi ? 'Quản lý API key' : 'Manage API Keys'}
+                                        Quản lý API key
                                     </button>
                                 </div>
                             </div>
@@ -207,7 +258,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 : 'text-slate-500 hover:text-slate-300'
                                 }`}
                         >
-                            {isVi ? 'Phân tích' : 'Analysis'}
+                            Phân tích
                         </button>
                         <button
                             onClick={() => setActiveTab('data')}
@@ -216,7 +267,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 : 'text-slate-500 hover:text-slate-300'
                                 }`}
                         >
-                            {isVi ? 'Tài sản dữ liệu' : 'Data Assets'}
+                            Tài sản dữ liệu
                             {selectedTableIds.length > 0 && (
                                 <span className="bg-white/20 px-1.5 py-0.5 rounded text-[8px]">{selectedTableIds.length}</span>
                             )}
@@ -228,15 +279,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             {/* Tab Content */}
             <div className="flex-1 overflow-hidden flex flex-col">
                 {activeTab === 'analysis' ? (
-                    <div className="flex-1 overflow-y-auto p-4 md:p-10 custom-scrollbar scroll-smooth">
+                    <div ref={analysisScrollRef} className="flex-1 overflow-y-auto p-4 md:p-10 custom-scrollbar">
                         {(messages.length === 0 && !isLoading) ? (
                             <div className="flex flex-col items-center justify-center h-full opacity-30 select-none text-center">
                                 <i className="fas fa-magic text-6xl mb-6 text-indigo-500 animate-pulse"></i>
-                                <h3 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-widest mb-2">{isVi ? 'Sẵn sàng phân tích' : 'Ready to Build'}</h3>
+                                <h3 className="text-2xl font-black text-slate-900 dark:text-white uppercase tracking-widest mb-2">Sẵn sàng phân tích</h3>
                                 <p className="text-sm font-bold text-slate-500">
                                     {isAdmin
-                                        ? (isVi ? 'Chọn bảng trong Tài sản dữ liệu rồi đặt câu hỏi.' : 'Choose tables in Data Assets and ask a question.')
-                                        : (isVi ? 'Đặt câu hỏi dựa trên ngữ cảnh dữ liệu hiện tại.' : 'Ask a question based on current data context.')}
+                                        ? 'Chọn bảng trong Tài sản dữ liệu rồi đặt câu hỏi.'
+                                        : 'Đặt câu hỏi dựa trên ngữ cảnh dữ liệu hiện tại.'}
                                 </p>
                             </div>
                         ) : (
@@ -259,7 +310,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                                     <i className="fas fa-robot text-[10px]"></i>
                                                 </div>
                                                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">
-                                                    {isVi ? 'AI Chính xác' : 'Precision AI'}
+                                                    AI Chính xác
                                                 </span>
                                             </div>
                                             <div className="bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-indigo-500/20 p-6 rounded-[2rem] shadow-2xl backdrop-blur-sm relative overflow-hidden">
@@ -270,7 +321,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                                         <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce"></div>
                                                     </div>
                                                     <span className="text-xs font-black uppercase tracking-[0.2em] text-indigo-600 dark:text-indigo-400 animate-pulse">
-                                                        {isVi ? 'Đang phân tích tài sản dữ liệu đã chọn...' : 'Analyzing specified data assets...'}
+                                                        Đang phân tích tài sản dữ liệu đã chọn...
                                                     </span>
                                                 </div>
 
@@ -281,7 +332,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                                         className="bg-red-500 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-red-500/20 transform translate-y-2 group-hover:translate-y-0 transition-all hover:bg-red-600 active:scale-95 flex items-center gap-2"
                                                     >
                                                         <i className="fas fa-stop text-[8px]"></i>
-                                                        {isVi ? 'Hủy tác vụ AI' : 'Cancel AI Job'}
+                                                        Hủy tác vụ AI
                                                     </button>
                                                 </div>
                                             </div>
@@ -302,15 +353,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                         <i className="fas fa-lock"></i>
                                     </div>
                                     <div>
-                                        <h4 className="text-xs font-black text-white uppercase tracking-widest">{isVi ? 'Chế độ chỉ đọc' : 'Read-Only View'}</h4>
-                                        <p className="text-[10px] text-amber-400/70 font-bold mt-1">{isVi ? 'Chỉ quản trị viên mới có thể sửa danh sách tài sản dữ liệu cho khu vực phân tích này.' : 'Only Administrators can modify the data asset selection for this analysis hub.'}</p>
+                                        <h4 className="text-xs font-black text-white uppercase tracking-widest">Chế độ chỉ đọc</h4>
+                                        <p className="text-[10px] text-amber-400/70 font-bold mt-1">Chỉ quản trị viên mới có thể sửa danh sách tài sản dữ liệu cho khu vực phân tích này.</p>
                                     </div>
                                 </div>
                             )}
                             <div className="flex justify-between items-center mb-10 border-b border-white/5 pb-6">
                                 <div>
-                                    <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight">{isVi ? 'Chọn tài sản dữ liệu' : 'Data Assets Selection'}</h3>
-                                    <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{isVi ? 'Chọn các bảng để AI đưa vào ngữ cảnh phân tích.' : 'Select the tables you want the AI to include in its context.'}</p>
+                                    <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight">Chọn tài sản dữ liệu</h3>
+                                    <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Chọn các bảng để AI đưa vào ngữ cảnh phân tích.</p>
                                 </div>
                                 {isAdmin && (
                                     <div className="flex gap-4">
@@ -318,13 +369,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                             onClick={onDeselectAllTables}
                                             className="text-[9px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors border border-white/5 px-4 py-2 rounded-lg"
                                         >
-                                            {isVi ? 'Xóa tất cả' : 'Clear All'}
+                                            Xóa tất cả
                                         </button>
                                         <button
                                             onClick={onSelectAllTables}
                                             className="text-[9px] font-black text-indigo-400 uppercase tracking-widest hover:text-indigo-300 transition-colors border border-indigo-500/20 px-4 py-2 rounded-lg bg-indigo-500/5"
                                         >
-                                            {isVi ? 'Chọn tất cả' : 'Select All'}
+                                            Chọn tất cả
                                         </button>
                                         <button
                                             onClick={handleSaveSelection}
@@ -336,12 +387,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                             {isSaving ? (
                                                 <>
                                                     <i className="fas fa-check animate-bounce"></i>
-                                                    {isVi ? 'Đã lưu' : 'Saved'}
+                                                    Đã lưu
                                                 </>
                                             ) : (
                                                 <>
                                                     <i className="fas fa-save"></i>
-                                                    {isVi ? 'Lưu lựa chọn' : 'Save Selection'}
+                                                    Lưu lựa chọn
                                                 </>
                                             )}
                                         </button>
@@ -356,23 +407,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                         type="text"
                                         value={assetSearch}
                                         onChange={(e) => setAssetSearch(e.target.value)}
-                                        placeholder={isVi ? 'Tìm pipeline hoặc tên bảng...' : 'Search pipeline or table name...'}
+                                        placeholder="Tìm pipeline hoặc tên bảng..."
                                         className="w-full bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-white/10 rounded-xl pl-10 pr-10 py-3 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all"
                                     />
                                     {assetSearch && (
                                         <button
                                             onClick={() => setAssetSearch('')}
                                             className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
-                                            title={isVi ? 'Xóa từ khóa' : 'Clear search'}
+                                            title="Xóa từ khóa"
                                         >
                                             <i className="fas fa-times text-xs"></i>
                                         </button>
                                     )}
                                 </div>
                                 <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
-                                    {isVi
-                                        ? `Hiển thị ${filteredTables.length}/${availableTables.length} bảng`
-                                        : `Showing ${filteredTables.length}/${availableTables.length} tables`}
+                                    {`Hiển thị ${filteredTables.length}/${availableTables.length} bảng`}
                                 </div>
                             </div>
 
@@ -405,17 +454,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                                     {table.datasetName}
                                                 </div>
                                                 <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-500 truncate mt-1">
-                                                    {isVi ? 'Pipeline: ' : 'Pipeline: '}
+                                                    Pipeline:{' '}
                                                     {connectionNameById.get(table.connectionId) || 'Unknown'}
                                                 </div>
                                             </div>
 
                                             <div className="mt-4 pt-4 border-t border-slate-100 dark:border-white/5 flex items-center justify-between">
                                                 <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                                                    {table.schema.length} {isVi ? 'Trường' : 'Fields'}
+                                                    {table.schema.length} Trường
                                                 </span>
                                                 <span className="text-[8px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                                                    {table.rowCount?.toLocaleString() || 0} {isVi ? 'Dòng' : 'Rows'}
+                                                    {table.rowCount?.toLocaleString() || 0} Dòng
                                                 </span>
                                             </div>
                                         </div>
@@ -426,16 +475,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                             {availableTables.length === 0 && (
                                 <div className="text-center py-20 bg-slate-900/40 rounded-3xl border border-dashed border-white/5">
                                     <div className="text-slate-700 text-4xl mb-4"><i className="fas fa-database"></i></div>
-                                    <h5 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em]">{isVi ? 'Chưa đồng bộ tài sản dữ liệu' : 'No Data Assets Synced Yet'}</h5>
-                                    <p className="text-[9px] text-slate-500 dark:text-slate-600 mt-2 font-bold uppercase">{isVi ? 'Vui lòng kết nối nguồn ở mục Data Pipeline.' : 'Please connect to a source in the Data Pipeline section.'}</p>
+                                    <h5 className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em]">Chưa đồng bộ tài sản dữ liệu</h5>
+                                    <p className="text-[9px] text-slate-500 dark:text-slate-600 mt-2 font-bold uppercase">Vui lòng kết nối nguồn ở mục Data Pipeline.</p>
                                 </div>
                             )}
 
                             {availableTables.length > 0 && filteredTables.length === 0 && (
                                 <div className="text-center py-16 bg-slate-900/20 rounded-3xl border border-dashed border-slate-300 dark:border-white/10 mt-4">
                                     <div className="text-slate-500 text-3xl mb-3"><i className="fas fa-search"></i></div>
-                                    <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">{isVi ? 'Không tìm thấy bảng phù hợp' : 'No Matching Table'}</h5>
-                                    <p className="text-[9px] text-slate-500 mt-2 font-bold uppercase">{isVi ? 'Thử từ khóa theo pipeline (dataset) hoặc tên bảng.' : 'Try pipeline (dataset) or table name keywords.'}</p>
+                                    <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Không tìm thấy bảng phù hợp</h5>
+                                    <p className="text-[9px] text-slate-500 mt-2 font-bold uppercase">Thử từ khóa theo pipeline (dataset) hoặc tên bảng.</p>
                                 </div>
                             )}
                         </div>
@@ -453,10 +502,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
                                 placeholder={isLoading
-                                    ? (isVi
-                                        ? `AI đang xử lý, câu mới sẽ vào hàng đợi (${queuedCount}).`
-                                        : `AI is processing. New questions will be queued (${queuedCount}).`)
-                                    : (isVi ? `Hỏi ${selectedModel.name} để tạo báo cáo...` : `Ask ${selectedModel.name} for a report...`)}
+                                    ? `AI đang xử lý nhiều tác vụ. Bạn có thể tiếp tục đặt câu hỏi${queuedCount > 0 ? ` (đang chờ: ${queuedCount})` : ''}.`
+                                    : `Hỏi ${selectedModel.name} để tạo báo cáo...`}
                                 className="w-full bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-white/10 rounded-2xl pl-6 pr-20 py-5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all shadow-xl placeholder-slate-400 dark:placeholder-slate-600 font-medium"
                             />
                             <button
@@ -470,20 +517,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         <div className="text-center mt-3">
                             <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest flex items-center justify-center gap-3">
                                 <span className="bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20">
-                                    {isVi
-                                        ? `Ngữ cảnh: đã chọn ${selectedTableIds.length} bảng`
-                                        : `Context: ${selectedTableIds.length} Table${selectedTableIds.length !== 1 ? 's' : ''} Selected`}
+                                    {`Ngữ cảnh: đã chọn ${selectedTableIds.length} bảng`}
                                 </span>
                                 •
                                 <span className="flex items-center gap-2">
                                     <i className={selectedModel.brandIcon}></i>
-                                    {isVi ? `${selectedModel.name} tối ưu` : `${selectedModel.name} Optimized`}
+                                    {`${selectedModel.name} tối ưu`}
                                 </span>
                                 {queuedCount > 0 && (
                                     <>
                                         •
                                         <span className="bg-amber-500/15 text-amber-500 px-2 py-0.5 rounded border border-amber-500/30">
-                                            {isVi ? `Hàng đợi: ${queuedCount}` : `Queue: ${queuedCount}`}
+                                            {`Đang chờ: ${queuedCount}`}
                                         </span>
                                     </>
                                 )}

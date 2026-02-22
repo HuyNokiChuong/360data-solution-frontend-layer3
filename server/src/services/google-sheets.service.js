@@ -387,6 +387,34 @@ const upsertGoogleSheetTable = async ({
                  status = 'Active',
                  last_sync = NOW(),
                  schema_def = $5::jsonb,
+                 ai_definition = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition
+                 END,
+                 ai_definition_source = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition_source
+                 END,
+                 ai_definition_provider = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition_provider
+                 END,
+                 ai_definition_model_id = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition_model_id
+                 END,
+                 ai_definition_confidence = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition_confidence
+                 END,
+                 ai_definition_signals = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN '[]'::jsonb
+                     ELSE ai_definition_signals
+                 END,
+                 ai_definition_generated_at = CASE
+                     WHEN schema_def IS DISTINCT FROM $5::jsonb THEN NULL
+                     ELSE ai_definition_generated_at
+                 END,
                  is_deleted = FALSE,
                  source_file_name = $6,
                  source_sheet_name = $7,

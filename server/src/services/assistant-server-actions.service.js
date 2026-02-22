@@ -6,6 +6,7 @@ const backendPort = Number(process.env.BACKEND_PORT || 3001);
 const backendHost = String(process.env.BACKEND_HOST || '').trim() || '127.0.0.1';
 const BACKEND_BASE = `http://${backendHost}:${backendPort}`;
 
+const normalizeText = (value) => String(value || '').trim();
 const normalizeToken = (value) => String(value || '').trim().toLowerCase();
 
 const invokeInternalApi = async ({ authHeader, method = 'GET', path, body }) => {
@@ -74,20 +75,97 @@ const resolveTableId = async ({ workspaceId, tableId, tableName, datasetName }) 
     return result.rows[0]?.id || null;
 };
 
-const resolveUserId = async ({ workspaceId, userId, email }) => {
-    if (userId) return userId;
-    if (!email) return null;
+const normalizeUserLookupToken = (value) => normalizeText(value).replace(/^@+/, '');
 
-    const result = await query(
-        `SELECT id
+const resolveUserId = async ({ workspaceId, userId, email, userName, userTarget }) => {
+    if (userId) return userId;
+    if (email) {
+        const result = await query(
+            `SELECT id
+             FROM users
+             WHERE workspace_id = $1
+               AND LOWER(email) = LOWER($2)
+             LIMIT 1`,
+            [workspaceId, email]
+        );
+        return result.rows[0]?.id || null;
+    }
+
+    const lookup = normalizeUserLookupToken(userName || userTarget);
+    if (!lookup) return null;
+
+    const exactByName = await query(
+        `SELECT id, name, email
          FROM users
          WHERE workspace_id = $1
-           AND LOWER(email) = LOWER($2)
-         LIMIT 1`,
-        [workspaceId, email]
+           AND LOWER(name) = LOWER($2)
+         LIMIT 5`,
+        [workspaceId, lookup]
     );
+    if (exactByName.rows.length === 1) {
+        return exactByName.rows[0].id;
+    }
+    if (exactByName.rows.length > 1) {
+        throw new Error(`Có nhiều user trùng tên "${lookup}". Vui lòng dùng email hoặc userId.`);
+    }
 
-    return result.rows[0]?.id || null;
+    const fuzzyMatch = await query(
+        `SELECT id, name, email
+         FROM users
+         WHERE workspace_id = $1
+           AND (
+             split_part(LOWER(email), '@', 1) = LOWER($2)
+             OR LOWER(name) LIKE LOWER($3)
+           )
+         ORDER BY joined_at DESC
+         LIMIT 5`,
+        [workspaceId, lookup, `%${lookup}%`]
+    );
+    if (fuzzyMatch.rows.length === 1) {
+        return fuzzyMatch.rows[0].id;
+    }
+    if (fuzzyMatch.rows.length > 1) {
+        throw new Error(`Có ${fuzzyMatch.rows.length} user khớp "${lookup}". Vui lòng dùng email hoặc userId.`);
+    }
+
+    return null;
+};
+
+const resolveDataModelId = async ({ workspaceId, dataModelId, dataModelTarget }) => {
+    const explicitId = normalizeText(dataModelId);
+    if (explicitId) return explicitId;
+
+    const target = normalizeText(dataModelTarget);
+    if (!target) return null;
+
+    const exactByName = await query(
+        `SELECT id
+         FROM data_models
+         WHERE workspace_id = $1
+           AND LOWER(name) = LOWER($2)
+         LIMIT 5`,
+        [workspaceId, target]
+    );
+    if (exactByName.rows.length === 1) return exactByName.rows[0].id;
+    if (exactByName.rows.length > 1) {
+        throw new Error(`Có nhiều data model tên "${target}". Vui lòng dùng dataModelId cụ thể.`);
+    }
+
+    const fuzzyMatch = await query(
+        `SELECT id
+         FROM data_models
+         WHERE workspace_id = $1
+           AND LOWER(name) LIKE LOWER($2)
+         ORDER BY created_at DESC
+         LIMIT 5`,
+        [workspaceId, `%${target}%`]
+    );
+    if (fuzzyMatch.rows.length === 1) return fuzzyMatch.rows[0].id;
+    if (fuzzyMatch.rows.length > 1) {
+        throw new Error(`Có ${fuzzyMatch.rows.length} data model khớp "${target}". Vui lòng dùng dataModelId cụ thể.`);
+    }
+
+    throw new Error(`Không tìm thấy data model "${target}". Vui lòng kiểm tra lại tên hoặc dùng dataModelId.`);
 };
 
 const resolveModelTableIdByName = async ({ authHeader, dataModelId, tableName }) => {
@@ -214,20 +292,29 @@ const executeTablesDelete = async ({ authHeader, args, user }) => {
     });
 };
 
-const executeAutoDetectRelationships = async ({ authHeader, args }) => {
+const executeAutoDetectRelationships = async ({ authHeader, args, user }) => {
+    const dataModelId = await resolveDataModelId({
+        workspaceId: user.workspace_id,
+        dataModelId: args.dataModelId,
+        dataModelTarget: args.dataModelTarget,
+    });
     return invokeInternalApi({
         authHeader,
         method: 'POST',
         path: '/api/data-modeling/relationships/auto-detect',
         body: {
-            dataModelId: args.dataModelId,
+            dataModelId: dataModelId || undefined,
             tableIds: Array.isArray(args.tableIds) ? args.tableIds : undefined,
         },
     });
 };
 
-const executeCreateRelationship = async ({ authHeader, args }) => {
-    const dataModelId = args.dataModelId;
+const executeCreateRelationship = async ({ authHeader, args, user }) => {
+    const dataModelId = await resolveDataModelId({
+        workspaceId: user.workspace_id,
+        dataModelId: args.dataModelId,
+        dataModelTarget: args.dataModelTarget,
+    });
 
     let fromTableId = args.fromTableId;
     let toTableId = args.toTableId;
@@ -294,8 +381,10 @@ const executeUpdateUser = async ({ authHeader, args, user }) => {
         workspaceId: user.workspace_id,
         userId: args.userId,
         email: args.email,
+        userName: args.userName,
+        userTarget: args.userTarget,
     });
-    ensureArg(userId, 'userId/email is required');
+    ensureArg(userId, 'userId/email/userName is required');
 
     return invokeInternalApi({
         authHeader,
@@ -316,8 +405,42 @@ const executeToggleUserStatus = async ({ authHeader, args, user }) => {
         workspaceId: user.workspace_id,
         userId: args.userId,
         email: args.email,
+        userName: args.userName,
+        userTarget: args.userTarget,
     });
-    ensureArg(userId, 'userId/email is required');
+    ensureArg(userId, 'userId/email/userName is required');
+
+    const desiredStatusRaw = normalizeToken(args.desiredStatus);
+    const desiredStatus = desiredStatusRaw === 'active'
+        ? 'Active'
+        : ((desiredStatusRaw === 'disabled' || desiredStatusRaw === 'disable' || desiredStatusRaw === 'inactive')
+            ? 'Disabled'
+            : null);
+
+    if (desiredStatus) {
+        const current = await query(
+            `SELECT status
+             FROM users
+             WHERE id = $1
+               AND workspace_id = $2
+             LIMIT 1`,
+            [userId, user.workspace_id]
+        );
+        const currentStatus = String(current.rows[0]?.status || '').trim();
+        if (!currentStatus) {
+            throw new Error('User not found');
+        }
+        if (currentStatus === desiredStatus) {
+            return {
+                success: true,
+                data: {
+                    id: userId,
+                    status: currentStatus,
+                    skipped: true,
+                },
+            };
+        }
+    }
 
     return invokeInternalApi({
         authHeader,
@@ -331,8 +454,10 @@ const executeDeleteUser = async ({ authHeader, args, user }) => {
         workspaceId: user.workspace_id,
         userId: args.userId,
         email: args.email,
+        userName: args.userName,
+        userTarget: args.userTarget,
     });
-    ensureArg(userId, 'userId/email is required');
+    ensureArg(userId, 'userId/email/userName is required');
 
     return invokeInternalApi({
         authHeader,

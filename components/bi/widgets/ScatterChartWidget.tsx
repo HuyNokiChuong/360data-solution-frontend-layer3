@@ -31,6 +31,7 @@ interface ScatterChartWidgetProps {
 import ChartContextMenu from './ChartContextMenu';
 import AIAnalysisModal from '../modals/AIAnalysisModal';
 import { analyzeChartTrend } from '../../../services/ai';
+import { useLanguageStore } from '../../../store/languageStore';
 
 const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     widget,
@@ -43,6 +44,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     isDraggingOrResizing = false,
     onClick
 }) => {
+    const { language } = useLanguageStore();
     const { getDataSource } = useDataStore(); // Kept for metadata
     const { crossFilters: allDashboardFilters, getCrossFiltersForWidget, isWidgetFiltered, setDrillDown } = useFilterStore();
     const drillDowns = useFilterStore(state => state.drillDowns);
@@ -71,13 +73,14 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
     const [aiIsLoading, setAiIsLoading] = React.useState(false);
     const [aiResult, setAiResult] = React.useState<string | null>(null);
     const [aiError, setAiError] = React.useState<string | null>(null);
+    const [aiOutputLanguage, setAiOutputLanguage] = React.useState<'vi' | 'en'>(language === 'en' ? 'en' : 'vi');
 
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY });
     };
 
-    const handleAnalyzeTrend = async (provider?: string, modelId?: string) => {
+    const handleAnalyzeTrend = async (provider?: string, modelId?: string, outputLanguage?: string) => {
         setIsAIModalOpen(true);
 
         // If called without provider (initial click), just open modal and reset state
@@ -106,7 +109,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                 chartData,
                 widget.yAxis || [],
                 context,
-                { provider, modelId }
+                { provider, modelId, language, outputLanguage: outputLanguage || language }
             );
             setAiResult(result);
             setAiError(null);
@@ -117,6 +120,11 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
         }
     };
     // -------------------------
+
+    const handleAnalyzeFromContextMenu = (outputLanguage: 'vi' | 'en') => {
+        setAiOutputLanguage(outputLanguage);
+        handleAnalyzeTrend(undefined, undefined, outputLanguage);
+    };
 
     const realDataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -310,7 +318,7 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                         x={contextMenu.x}
                         y={contextMenu.y}
                         onClose={() => setContextMenu(null)}
-                        onAnalyze={handleAnalyzeTrend}
+                        onAnalyze={handleAnalyzeFromContextMenu}
                     />
                 )}
 
@@ -322,6 +330,8 @@ const ScatterChartWidget: React.FC<ScatterChartWidgetProps> = ({
                     analysisResult={aiResult}
                     error={aiError}
                     title={widget.title || "Chart Analysis"}
+                    defaultOutputLanguage={aiOutputLanguage}
+                    uiLanguage={language}
                     onReAnalyze={handleAnalyzeTrend}
                 />
             </div>

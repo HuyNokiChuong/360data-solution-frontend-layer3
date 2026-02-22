@@ -10,7 +10,7 @@ import {
 } from '../../services/dataModeling';
 import { detectSchema } from '../bi/engine/dataProcessing';
 import { getReportsAssistantBridge } from '../reports/reportsAssistantBridge';
-import type { AssistantAction, AssistantClientBindings, AssistantUndoEntry } from './types';
+import type { AssistantAction, AssistantChannel, AssistantClientBindings, AssistantUndoEntry } from './types';
 
 const asString = (value: any) => String(value || '').trim();
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,6 +23,11 @@ const waitForReportsBridge = async (timeoutMs = 4000) => {
     await wait(120);
   }
   return null;
+};
+
+type ClientActionExecutionContext = {
+  channel?: AssistantChannel;
+  messageId?: string;
 };
 
 const slugToTitle = (token: string) => {
@@ -138,6 +143,34 @@ const pickChartType = (value: string): ChartType => {
   if (normalized === 'horizontalbar' || normalized === 'horizontal_bar') return 'horizontalBar';
   if (normalized === 'stackedbar' || normalized === 'stacked_bar') return 'stackedBar';
   return 'bar';
+};
+
+const TIME_SERIES_AXIS_HINTS = ['date', 'day', 'week', 'month', 'quarter', 'year', 'time', 'created', 'updated'];
+const DATE_VALUE_REGEX = /^(\d{4}-\d{1,2}-\d{1,2}|\d{4}\/\d{1,2}\/\d{1,2}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{1,2}|\d{4}q[1-4])(?:\s.*)?$/i;
+
+const isDateLikeValue = (value: any): boolean => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return false;
+  if (DATE_VALUE_REGEX.test(raw)) return true;
+  if (/^\d{4}-\d{2}-\d{2}t/i.test(raw)) return true;
+  if (/^[a-z]{3,9}\s+\d{4}$/i.test(raw)) return true;
+  return false;
+};
+
+const isLikelyTimeSeriesAxis = (xAxis: string, rows: any[] = []): boolean => {
+  const axis = asString(xAxis).toLowerCase();
+  if (TIME_SERIES_AXIS_HINTS.some((hint) => axis.includes(hint))) return true;
+  if (!Array.isArray(rows) || rows.length === 0 || !axis) return false;
+  return rows.slice(0, Math.min(8, rows.length)).some((row) => isDateLikeValue(row?.[axis]));
+};
+
+const coercePieDonutForTimeSeries = (
+  chartType: ChartType,
+  xAxis: string,
+  rows: any[] = []
+): ChartType => {
+  if (chartType !== 'pie' && chartType !== 'donut') return chartType;
+  return isLikelyTimeSeriesAxis(xAxis, rows) ? 'line' : chartType;
 };
 
 type ReportTableOption = {
@@ -420,7 +453,8 @@ const materializeReportToDashboard = (dashboardId: string, visualData: any) => {
       yAxis = schemaFields.filter((field) => field !== xAxis).slice(0, 2);
     }
 
-    const chartType = pickChartType(asString(chart?.type));
+    const initialChartType = pickChartType(asString(chart?.type));
+    const chartType = coercePieDonutForTimeSeries(initialChartType, xAxis, chartRows);
     const widget: Omit<BIWidget, 'id'> = {
       type: 'chart',
       title,
@@ -488,18 +522,16 @@ const executeBiCreateDashboardReport = async (action: AssistantAction, bindings:
     );
   }
 
-  const previousTab = bindings.activeTab;
+  const biTab = 'bi';
   let bridge = getReportsAssistantBridge();
-  if (!bridge && previousTab !== 'reports') {
+  if (!bridge) {
     bindings.setActiveTab('reports');
   }
   if (!bridge) {
     bridge = await waitForReportsBridge(7000);
   }
   if (!bridge) {
-    if (previousTab !== 'reports') {
-      bindings.setActiveTab(previousTab || 'bi');
-    }
+    bindings.setActiveTab(biTab);
     throw new Error('Reports engine chưa sẵn sàng. Hãy mở tab Reports một lần rồi thử lại.');
   }
 
@@ -512,9 +544,7 @@ const executeBiCreateDashboardReport = async (action: AssistantAction, bindings:
       tableIds: selectedTableIds,
     }));
   } finally {
-    if (previousTab !== 'reports') {
-      bindings.setActiveTab(previousTab || 'bi');
-    }
+    bindings.setActiveTab(biTab);
   }
 
   const visualData = asked?.visualData
@@ -545,7 +575,7 @@ const executeBiCreateDashboardReport = async (action: AssistantAction, bindings:
   }
 
   const { createdDataSourceIds, createdWidgetIds } = materializeReportToDashboard(createdDashboard.id, visualData);
-  bindings.setActiveTab('bi');
+  bindings.setActiveTab(biTab);
   useDashboardStore.getState().setActiveDashboard(createdDashboard.id);
 
   pushUndo(bindings, {
@@ -658,10 +688,12 @@ const pushUndo = (bindings: AssistantClientBindings, entry: Omit<AssistantUndoEn
 const executeBiCreateWidget = async (action: AssistantAction, bindings: AssistantClientBindings) => {
   const dashboardStore = useDashboardStore.getState();
   const dashboard = ensureDashboard(action.args || {}, bindings.currentUser?.id);
-  const chartType = pickChartType(asString(action.args?.chartType));
-  const widgetType = asString(action.args?.widgetType || '').toLowerCase();
   const source = resolveDataSource(dashboard, action.args || {});
   const binding = suggestChartBinding(source);
+  const requestedChartType = pickChartType(asString(action.args?.chartType));
+  const candidateXAxis = asString(action.args?.xAxis || binding.xAxis);
+  const chartType = coercePieDonutForTimeSeries(requestedChartType, candidateXAxis);
+  const widgetType = asString(action.args?.widgetType || '').toLowerCase();
 
   const activePage = (dashboard.pages || []).find((page: any) => page.id === dashboard.activePageId);
   const beforeIds = new Set((activePage?.widgets || dashboard.widgets || []).map((widget: BIWidget) => widget.id));
@@ -895,9 +927,12 @@ const executeUserClientFallback = (action: AssistantAction, bindings: AssistantC
   const users = bindings.users || [];
   const email = asString(action.args?.email).toLowerCase();
   const userId = asString(action.args?.userId);
+  const userName = asString(action.args?.userName || action.args?.userTarget).toLowerCase().replace(/^@+/, '');
   const index = users.findIndex((item) => (
     (userId && item.id === userId)
     || (email && asString(item.email).toLowerCase() === email)
+    || (userName && asString(item.name).toLowerCase() === userName)
+    || (userName && asString(item.email).split('@')[0].toLowerCase() === userName)
   ));
   if (index < 0) throw new Error('Không tìm thấy user để thao tác.');
 
@@ -928,7 +963,10 @@ const executeUserClientFallback = (action: AssistantAction, bindings: AssistantC
 };
 
 export const createClientActionRegistry = (bindings: AssistantClientBindings) => {
-  const execute = async (action: AssistantAction): Promise<Record<string, any>> => {
+  const execute = async (
+    action: AssistantAction,
+    context?: ClientActionExecutionContext
+  ): Promise<Record<string, any>> => {
     const args = action.args && typeof action.args === 'object' ? action.args : {};
     const dashboardStore = useDashboardStore.getState();
     focusUserOnActionScreen(action, bindings);
@@ -1071,12 +1109,16 @@ export const createClientActionRegistry = (bindings: AssistantClientBindings) =>
         if (!bridge) throw new Error('Reports assistant bridge chưa sẵn sàng.');
         const text = asString(args.text || args.prompt);
         if (!text) throw new Error('Thiếu nội dung cho reports.ask');
+        const runtimeChannel = asString(context?.channel || args.channel).toLowerCase();
+        const forceNewSession = args.forceNewSession === true || runtimeChannel === 'global';
         const result = await Promise.resolve(bridge.ask(text, {
-          sessionId: asString(args.sessionId) || undefined,
+          sessionId: forceNewSession ? undefined : (asString(args.sessionId) || undefined),
           useAllTables: args.useAllTables === true,
           tableIds: Array.isArray(args.tableIds) ? args.tableIds : undefined,
+          forceNewSession,
+          sessionTitle: asString(args.sessionTitle || args.title) || undefined,
         }));
-        return { asked: true, result: result || null };
+        return { asked: true, forceNewSession, result: result || null };
       }
 
       case 'reports.rerun_chart_sql': {

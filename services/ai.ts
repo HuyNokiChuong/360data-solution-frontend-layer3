@@ -2,6 +2,7 @@ import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { DashboardConfig } from "../types";
 import { WarehouseService } from "./warehouse";
 import { BIDashboard } from "../components/bi/types";
+import { stripBigQueryProjectPrefixFromSql } from "../utils/sql";
 
 // Mapping Type for compatibility with user snippet
 const Type = {
@@ -22,6 +23,258 @@ function cleanJsonResponse(text: string): string {
   return cleaned;
 }
 
+type NormalizedReportChartType = 'bar' | 'line' | 'pie' | 'area';
+
+const TIME_SERIES_AXIS_HINTS = ['date', 'day', 'week', 'month', 'quarter', 'year', 'time', 'created', 'updated'];
+const TIME_SERIES_SQL_REGEX = /\b(date|datetime|timestamp|date_trunc|format_date|format_datetime|extract\s*\(\s*year|order\s+by\s+[^;]*?(date|day|week|month|year))\b/i;
+const TIME_SERIES_TITLE_REGEX = /(theo ngày|theo tuần|theo tháng|hàng ngày|hàng tuần|hàng tháng|7 ngày|14 ngày|30 ngày|60 ngày|90 ngày|daily|weekly|monthly|time[-\s]?series)/i;
+const DATE_VALUE_REGEX = /^(\d{4}-\d{1,2}-\d{1,2}|\d{4}\/\d{1,2}\/\d{1,2}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{1,2}|\d{4}Q[1-4])(?:\s.*)?$/i;
+const SPEND_METRIC_HINTS = ['chi_phi', 'cost', 'spend', 'budget', 'expense', 'ads_cost', 'ad_spend', 'marketing_cost', 'cp_'];
+const VALUE_METRIC_HINTS = ['doanh_thu', 'doanh_so', 'revenue', 'sales', 'gmv', 'profit', 'margin', 'return', 'new_sales'];
+
+const normalizeMetricKey = (rawKey: string): string => (
+  String(rawKey || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+);
+
+const hasMetricHint = (key: string, hints: string[]): boolean => {
+  const normalized = normalizeMetricKey(key);
+  return hints.some((hint) => normalized.includes(hint));
+};
+
+const isSpendMetricKey = (key: string): boolean => hasMetricHint(key, SPEND_METRIC_HINTS);
+const isValueMetricKey = (key: string): boolean => hasMetricHint(key, VALUE_METRIC_HINTS);
+
+const ensureSpendValueMetricPair = (baseKeys: string[], availableNumericKeys: string[], maxKeys = 4): string[] => {
+  if (!Array.isArray(baseKeys) || baseKeys.length === 0) return [];
+
+  const limited = baseKeys.slice(0, maxKeys);
+  const spendKey = baseKeys.find((key) => isSpendMetricKey(key));
+  if (!spendKey) return limited;
+
+  const hasValueInLimited = limited.some((key) => key !== spendKey && isValueMetricKey(key));
+  if (hasValueInLimited) return limited;
+
+  const valueCandidate = availableNumericKeys.find((key) => (
+    key !== spendKey
+    && !limited.includes(key)
+    && isValueMetricKey(key)
+  ));
+  if (!valueCandidate) return limited;
+
+  if (limited.length < maxKeys) return [...limited, valueCandidate];
+  return [...limited.slice(0, maxKeys - 1), valueCandidate];
+};
+
+const hasTemporalHint = (value: string): boolean => {
+  const normalized = String(value || '').toLowerCase();
+  return TIME_SERIES_AXIS_HINTS.some((hint) => normalized.includes(hint));
+};
+
+const isDateLikeValue = (value: any): boolean => {
+  if (value instanceof Date) return true;
+  const raw = String(value ?? '').trim();
+  if (!raw) return false;
+  if (DATE_VALUE_REGEX.test(raw)) return true;
+  if (/^\d{4}-\d{2}-\d{2}t/i.test(raw)) return true;
+  if (/^[a-z]{3,9}\s+\d{4}$/i.test(raw)) return true;
+  return false;
+};
+
+const isLikelyTimeSeriesChart = (chart: any): boolean => {
+  const xAxisKey = String(chart?.xAxisKey || '').trim().toLowerCase();
+  const title = String(chart?.title || '').trim();
+  const sql = String(chart?.sql || '').trim();
+
+  if (hasTemporalHint(xAxisKey)) return true;
+  if (TIME_SERIES_TITLE_REGEX.test(title)) return true;
+  if (TIME_SERIES_SQL_REGEX.test(sql)) return true;
+
+  if (Array.isArray(chart?.mockLabels) && chart.mockLabels.length > 0) {
+    const sampleLabels = chart.mockLabels.slice(0, 8);
+    if (sampleLabels.some((label: any) => isDateLikeValue(label))) return true;
+  }
+
+  return false;
+};
+
+const normalizeReportChartType = (
+  rawType: any,
+  isTimeSeries: boolean
+): NormalizedReportChartType => {
+  const normalized = String(rawType || '').trim().toLowerCase();
+
+  if (normalized === 'line') return 'line';
+  if (normalized === 'area') return isTimeSeries ? 'area' : 'bar';
+  if (normalized === 'bar' || normalized === 'horizontalbar' || normalized === 'stackedbar') return 'bar';
+  if (normalized === 'combo' || normalized === 'scatter') return isTimeSeries ? 'line' : 'bar';
+
+  if (normalized === 'pie' || normalized === 'donut' || normalized === 'doughnut' || normalized === 'radial') {
+    return isTimeSeries ? 'line' : 'pie';
+  }
+
+  return isTimeSeries ? 'line' : 'bar';
+};
+
+const toInsightText = (value: any): string => {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String(value).replace(/\s+/g, ' ').trim();
+};
+
+const isDuplicateInsightText = (left: string, right: string): boolean => {
+  const l = String(left || '').toLowerCase().trim();
+  const r = String(right || '').toLowerCase().trim();
+  if (!l || !r) return false;
+  return l === r || l.includes(r) || r.includes(l);
+};
+
+const normalizeReportChartInsight = (rawInsight: any, language: ReportLanguage = 'vi'): any => {
+  if (!rawInsight || typeof rawInsight !== 'object') return rawInsight;
+  const fallback = getReportFallbackText(language);
+
+  const insight = { ...rawInsight };
+  const analysis = toInsightText(insight.analysis ?? insight.currentStatus ?? insight.current_state ?? insight.overview);
+  const trend = toInsightText(insight.trend ?? insight.trendAnalysis ?? insight.direction);
+  const cause = toInsightText(
+    insight.cause
+    ?? insight.rootCause
+    ?? insight.root_cause
+    ?? insight.reason
+    ?? insight.reasons
+    ?? insight.driverAnalysis
+    ?? insight.drivers
+    ?? insight.keyDrivers
+  );
+  const action = toInsightText(
+    insight.action
+    ?? insight.actions
+    ?? insight.nextStep
+    ?? insight.nextSteps
+    ?? insight.recommendation
+    ?? insight.recommendations
+  );
+
+  const mergedAnalysis = (() => {
+    if (!analysis && !trend) return '';
+    if (!analysis) return trend;
+    if (!trend || isDuplicateInsightText(analysis, trend)) return analysis;
+    return `${analysis} ${trend}`.trim();
+  })();
+
+  return {
+    ...insight,
+    analysis: mergedAnalysis || analysis || trend || fallback.noInsightConclusion,
+    trend: trend || analysis || '',
+    cause: cause || '',
+    action: action || fallback.defaultAction,
+  };
+};
+
+const sanitizeReportCharts = (charts: any[], language: ReportLanguage = 'vi'): any[] => {
+  if (!Array.isArray(charts)) return [];
+
+  return charts.map((chart) => {
+    const safeChart = chart && typeof chart === 'object' ? { ...chart } : {};
+    const isTimeSeries = isLikelyTimeSeriesChart(safeChart);
+    const normalizedType = normalizeReportChartType(safeChart.type, isTimeSeries);
+    return {
+      ...safeChart,
+      type: normalizedType,
+      sql: stripBigQueryProjectPrefixFromSql(String(safeChart.sql || '')),
+      insight: normalizeReportChartInsight(safeChart.insight, language),
+    };
+  });
+};
+
+const toFiniteNumber = (value: any): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+
+  const normalized = raw
+    .replace(/[\s,]+/g, '')
+    .replace(/%$/, '');
+  if (!normalized) return null;
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isChartQueryErrorRow = (row: any): boolean => (
+  !!row
+  && typeof row === 'object'
+  && !Array.isArray(row)
+  && typeof row._error === 'string'
+  && String(row._error).trim().length > 0
+);
+
+const extractChartQueryError = (chartData: any): string => {
+  if (isChartQueryErrorRow(chartData)) return String(chartData._error || '').trim();
+  if (!Array.isArray(chartData)) return '';
+  const errorRow = chartData.find((row) => isChartQueryErrorRow(row));
+  return errorRow ? String(errorRow._error || '').trim() : '';
+};
+
+const stripChartErrorRows = (chartData: any): any[] => {
+  if (!Array.isArray(chartData)) return [];
+  return chartData.filter((row) => !isChartQueryErrorRow(row));
+};
+
+const coerceChartNumericRows = (rows: any[], dataKeys: any[]): any[] => {
+  if (!Array.isArray(rows)) return [];
+  const keys = Array.isArray(dataKeys)
+    ? dataKeys.map((key) => String(key || '').trim()).filter(Boolean)
+    : [];
+
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+    const next = { ...row };
+    keys.forEach((key) => {
+      const parsed = toFiniteNumber(next[key]);
+      if (parsed !== null) next[key] = parsed;
+    });
+    return next;
+  });
+};
+
+const resolveChartDataKeys = (rows: any[], preferredKeys: any[]): string[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const normalizedPreferred = Array.isArray(preferredKeys)
+    ? preferredKeys.map((key) => String(key || '').trim()).filter(Boolean)
+    : [];
+  const hasNumericValue = (row: any, key: string): boolean => (
+    toFiniteNumber(row?.[key]) !== null
+  );
+
+  const preferredNumeric = normalizedPreferred.filter((key) => (
+    rows.some((row) => row && typeof row === 'object' && !Array.isArray(row) && hasNumericValue(row, key))
+  ));
+
+  const discoveredNumeric = Array.from(new Set(
+    rows.flatMap((row) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return [];
+      return Object.keys(row).filter((key) => key !== '_error' && hasNumericValue(row, key));
+    })
+  ));
+
+  const baseKeys = preferredNumeric.length > 0 ? preferredNumeric : discoveredNumeric;
+  if (baseKeys.length > 0) {
+    return ensureSpendValueMetricPair(baseKeys, discoveredNumeric, 4);
+  }
+  return [];
+};
+
 // Helper to get API keys from local storage or env
 const getApiKey = (provider: string) => {
   let key = "";
@@ -33,6 +286,121 @@ const getApiKey = (provider: string) => {
 };
 
 type AIProvider = 'Google' | 'OpenAI' | 'Anthropic';
+export type ReportLanguage = 'en' | 'vi';
+export type ChartAnalysisOutputLanguage = 'vi' | 'en' | 'ja' | 'ko' | 'zh-CN' | 'th';
+
+const normalizeReportLanguage = (language?: string): ReportLanguage => (
+  String(language || '').toLowerCase() === 'en' ? 'en' : 'vi'
+);
+
+const chartAnalysisLanguageMeta: Record<ChartAnalysisOutputLanguage, {
+  targetLabel: string;
+  highlightTitle: string;
+  summaryTitle: string;
+}> = {
+  vi: {
+    targetLabel: 'Vietnamese',
+    highlightTitle: '## 🔴 Điểm cần highlight từ dữ liệu thực',
+    summaryTitle: '## 📋 Bảng Summary cuối cùng',
+  },
+  en: {
+    targetLabel: 'English',
+    highlightTitle: '## 🔴 Key Data Highlights',
+    summaryTitle: '## 📋 Final Summary Table',
+  },
+  ja: {
+    targetLabel: 'Japanese',
+    highlightTitle: '## 🔴 重要なデータハイライト',
+    summaryTitle: '## 📋 最終サマリーテーブル',
+  },
+  ko: {
+    targetLabel: 'Korean',
+    highlightTitle: '## 🔴 주요 데이터 하이라이트',
+    summaryTitle: '## 📋 최종 요약 표',
+  },
+  'zh-CN': {
+    targetLabel: 'Simplified Chinese',
+    highlightTitle: '## 🔴 关键数据亮点',
+    summaryTitle: '## 📋 最终汇总表',
+  },
+  th: {
+    targetLabel: 'Thai',
+    highlightTitle: '## 🔴 ไฮไลต์ข้อมูลสำคัญ',
+    summaryTitle: '## 📋 ตารางสรุปสุดท้าย',
+  },
+};
+
+const normalizeChartAnalysisOutputLanguage = (
+  language?: string,
+  fallback: ReportLanguage = 'vi'
+): ChartAnalysisOutputLanguage => {
+  const raw = String(language || '').trim().toLowerCase();
+  if (raw === 'vi' || raw.startsWith('vi-')) return 'vi';
+  if (raw === 'en' || raw.startsWith('en-')) return 'en';
+  if (raw === 'ja' || raw.startsWith('ja-') || raw === 'jp' || raw === 'japanese') return 'ja';
+  if (raw === 'ko' || raw.startsWith('ko-') || raw === 'kr' || raw === 'korean') return 'ko';
+  if (raw === 'th' || raw.startsWith('th-') || raw === 'thai') return 'th';
+  if (
+    raw === 'zh'
+    || raw === 'zh-cn'
+    || raw === 'zh_hans'
+    || raw === 'zh-hans'
+    || raw === 'zh-sg'
+    || raw === 'cn'
+    || raw === 'chinese'
+  ) {
+    return 'zh-CN';
+  }
+  return fallback === 'en' ? 'en' : 'vi';
+};
+
+const getReportFallbackText = (language: ReportLanguage) => {
+  if (language === 'en') {
+    return {
+      noInsightConclusion: 'Insufficient data to conclude current status.',
+      defaultAction: 'Continue collecting data and define prioritized actions by business impact.',
+      strategicInsightTitle: 'Strategic Insight',
+      strategicPointTitle: 'Strategic Point',
+      strategicRecommendationDefault: 'Review detailed data and decide actions aligned with current business conditions.',
+      strategicRecommendationEmpty: 'Analyze deeper data slices to define concrete actions.',
+      dashboardTitle: 'Advanced Analytics Report',
+      dashboardSummary: 'Analytical overview.',
+      sqlTraceUnavailable: '-- SQL trace unavailable',
+      googleApiKeyMissing: 'Google API Key is missing. Please update the key in AI Settings.',
+      noAiResponse: 'No response from AI.',
+      leakedSummary: '⚠️ SECURITY ALERT: Your Gemini API key was flagged as leaked and blocked. Create a new key in Google AI Studio and update it in AI Settings.',
+      rateLimitSummary: '⚠️ RATE LIMIT: Your AI account reached request limits. Wait 30-60 seconds and try again, or upgrade your plan.',
+      leakedError: '⚠️ SECURITY ALERT: Your Gemini API key was flagged as leaked and blocked. Create a new key at https://aistudio.google.com/ and update AI Settings. Do not expose keys publicly.',
+      rateLimitError: '⚠️ RATE LIMIT: Your AI account reached request limits. Please wait a few seconds and retry.',
+      openAiApiMissing: 'OpenAI API Key is missing. Please update the key in AI Settings.',
+      anthropicApiMissing: 'Anthropic API Key is missing. Please update the key in AI Settings.',
+      noApiKeyFound: 'No AI API key found. Please add one in AI Settings.',
+      reportJsonGeneratorSystem: 'You are a JSON generator. Return valid JSON only.',
+    };
+  }
+
+  return {
+    noInsightConclusion: 'Chưa đủ dữ liệu để kết luận hiện trạng.',
+    defaultAction: 'Tiếp tục thu thập thêm dữ liệu và xác định hành động ưu tiên theo mức ảnh hưởng.',
+    strategicInsightTitle: 'Strategic Insight',
+    strategicPointTitle: 'Strategic Point',
+    strategicRecommendationDefault: 'Xem xét dữ liệu chi tiết và đưa ra quyết định phù hợp với tình hình thực tế.',
+    strategicRecommendationEmpty: 'Phân tích thêm dữ liệu chi tiết để đưa ra hành động cụ thể.',
+    dashboardTitle: 'Báo cáo phân tích chuyên sâu',
+    dashboardSummary: 'Tổng quan phân tích.',
+    sqlTraceUnavailable: '-- SQL Trace unavailable',
+    googleApiKeyMissing: 'Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.',
+    noAiResponse: 'Không nhận được phản hồi từ AI.',
+    leakedSummary: '⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio và cập nhật trong tab AI Setting.',
+    rateLimitSummary: '⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ 30-60 giây rồi thử lại, hoặc nâng cấp lên gói trả phí (Pay-as-you-go).',
+    leakedError: '⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio (https://aistudio.google.com/) và cập nhật trong tab AI Setting. Lưu ý tuyệt đối không để lộ Key này trên GitHub hoặc các nơi công cộng.',
+    rateLimitError: '⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ vài giây rồi nhấn thử lại nhé.',
+    openAiApiMissing: 'OpenAI API Key is missing. Hãy cập nhật Key trong tab AI Setting.',
+    anthropicApiMissing: 'Anthropic API Key is missing. Hãy cập nhật Key trong tab AI Setting.',
+    noApiKeyFound: 'No AI API key found. Vui lòng thêm API Key trong AI Settings.',
+    reportJsonGeneratorSystem: 'You are a JSON generator.',
+  };
+};
 
 const inferProviderFromModelId = (modelId: string): AIProvider => {
   if (!modelId) return 'Google';
@@ -208,15 +576,493 @@ async function callAnthropic(modelId: string, systemPrompt: string, userPrompt: 
   return data.content[0].text;
 }
 
+// Helper: Smart Data Summarization for AI
+function summarizeChartData(data: any[], dataKeys: string[], xAxis: string): string {
+  if (!data || data.length === 0) return "No data available.";
+
+  const toNumber = (value: any): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const getAxisLabel = (row: any, idx: number): string => {
+    const raw = row?.[xAxis];
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      return `Row ${idx + 1}`;
+    }
+    return String(raw);
+  };
+
+  const pearsonCorrelation = (pairs: Array<[number, number]>): number | null => {
+    if (!pairs || pairs.length < 3) return null;
+    const n = pairs.length;
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumXX = 0;
+    let sumYY = 0;
+
+    pairs.forEach(([x, y]) => {
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+      sumYY += y * y;
+    });
+
+    const numerator = (n * sumXY) - (sumX * sumY);
+    const denominator = Math.sqrt((n * sumXX - sumX * sumX) * (n * sumYY - sumY * sumY));
+    if (!Number.isFinite(denominator) || denominator === 0) return null;
+    const corr = numerator / denominator;
+    if (!Number.isFinite(corr)) return null;
+    return corr;
+  };
+
+  const corrStrengthLabel = (corr: number): string => {
+    const abs = Math.abs(corr);
+    if (abs >= 0.8) return 'rất mạnh';
+    if (abs >= 0.6) return 'mạnh';
+    if (abs >= 0.4) return 'trung bình';
+    if (abs >= 0.2) return 'yếu';
+    return 'rất yếu';
+  };
+
+  const count = data.length;
+  const axisLabels = data.map((row, idx) => getAxisLabel(row, idx));
+
+  // Calculate basic stats for each dataKey
+  const stats = dataKeys.map((key) => {
+    const values = data
+      .map((d) => toNumber(d?.[key]))
+      .filter((v): v is number => v !== null);
+
+    if (values.length === 0) return null;
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const sum = values.reduce((a, b) => a + b, 0);
+    const avg = sum / values.length;
+    const first = values[0];
+    const last = values[values.length - 1];
+    const trend = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : 0;
+
+    return { key, min, max, avg, sum, first, last, trend };
+  }).filter(Boolean);
+
+  const pairwiseCorrelations: Array<{ left: string; right: string; corr: number; sample: number }> = [];
+  for (let i = 0; i < dataKeys.length; i++) {
+    for (let j = i + 1; j < dataKeys.length; j++) {
+      const leftKey = dataKeys[i];
+      const rightKey = dataKeys[j];
+      const pairs: Array<[number, number]> = [];
+
+      data.forEach((row) => {
+        const left = toNumber(row?.[leftKey]);
+        const right = toNumber(row?.[rightKey]);
+        if (left === null || right === null) return;
+        pairs.push([left, right]);
+      });
+
+      const corr = pearsonCorrelation(pairs);
+      if (corr === null) continue;
+      pairwiseCorrelations.push({ left: leftKey, right: rightKey, corr, sample: pairs.length });
+    }
+  }
+  pairwiseCorrelations.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
+
+  const primaryKey = dataKeys[0] || '';
+  let peakInfo = '';
+  let troughInfo = '';
+  let transitionInfo = '';
+  if (primaryKey) {
+    const primaryPoints = data
+      .map((row, idx) => ({
+        x: axisLabels[idx],
+        value: toNumber(row?.[primaryKey]),
+        idx
+      }))
+      .filter((p): p is { x: string; value: number; idx: number } => p.value !== null);
+
+    if (primaryPoints.length > 0) {
+      const peak = primaryPoints.reduce((best, cur) => cur.value > best.value ? cur : best, primaryPoints[0]);
+      const trough = primaryPoints.reduce((best, cur) => cur.value < best.value ? cur : best, primaryPoints[0]);
+      peakInfo = `${primaryKey} đạt đỉnh tại "${peak.x}" = ${peak.value.toFixed(2)}`;
+      troughInfo = `${primaryKey} chạm đáy tại "${trough.x}" = ${trough.value.toFixed(2)}`;
+    }
+
+    const transitions = [];
+    for (let i = 1; i < primaryPoints.length; i++) {
+      const prev = primaryPoints[i - 1];
+      const cur = primaryPoints[i];
+      const delta = cur.value - prev.value;
+      const pct = prev.value !== 0 ? (delta / Math.abs(prev.value)) * 100 : 0;
+      transitions.push({
+        from: prev.x,
+        to: cur.x,
+        delta,
+        pct
+      });
+    }
+
+    if (transitions.length > 0) {
+      const largestIncrease = transitions.reduce((best, cur) => cur.delta > best.delta ? cur : best, transitions[0]);
+      const largestDecrease = transitions.reduce((best, cur) => cur.delta < best.delta ? cur : best, transitions[0]);
+      transitionInfo = `Bước nhảy lớn nhất: +${largestIncrease.delta.toFixed(2)} (${largestIncrease.pct >= 0 ? '+' : ''}${largestIncrease.pct.toFixed(1)}%) từ "${largestIncrease.from}" -> "${largestIncrease.to}". | Sụt giảm lớn nhất: ${largestDecrease.delta.toFixed(2)} (${largestDecrease.pct >= 0 ? '+' : ''}${largestDecrease.pct.toFixed(1)}%) từ "${largestDecrease.from}" -> "${largestDecrease.to}".`;
+    }
+  }
+
+  let summary = `Total Rows: ${count}\n`;
+  summary += `X-Axis Field: ${xAxis || 'N/A'}\n`;
+
+  if (stats.length > 0) {
+    summary += "Key Statistics:\n";
+    stats.forEach(s => {
+      if (!s) return;
+      summary += `- ${s.key}: Range=[${s.min.toFixed(2)} - ${s.max.toFixed(2)}], Avg=${s.avg.toFixed(2)}, Trend=${s.trend > 0 ? '+' : ''}${s.trend.toFixed(1)}%\n`;
+    });
+  }
+
+  if (pairwiseCorrelations.length > 0) {
+    summary += "Strongest Pairwise Correlations:\n";
+    pairwiseCorrelations.slice(0, 5).forEach((pair) => {
+      const dir = pair.corr >= 0 ? 'cùng chiều' : 'ngược chiều';
+      summary += `- ${pair.left} ↔ ${pair.right}: corr=${pair.corr.toFixed(2)} (${corrStrengthLabel(pair.corr)}, ${dir}, n=${pair.sample})\n`;
+    });
+  }
+
+  if (peakInfo || troughInfo || transitionInfo) {
+    summary += "Critical Signal Points:\n";
+    if (peakInfo) summary += `- ${peakInfo}\n`;
+    if (troughInfo) summary += `- ${troughInfo}\n`;
+    if (transitionInfo) summary += `- ${transitionInfo}\n`;
+  }
+
+  // Smart Sampling: First 3, Last 3, and evenly spaced in between
+  // Limit total tokens by keeping sample size reasonable (e.g., ~20 points)
+  let indices = new Set<number>();
+  indices.add(0);
+  if (count > 0) indices.add(count - 1);
+  if (count > 1) indices.add(1);
+  if (count > 2) indices.add(count - 2);
+
+  const targetSamples = 20;
+  const step = Math.max(1, Math.floor(count / targetSamples));
+  for (let i = 0; i < count; i += step) indices.add(i);
+
+  const sortedIndices = Array.from(indices).sort((a, b) => a - b).filter(i => i >= 0 && i < count);
+  const sampledData = sortedIndices.map(i => data[i]);
+
+  summary += `Sampled Data Points (Representative subset of ${sortedIndices.length} rows):\n${JSON.stringify(sampledData)}`;
+
+  return summary;
+}
+
+const buildDeterministicAnalysisAppendix = (
+  data: any[],
+  xAxis: string,
+  dataKeys: string[],
+  language: ReportLanguage = 'vi'
+): string => {
+  if (!Array.isArray(data) || data.length === 0 || !Array.isArray(dataKeys) || dataKeys.length === 0) {
+    return '';
+  }
+
+  const reportLanguage = normalizeReportLanguage(language);
+  const numberFormatters = new Map<number, Intl.NumberFormat>();
+  const getNumberFormatter = (digits: number) => {
+    if (!numberFormatters.has(digits)) {
+      numberFormatters.set(digits, new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+        useGrouping: true,
+      }));
+    }
+    return numberFormatters.get(digits)!;
+  };
+  const formatNumber = (value: number, digits = 2) => getNumberFormatter(digits).format(value);
+  const formatSignedNumber = (value: number, digits = 2) => `${value >= 0 ? '+' : ''}${formatNumber(value, digits)}`;
+  const formatPercent = (value: number, digits = 1) => `${formatSignedNumber(value, digits)}%`;
+
+  const i18n = reportLanguage === 'en'
+    ? {
+      rowLabel: (idx: number) => `Row ${idx + 1}`,
+      corrVeryStrongPos: 'Very strong (positive)',
+      corrVeryStrongNeg: 'Very strong (negative)',
+      corrStrongPos: 'Strong (positive)',
+      corrStrongNeg: 'Strong (negative)',
+      corrMediumPos: 'Moderate (positive)',
+      corrMediumNeg: 'Moderate (negative)',
+      corrWeakPos: 'Weak (positive)',
+      corrWeakNeg: 'Weak (negative)',
+      corrVeryWeak: 'Very weak',
+      highlightOverall: (metric: string, delta: string, pct: string) => `- 🔥 ${metric} changed overall by ${delta} (${pct}) from start to end of the period.`,
+      highlightPeakTrough: (peakX: string, peakY: string, troughX: string, troughY: string) => `- 🔥 Peak at "${peakX}" = ${peakY}; trough at "${troughX}" = ${troughY}.`,
+      highlightIncrease: (from: string, to: string, delta: string, pct: string) => `- 🔥 Largest increase: "${from}" -> "${to}" (${delta}, ${pct}).`,
+      highlightDecrease: (from: string, to: string, delta: string, pct: string) => `- 🔥 Largest decrease: "${from}" -> "${to}" (${delta}, ${pct}).`,
+      highlightDriver: (metric: string, driver: string, corr: string, label: string) => `- 🔥 Strongest direct driver of ${metric}: ${driver} (corr=${corr} - ${label}).`,
+      targetMetric: 'Target metric',
+      high: 'High',
+      medium: 'Medium',
+      low: 'Low',
+      insufficientData: 'Insufficient data',
+      sectionTitle: '## 🔴 Key Data Highlights',
+      tableTitle: '## 📋 Final Summary Table',
+      tableHeader: '| Metric | Start | End | Delta | % Change | Direct Impact | Monitoring Priority |',
+      tableDivider: '| --- | ---: | ---: | ---: | ---: | --- | --- |',
+    }
+    : {
+      rowLabel: (idx: number) => `Row ${idx + 1}`,
+      corrVeryStrongPos: 'Rất mạnh (cùng chiều)',
+      corrVeryStrongNeg: 'Rất mạnh (ngược chiều)',
+      corrStrongPos: 'Mạnh (cùng chiều)',
+      corrStrongNeg: 'Mạnh (ngược chiều)',
+      corrMediumPos: 'Trung bình (cùng chiều)',
+      corrMediumNeg: 'Trung bình (ngược chiều)',
+      corrWeakPos: 'Yếu (cùng chiều)',
+      corrWeakNeg: 'Yếu (ngược chiều)',
+      corrVeryWeak: 'Rất yếu',
+      highlightOverall: (metric: string, delta: string, pct: string) => `- 🔥 ${metric} thay đổi tổng thể ${delta} (${pct}) từ đầu kỳ đến cuối kỳ.`,
+      highlightPeakTrough: (peakX: string, peakY: string, troughX: string, troughY: string) => `- 🔥 Đỉnh cao nhất tại "${peakX}" = ${peakY}; đáy thấp nhất tại "${troughX}" = ${troughY}.`,
+      highlightIncrease: (from: string, to: string, delta: string, pct: string) => `- 🔥 Pha tăng mạnh nhất: "${from}" -> "${to}" (${delta}, ${pct}).`,
+      highlightDecrease: (from: string, to: string, delta: string, pct: string) => `- 🔥 Pha giảm mạnh nhất: "${from}" -> "${to}" (${delta}, ${pct}).`,
+      highlightDriver: (metric: string, driver: string, corr: string, label: string) => `- 🔥 Biến ảnh hưởng trực tiếp mạnh nhất đến ${metric}: ${driver} (corr=${corr} - ${label}).`,
+      targetMetric: 'Biến mục tiêu',
+      high: 'Cao',
+      medium: 'Trung bình',
+      low: 'Thấp',
+      insufficientData: 'Thiếu dữ liệu',
+      sectionTitle: '## 🔴 Điểm cần highlight từ dữ liệu thực',
+      tableTitle: '## 📋 Bảng Summary cuối cùng',
+      tableHeader: '| Biến số | Đầu kỳ | Cuối kỳ | Delta | % thay đổi | Mức ảnh hưởng trực tiếp | Ưu tiên theo dõi |',
+      tableDivider: '| --- | ---: | ---: | ---: | ---: | --- | --- |',
+    };
+
+  const toNumber = (value: any): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const getAxisLabel = (row: any, idx: number): string => {
+    const raw = row?.[xAxis];
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      return i18n.rowLabel(idx);
+    }
+    return String(raw);
+  };
+
+  const pearsonCorrelation = (pairs: Array<[number, number]>): number | null => {
+    if (!pairs || pairs.length < 3) return null;
+    const n = pairs.length;
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumXX = 0;
+    let sumYY = 0;
+    pairs.forEach(([x, y]) => {
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+      sumYY += y * y;
+    });
+    const numerator = (n * sumXY) - (sumX * sumY);
+    const denominator = Math.sqrt((n * sumXX - sumX * sumX) * (n * sumYY - sumY * sumY));
+    if (!Number.isFinite(denominator) || denominator === 0) return null;
+    const corr = numerator / denominator;
+    if (!Number.isFinite(corr)) return null;
+    return corr;
+  };
+
+  const correlationLabel = (corr: number): string => {
+    const abs = Math.abs(corr);
+    if (abs >= 0.8) return corr > 0 ? i18n.corrVeryStrongPos : i18n.corrVeryStrongNeg;
+    if (abs >= 0.6) return corr > 0 ? i18n.corrStrongPos : i18n.corrStrongNeg;
+    if (abs >= 0.4) return corr > 0 ? i18n.corrMediumPos : i18n.corrMediumNeg;
+    if (abs >= 0.2) return corr > 0 ? i18n.corrWeakPos : i18n.corrWeakNeg;
+    return i18n.corrVeryWeak;
+  };
+
+  const primaryKey = dataKeys[0];
+  const axisLabels = data.map((row, idx) => getAxisLabel(row, idx));
+  const primarySeries = data
+    .map((row, idx) => ({
+      x: axisLabels[idx],
+      y: toNumber(row?.[primaryKey])
+    }))
+    .filter((p): p is { x: string; y: number } => p.y !== null);
+
+  if (primarySeries.length === 0) return '';
+
+  const peak = primarySeries.reduce((best, cur) => cur.y > best.y ? cur : best, primarySeries[0]);
+  const trough = primarySeries.reduce((best, cur) => cur.y < best.y ? cur : best, primarySeries[0]);
+  const first = primarySeries[0].y;
+  const last = primarySeries[primarySeries.length - 1].y;
+  const overallPct = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : 0;
+  const overallDelta = last - first;
+
+  const transitions = [];
+  for (let i = 1; i < primarySeries.length; i++) {
+    const prev = primarySeries[i - 1];
+    const cur = primarySeries[i];
+    const delta = cur.y - prev.y;
+    const pct = prev.y !== 0 ? (delta / Math.abs(prev.y)) * 100 : 0;
+    transitions.push({ from: prev.x, to: cur.x, delta, pct });
+  }
+  const largestIncrease = transitions.length > 0
+    ? transitions.reduce((best, cur) => cur.delta > best.delta ? cur : best, transitions[0])
+    : null;
+  const largestDecrease = transitions.length > 0
+    ? transitions.reduce((best, cur) => cur.delta < best.delta ? cur : best, transitions[0])
+    : null;
+
+  const driverRows = dataKeys.slice(1).map((key) => {
+    const pairs: Array<[number, number]> = [];
+    data.forEach((row) => {
+      const base = toNumber(row?.[primaryKey]);
+      const driver = toNumber(row?.[key]);
+      if (base === null || driver === null) return;
+      pairs.push([base, driver]);
+    });
+    const corr = pearsonCorrelation(pairs);
+    if (corr === null) return null;
+    return { key, corr };
+  }).filter(Boolean) as Array<{ key: string; corr: number }>;
+
+  driverRows.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
+
+  const highlightLines = [
+    i18n.highlightOverall(
+      primaryKey,
+      formatSignedNumber(overallDelta, 2),
+      formatPercent(overallPct, 1)
+    ),
+    i18n.highlightPeakTrough(
+      peak.x,
+      formatNumber(peak.y, 2),
+      trough.x,
+      formatNumber(trough.y, 2)
+    )
+  ];
+
+  if (largestIncrease) {
+    highlightLines.push(
+      i18n.highlightIncrease(
+        largestIncrease.from,
+        largestIncrease.to,
+        formatSignedNumber(largestIncrease.delta, 2),
+        formatPercent(largestIncrease.pct, 1)
+      )
+    );
+  }
+  if (largestDecrease) {
+    highlightLines.push(
+      i18n.highlightDecrease(
+        largestDecrease.from,
+        largestDecrease.to,
+        formatSignedNumber(largestDecrease.delta, 2),
+        formatPercent(largestDecrease.pct, 1)
+      )
+    );
+  }
+  if (driverRows.length > 0) {
+    const strongest = driverRows[0];
+    highlightLines.push(
+      i18n.highlightDriver(
+        primaryKey,
+        strongest.key,
+        strongest.corr.toFixed(2),
+        correlationLabel(strongest.corr)
+      )
+    );
+  }
+
+  const summaryRows = dataKeys.map((key) => {
+    const series = data
+      .map((row) => toNumber(row?.[key]))
+      .filter((v): v is number => v !== null);
+    if (series.length === 0) return null;
+    const start = series[0];
+    const end = series[series.length - 1];
+    const delta = end - start;
+    const pct = start !== 0 ? (delta / Math.abs(start)) * 100 : 0;
+
+    if (key === primaryKey) {
+      return {
+        metric: key,
+        start,
+        end,
+        delta,
+        pct,
+        impact: i18n.targetMetric,
+        priority: i18n.high
+      };
+    }
+
+    const pairs: Array<[number, number]> = [];
+    data.forEach((row) => {
+      const base = toNumber(row?.[primaryKey]);
+      const driver = toNumber(row?.[key]);
+      if (base === null || driver === null) return;
+      pairs.push([base, driver]);
+    });
+    const corr = pearsonCorrelation(pairs);
+    const impact = corr === null ? i18n.insufficientData : `corr=${corr.toFixed(2)} (${correlationLabel(corr)})`;
+    const priority = corr === null
+      ? i18n.low
+      : (Math.abs(corr) >= 0.6 ? i18n.high : (Math.abs(corr) >= 0.35 ? i18n.medium : i18n.low));
+
+    return {
+      metric: key,
+      start,
+      end,
+      delta,
+      pct,
+      impact,
+      priority
+    };
+  }).filter(Boolean) as Array<{
+    metric: string;
+    start: number;
+    end: number;
+    delta: number;
+    pct: number;
+    impact: string;
+    priority: string;
+  }>;
+
+  const summaryTableLines = [
+    i18n.tableTitle,
+    i18n.tableHeader,
+    i18n.tableDivider,
+    ...summaryRows.map((row) => (
+      `| ${row.metric} | ${formatNumber(row.start, 2)} | ${formatNumber(row.end, 2)} | ${formatSignedNumber(row.delta, 2)} | ${formatPercent(row.pct, 1)} | ${row.impact} | ${row.priority} |`
+    ))
+  ];
+
+  const appendixParts = [
+    i18n.sectionTitle,
+    ...highlightLines,
+    '',
+    ...summaryTableLines
+  ];
+
+  return appendixParts.join('\n').trim();
+};
+
 async function regenerateInsightsWithRealData(
   modelId: string,
   originalPrompt: string,
   kpis: any[],
   charts: any[],
   chartData: any[][],
+  language: ReportLanguage = 'vi',
   signal?: AbortSignal
 ): Promise<{ summary: string, insights: any[], chartInsights: any[] }> {
   try {
+    const reportLanguage = normalizeReportLanguage(language);
+    const fallback = getReportFallbackText(reportLanguage);
+    const targetLanguageLabel = reportLanguage === 'en' ? 'English' : 'Vietnamese';
+
     // Basic detection of provider based on model ID prefix
     let provider = 'Google';
     if (modelId.startsWith('gpt') || modelId.startsWith('o1')) provider = 'OpenAI';
@@ -225,76 +1071,77 @@ async function regenerateInsightsWithRealData(
     const apiKey = getApiKey(provider);
 
     // Summarize data for the AI (limit size to avoid token overflow)
+    // Summarize data for the AI (Use smart summary instead of simple slice)
     const dataSummary = charts.map((c, i) => {
       const data = chartData[i] || [];
-      const slice = data.slice(0, 15); // Increased to 15 for better context
-      return `[CHART DATA FOR: "${c.title}"]\n${JSON.stringify(slice)}`;
+      const keys = c.dataKeys || [];
+      const xAxis = c.xAxisKey || 'date';
+      return `[CHART DATA FOR: "${c.title}"]\n${summarizeChartData(data, keys, xAxis)}`;
     }).join('\n\n');
 
     const kpiSummary = JSON.stringify(kpis);
 
     const prompt = `
-      Bạn là chuyên gia tư vấn chiến lược cấp cao (Strategic Advisor).
-      Khách hàng đã yêu cầu: "${originalPrompt}".
-      
-      Dữ liệu THỰC TẾ từ Data Warehouse:
+      You are a senior strategic data advisor.
+      The user requested: "${originalPrompt}".
+
+      TARGET OUTPUT LANGUAGE (CRITICAL): ${targetLanguageLabel}.
+      Return every human-readable field strictly in ${targetLanguageLabel}. Do not mix languages.
+
+      REAL DATA INPUT:
       KPIs: ${kpiSummary}
-      
-      Danh sách Biểu đồ và Dữ liệu:
+      Charts and data:
       ${dataSummary}
-      
-      YÊU CẦU PHÂN TÍCH (QUAN TRỌNG - TUYỆT ĐỐI TUÂN THỦ):
-      1. Dashboard Summary: Tổng hợp tình hình cốt lõi cực kỳ súc tích nhưng đầy đủ chiều sâu chiến lược (dưới 60 chữ).
-      2. Strategic Insights (NHẬN ĐỊNH CẤP CAO): Tạo ra ít nhất 3-4 nhận định đa chiều. Mỗi nhận định PHẢI bao gồm:
-         - title: Tiêu đề thu hút, phản ánh bản chất vấn đề (Vd: "Khủng hoảng chi phí", "Cơ hội chiếm lĩnh thị trường").
-         - analysis: Phân tích sâu sắc (40-70 từ). Kết nối các chỉ số KPI với nhau (Vd: "Mặc dù chi phí tăng 20%, nhưng Lợi nhuận gộp giảm 5%, cho thấy hiệu suất vận hành đang đi xuống").
-         - recommendation: CHIẾN LƯỢC HÀNH ĐỘNG (BẮT BUỘC).
-           * Phải là giải pháp giải quyết tận gốc vấn đề (Root Cause Analysis).
-           * Có các bước thực thi 1-2-3 nếu cần.
-         - priority: "Critical", "High", "Medium", hoặc "Low"
-      3. Chart Insights (PHÂN TÍCH CHUYÊN SÂU):
-         - PHẢI tạo ra CHÍNH XÁC ${charts.length} phân tích, tương ứng với ${charts.length} biểu đồ đã liệt kê ở trên.
-         - THỨ TỰ: Phải trả về mảng chart_insights theo đúng thứ tự của các biểu đồ trong danh sách trên.
-         - NGUYÊN TẮC CONTEXT (KIỂM TRA CHÉO):
-           * Phân tích của biểu đồ nào CHỈ ĐƯỢC dùng số liệu của biểu đồ đó.
-           * TUYỆT ĐỐI không nhắc đến dữ liệu của biểu đồ A trong phần phân tích của biểu đồ B.
-         - analysis: PHÂN TÍCH CHI TIẾT. Không chỉ nêu con số, hãy giải thích ý nghĩa kinh tế/vận hành đằng sau sự thay đổi. 
-           * Tìm kiếm các điểm xoay chiều (inflection points).
-           * So sánh các giai đoạn (đầu kỳ vs cuối kỳ).
-           * Đánh giá mức độ ổn định của dữ liệu.
-         - trend: Phân tích xu hướng dài hạn (Long-term trend) vs biến động ngắn hạn (Short-term volatility).
-         - action: Đề xuất hành động chiến thuật CỤ THỂ và định lượng (BÁT BUỘC).
-      
-      Output JSON format:
+
+      ANALYSIS REQUIREMENTS:
+      1. dashboard_summary: concise but strategic summary (max 60 words).
+      2. strategic_insights: create at least 3-4 insights with:
+         - title
+         - analysis (40-70 words, causal and business impact)
+         - recommendation (mandatory, concrete actions)
+         - priority ("Critical" | "High" | "Medium" | "Low")
+      3. chart_insights:
+         - Return EXACTLY ${charts.length} entries in the same chart order.
+         - Each chart insight must only use that chart's own data context.
+         - Include:
+           * analysis: current status with explicit peak/trough/current value and full-period change.
+           * trend: long-term trend vs short-term volatility.
+           * cause: 2-4 direct drivers with quantified impact (delta or %).
+           * action: 3 prioritized concrete actions.
+           * If chart includes spend/cost metric, quantify generated value and efficiency ratio (value per spend/ROAS) when value metric exists.
+
+      OUTPUT JSON FORMAT:
       {
         "dashboard_summary": "string",
         "strategic_insights": [
           {
             "title": "string",
             "analysis": "string",
-            "recommendation": "string (BẮT BUỘC - Hành động cụ thể, không được N/A)",
+            "recommendation": "string",
             "priority": "High" | "Medium" | "Low"
           }
         ],
         "chart_insights": [
            {
-             "chart_title": "string (Tên biểu đồ đang phân tích - Bắt buộc đúng)",
+             "chart_title": "string",
              "analysis": "string",
              "trend": "string",
-             "action": "string (BẮT BUỘC - Hành động cụ thể)",
+             "cause": "string",
+             "action": "string",
              "highlight": [
                {
-                 "index": number (index of data point),
+                 "index": number,
                  "value": any,
-                 "label": "short label (e.g. Peak, Drop)",
+                 "label": "string",
                  "type": "peak" | "drop" | "anomaly" | "insight"
                }
              ]
             }
          ]
       }
-      
-      LƯU Ý VỀ HIGHLIGHT: PHẢI CÓ ÍT NHẤT 4-5 HIGHLIGHTS CHO MỖI BIỂU ĐỒ NẾU DỮ LIỆU ĐỦ.
+
+      HIGHLIGHT RULE:
+      - Provide at least 4-5 highlights per chart when data density allows.
     `;
 
     let responseText = "{}";
@@ -304,7 +1151,7 @@ async function regenerateInsightsWithRealData(
     } else if (provider === 'Anthropic') {
       responseText = await callAnthropic(modelId, "You are a JSON generator. Output valid JSON only.", prompt, 0.7, signal);
     } else {
-      if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
+      if (!apiKey) throw new Error(fallback.googleApiKeyMissing);
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: modelId });
 
@@ -338,21 +1185,24 @@ async function regenerateInsightsWithRealData(
     return {
       summary: result.dashboard_summary,
       insights: result.strategic_insights || [],
-      chartInsights: result.chart_insights || []
+      chartInsights: Array.isArray(result.chart_insights)
+        ? result.chart_insights.map((insight: any) => normalizeReportChartInsight(insight, reportLanguage))
+        : []
     };
   } catch (e: any) {
+    const fallback = getReportFallbackText(normalizeReportLanguage(language));
     console.warn("Failed to regenerate insights", e);
     const errorMsg = e.message || String(e);
     if (errorMsg.toLowerCase().includes('leaked')) {
       return {
-        summary: "⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio và cập nhật trong tab AI Setting.",
+        summary: fallback.leakedSummary,
         insights: [],
         chartInsights: []
       };
     }
     if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
       return {
-        summary: "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ 30-60 giây rồi thử lại, hoặc nâng cấp lên gói trả phí (Pay-as-you-go).",
+        summary: fallback.rateLimitSummary,
         insights: [],
         chartInsights: []
       };
@@ -373,18 +1223,86 @@ export async function generateReportInsight(
     semanticEngine?: 'bigquery' | 'postgres';
     executeSql?: (sql: string) => Promise<any[]>;
     semanticContext?: string;
+    language?: ReportLanguage;
   }
 ): Promise<{ dashboard: DashboardConfig, sql: string, executionTime: number }> {
+  const reportLanguage = normalizeReportLanguage(options?.language);
+  const fallback = getReportFallbackText(reportLanguage);
   const activeModel = model || { id: 'gemini-2.5-flash', provider: 'Google' };
   const provider = activeModel.provider || 'Google';
   const apiKey = getApiKey(provider);
   const startTime = Date.now();
 
   const semanticGuidance = options?.semanticContext
-    ? `\n\nSEMANTIC MODEL CONTEXT (BẮT BUỘC TUÂN THỦ):\n${options.semanticContext}\n- Nếu có quan hệ đã định nghĩa thì chỉ JOIN theo các quan hệ đó.\n- Không tự đoán JOIN ngoài semantic model.\n- Nếu không có đường relationship hợp lệ, trả về SQL trên 1 bảng phù hợp nhất và nêu cảnh báo trong summary.\n`
+    ? reportLanguage === 'en'
+      ? `\n\nSEMANTIC MODEL CONTEXT (MANDATORY):\n${options.semanticContext}\n- If relationships are defined, JOIN strictly on those paths.\n- Do not invent extra JOIN paths outside semantic model.\n- If no valid relationship path exists, return SQL on the single best-fit table and mention a warning in summary.\n`
+      : `\n\nSEMANTIC MODEL CONTEXT (BẮT BUỘC TUÂN THỦ):\n${options.semanticContext}\n- Nếu có quan hệ đã định nghĩa thì chỉ JOIN theo các quan hệ đó.\n- Không tự đoán JOIN ngoài semantic model.\n- Nếu không có đường relationship hợp lệ, trả về SQL trên 1 bảng phù hợp nhất và nêu cảnh báo trong summary.\n`
     : '';
 
-  const systemInstruction = `
+  const systemInstruction = reportLanguage === 'en'
+    ? `
+    You are "360data Precision BI Architect", a senior analytics strategist.
+    BigQuery schema available: ${schemaInfo}.
+    ${semanticGuidance}
+
+    CORE REQUIREMENTS:
+    1. Never invent tables, columns, or values.
+    2. Produce a comprehensive report with 10-12 charts and 4-6 critical KPIs.
+    3. Include diverse chart purposes: descriptive, diagnostic (correlation/ratio/variance), and predictive indicators.
+    4. Time-series charts must use only: bar, horizontalBar, stackedBar, line, combo. Never pie/donut/radial/area for time-series.
+    5. Composition charts should use bar/stackedBar (not pie/donut/radial) for readability.
+    6. SQL safety:
+       - Use dataset-qualified table names: dataset.table.
+       - Never include project prefix (for example: do not use project.dataset.table).
+       - Prefer robust SQL that avoids empty joins when uncertain.
+       - Use SAFE_DIVIDE for every ratio division.
+       - Do not add default LIMIT unless user explicitly asks for top/bottom.
+    7. Insights quality:
+       - Strategic insights must include cause-effect and business impact.
+       - Chart insight must include: analysis, trend, cause, action.
+       - Action must be concrete and prioritized.
+    8. Keep summary concise (under 50 words) and high-signal.
+    9. Spend-to-value rule (mandatory):
+       - If a chart contains spend/cost/budget metric, SQL must include at least one value metric (revenue/sales/gmv/new_sales/profit) at the same grain.
+       - dataKeys must include both spend metric and value metric (or explicit ROAS via SAFE_DIVIDE).
+       - If no value metric exists in schema, state this limitation explicitly in dashboard summary.
+
+    OUTPUT LANGUAGE RULE (CRITICAL):
+    - Return all human-readable fields strictly in English.
+    - Never mix Vietnamese in title/summary/insights/kpi labels/chart insights/suggestions.
+
+    JSON OUTPUT RULE:
+    - Follow response schema exactly.
+    - Ensure every chart has executable SQL and meaningful dataKeys/xAxisKey.
+
+    ${(provider !== 'Google') ? `
+    Output strict JSON following this structure:
+    {
+      "sql": "string (SQL query for KPIs)",
+      "title": "string",
+      "summary": "string",
+      "kpis": [
+        { "label": "string", "value": "string", "trend": "string", "status": "string", "comparisonContext": "string" }
+      ],
+      "charts": [
+        {
+          "type": "bar|line|scatter|combo|horizontalBar|stackedBar|area",
+          "title": "string",
+          "xAxisKey": "string",
+          "dataKeys": ["string"],
+          "insight": { "analysis": "string", "trend": "string", "cause": "string", "action": "string", "highlight": [ { "index": number, "value": "string", "label": "string", "type": "peak|drop|anomaly|target|insight" } ] },
+          "sql": "string",
+          "mockLabels": ["string"]
+        }
+      ],
+      "insights": [
+        { "title": "string", "analysis": "string", "recommendation": "string", "priority": "string" }
+      ],
+      "suggestions": ["string"]
+    }
+    ` : ''}
+  `
+    : `
     Bạn là '360data Precision BI Architect' - Chuyên gia tư vấn chiến lược dữ liệu cấp cao.
     Dữ liệu tại BigQuery có các bảng và cột sau: ${schemaInfo}.
     ${semanticGuidance}
@@ -511,7 +1429,14 @@ export async function generateReportInsight(
     - Insights PHẢI CÓ CHIỀU SÂU: Kết nối các dấu chấm giữa các bảng dữ liệu khác nhau. 
     - Hãy dùng ngôn ngữ chuyên gia: "Phát hiện sự lệch pha giữa...", "Tỷ lệ tăng trưởng đang bị kìm hãm bởi...", "Cơ hội tối ưu hóa nằm ở việc tái cấu trúc...".
     - Mọi Strategic Insights phải chỉ ra được MỐI LIÊN HỆ nhân quả (Cause-Effect) và tác động kinh doanh (Business Impact).
-    - Chart Insights: Phần 'analysis' phải cung cấp bối cảnh (Context), không chỉ liệt kê số. Phần 'action' phải là lộ trình hành động (Roadmap).
+    - Chart Insights BẮT BUỘC theo logic 3 lớp:
+      1) analysis: "Hiện trạng và xu hướng hiện tại" (phải có số liệu cụ thể: đỉnh/đáy/biến động %).
+      2) cause: "Nguyên nhân trực tiếp" (bắt buộc nêu biến số ảnh hưởng trực tiếp và mức tác động định lượng, ví dụ "chi_phi_ads giảm 42% kéo doanh_thu_ads giảm 38%").
+      3) action: "Cần thực hiện việc gì" (3 bước rõ ràng, có thứ tự ưu tiên).
+    - QUY TẮC CHI PHÍ -> GIÁ TRỊ MANG LẠI (BẮT BUỘC):
+      1) Nếu chart có metric chi phí/cost/spend/budget thì SQL phải có thêm ít nhất 1 metric giá trị mang lại (doanh_thu/sales/gmv/new_sales/profit) cùng độ chi tiết.
+      2) dataKeys phải chứa cả metric chi phí và metric giá trị (hoặc ROAS tính bằng SAFE_DIVIDE).
+      3) Nếu schema không có metric giá trị phù hợp, phải nêu rõ giới hạn này trong summary.
 
     QUY TẮC SQL & KPI MAPPING:
     1. SQL TỔNG QUAN (root 'sql'): 
@@ -519,7 +1444,8 @@ export async function generateReportInsight(
        - NÊN dùng cấu trúc subquery cho từng KPI rồi ghép lại để mỗi KPI độc lập:
          \`SELECT (SELECT SUM(a) FROM t1) as kpi1, (SELECT COUNT(b) FROM t2) as kpi2...\`
        - Alias trùng label (lowercase, underscore).
-       - BẮT BUỘC PHẢI DÙNG ĐƯỜNG DẪN ĐẦY ĐỦ (Full Path): \`project-id.dataset_id.table_id\`.
+       - CHỈ DÙNG định danh dạng \`dataset_id.table_id\` (hoặc \`dataset.schema.table\` nếu table có schema con).
+       - KHÔNG đưa project-id vào SQL hiển thị.
        - Xử lý Date: Nếu không có yêu cầu ngày cụ thể, hãy lấy dữ liệu mới nhất có sẵn trong bảng thay vì dùng strict CURRENT_DATE() để tránh bảng trống.
        - TOÁN TỬ CHIA: TUYỆT ĐỐI không dùng toán tử '/' để chia. BẮT BUỘC dùng hàm \`SAFE_DIVIDE(numerator, denominator)\` cho tất cả các phép tính tỷ lệ (ROI, Conversion Rate, v.v.) để tránh lỗi 'Division by zero'.
     
@@ -573,7 +1499,7 @@ export async function generateReportInsight(
        - TUYỆT ĐỐI KHÔNG bao giờ kèm theo 'LIMIT 12' mặc định.
        - Đảm bảo xAxisKey khớp with alias trong SQL (date, week, month, quarter, half_year, year)
     
-    3. SQL Biểu đồ: Fully Qualified Name. Phải đảm bảo SQL chạy được và trả về dữ liệu đa dạng.
+    3. SQL Biểu đồ: Chỉ dùng \`dataset.table\` (không project-id). Phải đảm bảo SQL chạy được và trả về dữ liệu đa dạng.
     
     ĐỊNH DẠNG JSON: Tuân thủ responseSchema. Đảm bảo title và summary mang tính chuyên nghiệp.
     
@@ -594,7 +1520,7 @@ export async function generateReportInsight(
                 "title": "string",
                 "xAxisKey": "string",
                 "dataKeys": ["string"],
-                "insight": { "analysis": "string", "trend": "string", "action": "string", "highlight": [ { "index": number, "value": "string", "label": "string", "type": "peak|drop|anomaly|target|insight" } ] },
+                "insight": { "analysis": "string", "trend": "string", "cause": "string", "action": "string", "highlight": [ { "index": number, "value": "string", "label": "string", "type": "peak|drop|anomaly|target|insight" } ] },
                 "sql": "string",
                 "mockLabels": ["string"]
             }
@@ -615,7 +1541,7 @@ export async function generateReportInsight(
     } else if (provider === 'Anthropic') {
       responseText = await callAnthropic(activeModel.id, systemInstruction, prompt, 0.7, options?.signal);
     } else {
-      if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
+      if (!apiKey) throw new Error(fallback.googleApiKeyMissing);
       const genAI = new GoogleGenerativeAI(apiKey);
       const aiModel = genAI.getGenerativeModel({
         model: activeModel.id,
@@ -635,7 +1561,12 @@ export async function generateReportInsight(
               responseSchema: {
                 type: SchemaType.OBJECT,
                 properties: {
-                  sql: { type: SchemaType.STRING, description: "SQL dùng để lấy các chỉ số KPI tổng quan. Sử dụng Subqueries để tránh mất dòng dữ liệu." },
+                  sql: {
+                    type: SchemaType.STRING,
+                    description: reportLanguage === 'en'
+                      ? "SQL to fetch overview KPIs. Prefer subqueries to avoid row loss."
+                      : "SQL dùng để lấy các chỉ số KPI tổng quan. Sử dụng Subqueries để tránh mất dòng dữ liệu."
+                  },
                   title: { type: SchemaType.STRING },
                   summary: { type: SchemaType.STRING },
                   kpis: {
@@ -670,6 +1601,7 @@ export async function generateReportInsight(
                           properties: {
                             analysis: { type: SchemaType.STRING },
                             trend: { type: SchemaType.STRING },
+                            cause: { type: SchemaType.STRING },
                             action: { type: SchemaType.STRING },
                             highlight: {
                               type: SchemaType.ARRAY,
@@ -684,7 +1616,7 @@ export async function generateReportInsight(
                               }
                             }
                           },
-                          required: ["analysis", "trend", "action"]
+                          required: ["analysis", "trend", "cause", "action"]
                         },
                         sql: { type: SchemaType.STRING },
                         mockLabels: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
@@ -712,7 +1644,7 @@ export async function generateReportInsight(
             }
           }, { signal: options?.signal });
           if (!response || !response.response) {
-            throw new Error("Không nhận được phản hồi từ AI.");
+            throw new Error(fallback.noAiResponse);
           }
           responseText = response.response.text();
           break; // Success
@@ -731,6 +1663,8 @@ export async function generateReportInsight(
 
     const cleanedText = cleanJsonResponse(responseText);
     const result = JSON.parse(cleanedText);
+    result.sql = stripBigQueryProjectPrefixFromSql(String(result.sql || ''));
+    result.charts = sanitizeReportCharts(result.charts || [], reportLanguage);
 
     // 1. Execute Chart Queries
     const chartRawData = await WarehouseService.executeQuery(result.sql || "", tableNames, prompt, result.charts, options);
@@ -830,16 +1764,23 @@ export async function generateReportInsight(
     // 3. REGENERATE INSIGHTS WITH REAL DATA
     let finalSummary = result.summary;
     let finalStrategicInsights = result.insights;
-    let finalChartInsights = (result.charts || []).map((c: any) => c.insight);
+    let finalChartInsights = (result.charts || []).map((c: any) => normalizeReportChartInsight(c.insight, reportLanguage));
 
     const canRegenerateWithRealData = !!options?.executeSql
       || (!!options?.token && !!options?.projectId);
 
     if (canRegenerateWithRealData) {
-      const validChartIndices = chartRawData.map((d, i) => d && d.length > 0 ? i : -1).filter(i => i !== -1);
+      const validChartIndices = chartRawData
+        .map((rawData, i) => {
+          const sanitizedRows = stripChartErrorRows(rawData);
+          return sanitizedRows.length > 0 ? i : -1;
+        })
+        .filter((i) => i !== -1);
       if (validChartIndices.length > 0) {
         const validCharts = validChartIndices.map(i => result.charts[i]);
-        const validData = validChartIndices.map(i => chartRawData[i]);
+        const validData = validChartIndices.map((i) => (
+          coerceChartNumericRows(stripChartErrorRows(chartRawData[i]), result.charts?.[i]?.dataKeys || [])
+        ));
 
         const realInsights = await regenerateInsightsWithRealData(
           activeModel.id,
@@ -847,6 +1788,7 @@ export async function generateReportInsight(
           kpiValues,
           validCharts,
           validData,
+          reportLanguage,
           options?.signal
         );
 
@@ -856,15 +1798,15 @@ export async function generateReportInsight(
             // If AI returns a string instead of object, create a proper structure
             if (typeof ins === 'string') {
               return {
-                title: "Strategic Insight",
+                title: fallback.strategicInsightTitle,
                 analysis: ins,
-                recommendation: "Xem xét dữ liệu chi tiết và đưa ra quyết định phù hợp với tình hình thực tế.",
+                recommendation: fallback.strategicRecommendationDefault,
                 priority: "Medium"
               };
             }
             // Ensure recommendation is never empty or N/A
             if (!ins.recommendation || ins.recommendation === 'N/A' || ins.recommendation.trim() === '') {
-              ins.recommendation = "Phân tích thêm dữ liệu chi tiết để đưa ra hành động cụ thể.";
+              ins.recommendation = fallback.strategicRecommendationEmpty;
             }
             return ins;
           });
@@ -879,7 +1821,7 @@ export async function generateReportInsight(
               || realInsights.chartInsights[insightCounter];
 
             if (aiInsight) {
-              finalChartInsights[idx] = aiInsight;
+              finalChartInsights[idx] = normalizeReportChartInsight(aiInsight, reportLanguage);
             }
             insightCounter++;
           }
@@ -888,33 +1830,61 @@ export async function generateReportInsight(
     }
 
     const finalDashboard: DashboardConfig = {
-      title: result.title || "Báo cáo phân tích chuyên sâu",
-      summary: finalSummary || "Tổng quan phân tích.",
+      title: result.title || fallback.dashboardTitle,
+      summary: finalSummary || fallback.dashboardSummary,
       charts: (result.charts || []).map((c: any, idx: number) => {
-        const d = chartRawData[idx];
-        const hasError = d && (d as any)._error;
+        const rawChartData = chartRawData[idx];
+        const chartErrorMessage = extractChartQueryError(rawChartData);
+        const sanitizedChartData = coerceChartNumericRows(
+          stripChartErrorRows(rawChartData),
+          c?.dataKeys || []
+        );
+        const fallbackDataKeys = Array.isArray(c?.dataKeys) && c.dataKeys.length > 0
+          ? c.dataKeys
+          : ['value'];
+        const fallbackChartData = WarehouseService.generateFallbackData(prompt, fallbackDataKeys);
+        const chartData = sanitizedChartData.length > 0 ? sanitizedChartData : fallbackChartData;
+        const resolvedDataKeys = resolveChartDataKeys(chartData, fallbackDataKeys);
+        const finalDataKeys = resolvedDataKeys.length > 0 ? resolvedDataKeys : ['value'];
+        const normalizedInsight = normalizeReportChartInsight(finalChartInsights[idx] || c.insight, reportLanguage);
+        const fallbackInsightText = reportLanguage === 'en'
+          ? 'Source SQL for this chart returned no usable rows, so fallback trend data is shown to keep analysis continuity.'
+          : 'SQL nguồn của biểu đồ này không trả về dữ liệu hợp lệ, hệ thống đang hiển thị dữ liệu xu hướng thay thế để giữ mạch phân tích.';
+
         return {
           ...c,
-          insight: hasError ? (d as any)._error : (finalChartInsights[idx] || c.insight),
-          data: (d && d.length > 0)
-            ? d
-            : (options?.token ? [] : WarehouseService.generateFallbackData(prompt, c.dataKeys))
+          sql: stripBigQueryProjectPrefixFromSql(String(c.sql || '')),
+          dataKeys: finalDataKeys,
+          insight: chartErrorMessage
+            ? (
+              typeof normalizedInsight === 'object' && normalizedInsight
+                ? { ...normalizedInsight, analysis: fallbackInsightText }
+                : fallbackInsightText
+            )
+            : normalizedInsight,
+          data: chartData,
         };
       }),
-      insights: (finalStrategicInsights || []).map((i: any) => typeof i === 'string' ? { title: "Strategic Point", analysis: i, recommendation: "Review data for actions." } : i),
+      insights: (finalStrategicInsights || []).map((i: any) => typeof i === 'string'
+        ? { title: fallback.strategicPointTitle, analysis: i, recommendation: fallback.strategicRecommendationDefault }
+        : i),
       kpis: kpiValues,
       suggestions: result.suggestions || []
     };
 
-    return { dashboard: finalDashboard, sql: result.sql || "-- SQL Trace unavailable", executionTime: Date.now() - startTime };
+    return {
+      dashboard: finalDashboard,
+      sql: result.sql || fallback.sqlTraceUnavailable,
+      executionTime: Date.now() - startTime
+    };
 
   } catch (e: any) {
     const errorMsg = e.message || String(e);
     if (errorMsg.toLowerCase().includes('leaked')) {
-      throw new Error("⚠️ LỖI BẢO MẬT: API Key Gemini của bạn đã bị Google xác định là bị lộ (leaked) và đã bị khóa. Hãy tạo Key mới tại Google AI Studio (https://aistudio.google.com/) và cập nhật trong tab AI Setting. Lưu ý tuyệt đối không để lộ Key này trên GitHub hoặc các nơi công cộng.");
+      throw new Error(fallback.leakedError);
     }
     if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
-      throw new Error("⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI (Gemini Free) của bạn đã hết lượt gọi trong phút này. Hãy chờ vài giây rồi nhấn thử lại nhé.");
+      throw new Error(fallback.rateLimitError);
     }
     throw e;
   }
@@ -1659,12 +2629,27 @@ export async function analyzeChartTrend(
   data: any[],
   dataKeys: string[],
   chartContext: string,
-  options?: { provider?: string, modelId?: string, signal?: AbortSignal }
+  options?: {
+    provider?: string;
+    modelId?: string;
+    signal?: AbortSignal;
+    language?: ReportLanguage;
+    outputLanguage?: ChartAnalysisOutputLanguage | string;
+  }
 ): Promise<string> {
   const activeModel = {
     id: options?.modelId || 'gemini-2.5-flash',
     provider: options?.provider || 'Google'
   };
+  const uiLanguage = normalizeReportLanguage(options?.language);
+  const outputLanguage = normalizeChartAnalysisOutputLanguage(options?.outputLanguage, uiLanguage);
+  const outputLanguageMeta = chartAnalysisLanguageMeta[outputLanguage];
+  const isEnglishUi = uiLanguage === 'en';
+  const targetLanguageLabel = outputLanguageMeta.targetLabel;
+  const fallback = getReportFallbackText(uiLanguage);
+  const finalTitle = String(title || '').trim() || (isEnglishUi ? 'Chart' : 'Biểu đồ');
+  const expectedHighlightTitle = outputLanguageMeta.highlightTitle;
+  const expectedSummaryTitle = outputLanguageMeta.summaryTitle;
 
   if (!options?.provider && typeof localStorage !== 'undefined') {
     // Legacy fallback: if no provider specified, check if OpenAI is available
@@ -1672,49 +2657,66 @@ export async function analyzeChartTrend(
   }
 
   const prompt = `
-    Bạn là chuyên gia phân tích dữ liệu cao cấp (Senior Data Analyst).
-    Nhiệm vụ: Phân tích sâu về biểu đồ "${title}".
+    You are a Senior Data Scientist and Strategic Advisor.
+    TARGET OUTPUT LANGUAGE (CRITICAL): ${targetLanguageLabel}.
+    Return all narrative text strictly in ${targetLanguageLabel}. Do not mix languages.
+    
+    TASK: Deeply analyze chart "${finalTitle}" and produce actionable insights.
 
-    Dữ liệu (Sample 20 dòng):
-    ${JSON.stringify(data.slice(0, 20))}
+    DATA SNAPSHOT:
+    ${summarizeChartData(data, dataKeys, xAxis)}
 
-    Trục X: ${xAxis}
-    Metrics (Trục Y): ${dataKeys.join(', ')}
-    Context: ${chartContext}
+    CHART STRUCTURE:
+    - X axis: ${xAxis}
+    - Y metrics: ${dataKeys.join(', ')}
+    - Context: ${chartContext}
 
-    YÊU CẦU PHÂN TÍCH (Output định dạng Markdown):
-    1. **Tóm tắt Xu hướng (Executive Summary)**:
-       - Nhận định chung về xu hướng chính (Tăng/Giảm/Đi ngang).
-       - Tổng quan về độ biến động.
+    ANALYSIS REQUIREMENTS (markdown output):
+    1. Executive Summary (1-2 sentences): dominant trend + overall % change when available.
+    2. Deep Dive & Causal Analysis:
+       - Explain WHY, not just "A > B".
+       - Describe correlation between metrics (same direction vs inverse).
+       - Mention seasonality/cycles if detected.
+       - Quantify direct drivers using corr/delta/% where possible.
+       - If data has spend/cost metric and value metric, quantify return efficiency (value/spend or ROAS).
+    3. Critical Points:
+       - Identify peak, trough, inflection points, and suspicious outliers.
+       - Include a dedicated section titled "${expectedHighlightTitle}" with 4-6 bullets, each bullet starts with "🔥".
+    4. Strategic Recommendations:
+       - Provide 3 concrete actions with priorities (High/Medium/Low).
+    5. Final Summary Table (mandatory at the end):
+       - End with title "${expectedSummaryTitle}".
+       - Output a markdown table that includes ALL dataKeys.
 
-    2. **Phân tích Nhân quả & Các biến số ảnh hưởng (Causal Analysis)**:
-       - ĐỪNG CHỈ MÔ TẢ DỮ LIỆU. Hãy giải thích TẠI SAO số liệu lại như vậy.
-       - Nếu có nhiều metrics: Phân tích mối tương quan (Correlation) giữa chúng (Vd: "Khi metric A tăng thì metric B giảm...").
-       - Nếu chỉ có 1 metric: Đưa ra các giả thuyết về các yếu tố bên ngoài có thể ảnh hưởng (Mùa vụ, sự kiện, xu hướng thị trường, chiến dịch marketing...).
-       - Chỉ ra các "Inflection Points" (Điểm đảo chiều) và nguyên nhân tiềm năng.
-
-    3. **Điểm Nổi Bật (Anomalies & Peaks)**:
-       - Xác định các điểm đỉnh (Peak) và đáy (Trough) quan trọng nhất.
-       - Phát hiện các điểm bất thường (Outlier) nếu có.
-
-    4. **Khuyến nghị Hành động (Actionable Insight)**:
-       - Dựa trên phân tích nhân quả, đề xuất 3 hành động cụ thể để cải thiện hoặc duy trì hiệu quả.
-       - Phân loại ưu tiên: Cao/Trung bình/Thấp.
-
-    LƯU Ý:
-    - Ngôn ngữ: Tiếng Việt chuyên nghiệp, văn phong Business Intelligence.
-    - Tập trung vào "Key Drivers" (Yếu tố dẫn dắt) thay vì chỉ liệt kê con số.
-    - Nếu thấy dữ liệu bị thiếu hoặc null, hãy cảnh báo.
+    WRITING RULES:
+    - Tone: professional, objective, concise.
+    - No vague statements.
+    - Flag data quality risk when values suddenly collapse.
+    - Base conclusions on provided data only.
   `;
+
+  const finalizeAnalysis = (rawText: string): string => {
+    const aiText = String(rawText || '').trim();
+    const appendixLanguage: ReportLanguage | null = outputLanguage === 'en'
+      ? 'en'
+      : (outputLanguage === 'vi' ? 'vi' : null);
+    const appendix = appendixLanguage
+      ? buildDeterministicAnalysisAppendix(data, xAxis, dataKeys, appendixLanguage)
+      : '';
+    if (!appendix) return aiText;
+    return `${aiText}\n\n${appendix}`.trim();
+  };
 
   try {
     if (activeModel.provider === 'OpenAI') {
-      return await callOpenAI(activeModel.id || 'gpt-5.1', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      const responseText = await callOpenAI(activeModel.id || 'gpt-5.1', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      return finalizeAnalysis(responseText);
     } else if (activeModel.provider === 'Anthropic') {
-      return await callAnthropic(activeModel.id || 'claude-sonnet-4-20250514', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      const responseText = await callAnthropic(activeModel.id || 'claude-sonnet-4-20250514', "You are a helpful Data Analyst.", prompt, 0.7, options?.signal);
+      return finalizeAnalysis(responseText);
     } else {
       const apiKey = getApiKey('Google');
-      if (!apiKey) throw new Error("Google API Key is missing. Hãy cập nhật Key trong tab AI Setting.");
+      if (!apiKey) throw new Error(fallback.googleApiKeyMissing);
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: activeModel.id || 'gemini-2.5-flash' });
 
@@ -1724,7 +2726,7 @@ export async function analyzeChartTrend(
       while (attempts < maxAttempts) {
         try {
           const result = await model.generateContent(prompt);
-          return result.response.text();
+          return finalizeAnalysis(result.response.text());
         } catch (e: any) {
           attempts++;
           const is429 = e.message?.includes('429') || e.message?.toLowerCase().includes('resource exhausted');
@@ -1736,17 +2738,25 @@ export async function analyzeChartTrend(
           throw e;
         }
       }
-      return "Xin lỗi, hệ thống đang bận, vui lòng thử lại sau.";
+      return isEnglishUi
+        ? "Sorry, the system is currently busy. Please try again shortly."
+        : "Xin lỗi, hệ thống đang bận, vui lòng thử lại sau.";
     }
   } catch (e: any) {
     console.error("AI Analysis failed:", e);
     const errorMsg = e.message || String(e);
     if (errorMsg.toLowerCase().includes('leaked')) {
-      throw new Error("⚠️ LỖI BẢO MẬT: API Key của bạn đã bị lộ (leaked) và bị khóa. Vui lòng tạo Key mới.");
+      throw new Error(isEnglishUi
+        ? "⚠️ SECURITY ERROR: Your API key was flagged as leaked and blocked. Please create a new key."
+        : "⚠️ LỖI BẢO MẬT: API Key của bạn đã bị lộ (leaked) và bị khóa. Vui lòng tạo Key mới.");
     }
     if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('resource exhausted')) {
-      throw new Error("⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI của bạn đã hết lượt gọi. Vui lòng chờ vài giây.");
+      throw new Error(isEnglishUi
+        ? "⚠️ RATE LIMIT: Your AI account has reached request limits. Please wait a few seconds and retry."
+        : "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (Rate Limit): Tài khoản AI của bạn đã hết lượt gọi. Vui lòng chờ vài giây.");
     }
-    throw new Error(`Xin lỗi, không thể phân tích: ${errorMsg}. Vui lòng kiểm tra lại API Key hoặc kết nối mạng.`);
+    throw new Error(isEnglishUi
+      ? `Sorry, the analysis failed: ${errorMsg}. Please check your API key or network connection.`
+      : `Xin lỗi, không thể phân tích: ${errorMsg}. Vui lòng kiểm tra lại API Key hoặc kết nối mạng.`);
   }
 }
