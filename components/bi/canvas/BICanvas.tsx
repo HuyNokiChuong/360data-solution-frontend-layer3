@@ -264,10 +264,6 @@ const BICanvas: React.FC<BICanvasProps> = ({
 
         const isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
         selectWidget(widgetId, isMulti);
-
-        if (onEditWidget && !isMulti) {
-            onEditWidget(widgetId);
-        }
     };
 
     // Handle widget actions

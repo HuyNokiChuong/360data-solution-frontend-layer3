@@ -129,12 +129,46 @@ const BIMain: React.FC<BIMainProps> = ({
 
                 if (cancelled) return;
 
-                const activeTableIds = new Set(
-                    tables
-                        .filter((table) => table.status === 'Active')
-                        .map((table) => table.id)
-                );
-                const scopedModelTables = modelTables.filter((table) => activeTableIds.has(table.syncedTableId));
+                const normalizeKey = (value: string | undefined | null) =>
+                    String(value || '').trim().toLowerCase();
+
+                const activeTables = tables.filter((table) => table.status === 'Active');
+                const activeTableIds = new Set(activeTables.map((table) => table.id));
+
+                const matchActiveTable = (modelTable: typeof modelTables[number]) => {
+                    if (activeTableIds.has(modelTable.syncedTableId)) {
+                        return activeTables.find((table) => table.id === modelTable.syncedTableId);
+                    }
+
+                    const modelTableName = normalizeKey(modelTable.tableName);
+                    if (!modelTableName) return undefined;
+                    const modelDataset = normalizeKey(modelTable.datasetName);
+                    const modelSourceId = normalizeKey(modelTable.sourceId);
+
+                    return activeTables.find((table) => {
+                        if (normalizeKey(table.tableName) !== modelTableName) return false;
+                        if (modelDataset && normalizeKey(table.datasetName) !== modelDataset) return false;
+                        if (modelSourceId && normalizeKey(table.connectionId) !== modelSourceId) return false;
+                        return true;
+                    });
+                };
+
+                const scopedModelTables = modelTables
+                    .map((modelTable) => {
+                        const matchedActiveTable = matchActiveTable(modelTable);
+                        if (!matchedActiveTable) return null;
+                        return {
+                            ...modelTable,
+                            syncedTableId: matchedActiveTable.id,
+                            sourceId: modelTable.sourceId || matchedActiveTable.connectionId,
+                            datasetName: modelTable.datasetName || matchedActiveTable.datasetName,
+                        };
+                    })
+                    .filter((table): table is typeof modelTables[number] => table !== null);
+
+                if (modelTables.length > 0 && activeTables.length > 0 && scopedModelTables.length === 0) {
+                    console.warn('[BI] Semantic model sync found no active-table match. Check data model table bindings.');
+                }
 
                 const fieldMap: Record<string, {
                     tableId: string;
@@ -146,6 +180,18 @@ const BIMain: React.FC<BIMainProps> = ({
                 }> = {};
                 const schema: Field[] = [];
                 const usedFieldNames = new Set<string>();
+                const aliasCounts = new Map<string, number>();
+
+                scopedModelTables.forEach((table) => {
+                    (table.schema || []).forEach((column) => {
+                        const shortAlias = `${table.tableName}.${column.name}`;
+                        aliasCounts.set(shortAlias, (aliasCounts.get(shortAlias) || 0) + 1);
+                        if (table.datasetName) {
+                            const datasetAlias = `${table.datasetName}.${table.tableName}.${column.name}`;
+                            aliasCounts.set(datasetAlias, (aliasCounts.get(datasetAlias) || 0) + 1);
+                        }
+                    });
+                });
 
                 scopedModelTables.forEach((table) => {
                     (table.schema || []).forEach((column) => {
@@ -157,7 +203,7 @@ const BIMain: React.FC<BIMainProps> = ({
                             : (!usedFieldNames.has(fallbackName) ? fallbackName : `${table.id}.${column.name}`);
 
                         usedFieldNames.add(uniqueName);
-                        fieldMap[uniqueName] = {
+                        const binding = {
                             tableId: table.id,
                             column: column.name,
                             tableName: table.tableName,
@@ -165,6 +211,18 @@ const BIMain: React.FC<BIMainProps> = ({
                             sourceId: table.sourceId,
                             syncedTableId: table.syncedTableId,
                         };
+                        fieldMap[uniqueName] = binding;
+
+                        const shortAlias = `${table.tableName}.${column.name}`;
+                        if ((aliasCounts.get(shortAlias) || 0) === 1 && !fieldMap[shortAlias]) {
+                            fieldMap[shortAlias] = binding;
+                        }
+                        if (table.datasetName) {
+                            const datasetAlias = `${table.datasetName}.${table.tableName}.${column.name}`;
+                            if ((aliasCounts.get(datasetAlias) || 0) === 1 && !fieldMap[datasetAlias]) {
+                                fieldMap[datasetAlias] = binding;
+                            }
+                        }
 
                         schema.push({
                             name: uniqueName,
