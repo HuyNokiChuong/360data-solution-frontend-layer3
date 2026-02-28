@@ -65,7 +65,7 @@ const BICanvas: React.FC<BICanvasProps> = ({
         alignWidgets,
         clearSelection
     } = useDashboardStore();
-    const { addCrossFilter, removeCrossFilter, crossFilters, drillDowns, setDrillDown } = useFilterStore();
+    const { addCrossFilter, removeCrossFilter, crossFilters, drillDowns } = useFilterStore();
     const [isDragging, setIsDragging] = React.useState(false);
     const [sortConfig, setSortConfig] = useState<{ field: 'name' | 'rowCount', direction: 'asc' | 'desc' }>({
         field: 'name',
@@ -190,7 +190,8 @@ const BICanvas: React.FC<BICanvasProps> = ({
             drillDowns[widget.id] || widget.drillDownState || undefined
         );
         const currentFields = DrillDownService.getCurrentFields(widget, drillDownState);
-        const currentField = currentFields[currentFields.length - 1];
+        const overrideField = typeof data?.__crossFilterField === 'string' ? data.__crossFilterField : '';
+        const currentField = overrideField || currentFields[currentFields.length - 1];
 
         if (!currentField) return;
 
@@ -199,19 +200,6 @@ const BICanvas: React.FC<BICanvasProps> = ({
         const axisFallback = data?._rawAxisValue ?? data?._formattedAxis ?? data?._combinedAxis ?? data?.name;
         const filterValue = currentFieldValue !== undefined ? currentFieldValue : axisFallback;
         if (filterValue === undefined) return;
-
-        // Prioritize drill-down flow for hierarchical charts.
-        if (widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0) {
-            const currentState = drillDownState || DrillDownService.initDrillDown(widget);
-            if (currentState && currentState.currentLevel < currentState.hierarchy.length - 1) {
-                const drillResult = DrillDownService.drillDown(currentState, filterValue, data);
-                if (drillResult) {
-                    setDrillDown(widget.id, drillResult.newState);
-                    updateWidget(dashboard.id, widget.id, { drillDownState: drillResult.newState });
-                    return;
-                }
-            }
-        }
 
         const currentFilters = useFilterStore.getState().crossFilters;
         const existingFilter = currentFilters.find(cf => cf.sourceWidgetId === widget.id);
@@ -388,7 +376,12 @@ const BICanvas: React.FC<BICanvasProps> = ({
                 return <SearchWidget {...commonProps} />;
 
             case 'pivot':
-                return <PivotTableWidget {...commonProps} />;
+                return (
+                    <PivotTableWidget
+                        {...commonProps}
+                        onDataClick={(data) => handleWidgetDataClick(widget, data)}
+                    />
+                );
 
             default:
                 return (

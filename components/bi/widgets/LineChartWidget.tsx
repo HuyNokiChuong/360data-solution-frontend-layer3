@@ -20,6 +20,7 @@ import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '.
 import ChartLegend from './ChartLegend';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { findSourceSelectionFilter, isPayloadSelected } from '../utils/crossFilterSelection';
 
 interface LineChartWidgetProps {
     widget: BIWidget;
@@ -135,7 +136,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
         if (!xField) return '_autoCategory';
         return xField;
     }, [drillDownState?.mode, xFields.length, chartData, xField]);
-    const selectionField = xField || xFieldDisplay;
+    const selectionField = xFields[xFields.length - 1] || xField || xFieldDisplay;
 
     const yField = series[0] || '';
 
@@ -197,13 +198,13 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
         });
     }, [widget.title, effectiveChartData, exportFields]);
 
-    // Get current cross-filter selection for THIS widget
-    const currentSelection = useMemo(() => {
-        const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
-        if (!cf) return undefined;
-        // Find the filter that matches the CURRENTly displayed field
-        return cf.filters.find(f => f.field === xField)?.value;
-    }, [allDashboardFilters, widget.id, xField]);
+    const selectionFields = useMemo(() => {
+        return Array.from(new Set([selectionField, xField, xFieldDisplay].filter(Boolean)));
+    }, [selectionField, xField, xFieldDisplay]);
+
+    const currentSelectionFilter = useMemo(() => {
+        return findSourceSelectionFilter(allDashboardFilters, widget.id, selectionFields);
+    }, [allDashboardFilters, widget.id, selectionFields]);
 
     const realDataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -453,7 +454,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         dot={(dotProps: any) => {
                                             const { cx, cy, payload } = dotProps;
                                             if (!cx || !cy) return null;
-                                            const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
+                                            const isItemSelected = isPayloadSelected(payload, currentSelectionFilter, selectionFields);
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -510,7 +511,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                         dot={(dotProps: any) => {
                                             const { cx, cy, payload } = dotProps;
                                             if (!cx || !cy) return null;
-                                            const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
+                                            const isItemSelected = isPayloadSelected(payload, currentSelectionFilter, selectionFields);
                                             return (
                                                 <circle
                                                     cx={cx}
@@ -557,7 +558,7 @@ const LineChartWidget: React.FC<LineChartWidgetProps> = ({
                                 dot={(dotProps: any) => {
                                     const { cx, cy, payload } = dotProps;
                                     if (!cx || !cy) return null;
-                                    const isItemSelected = !currentSelection || payload[selectionField] === currentSelection;
+                                    const isItemSelected = isPayloadSelected(payload, currentSelectionFilter, selectionFields);
                                     return (
                                         <circle
                                             cx={cx}

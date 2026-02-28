@@ -19,6 +19,7 @@ import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '.
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import ChartLegend from './ChartLegend';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { findSourceSelectionFilter, isPayloadSelected } from '../utils/crossFilterSelection';
 
 interface BarChartWidgetProps {
     widget: BIWidget;
@@ -225,13 +226,13 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
         });
     }, [widget.title, effectiveChartData, exportFields]);
 
-    // Get current cross-filter selection for THIS widget
-    const currentSelection = useMemo(() => {
-        const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
-        if (!cf) return undefined;
-        // Find the filter corresponding to the current X-axis field
-        return cf.filters.find(f => f.field === xField)?.value;
-    }, [allDashboardFilters, widget.id, xField]);
+    const selectionFields = useMemo(() => {
+        return Array.from(new Set([xFields[xFields.length - 1], xField, xFieldDisplay].filter(Boolean)));
+    }, [xFields, xField, xFieldDisplay]);
+
+    const currentSelectionFilter = useMemo(() => {
+        return findSourceSelectionFilter(allDashboardFilters, widget.id, selectionFields);
+    }, [allDashboardFilters, widget.id, selectionFields]);
 
     const dataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -544,13 +545,13 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                                     >
                                         {effectiveChartData.map((entry, index) => {
-                                            const isActive = !currentSelection || !xField || entry[xField] === currentSelection;
+                                            const isActive = isPayloadSelected(entry, currentSelectionFilter, selectionFields);
                                             return (
                                                 <Cell
                                                     key={`cell-${index}`}
                                                     fill={color}
                                                     fillOpacity={isActive ? 1 : 0.3}
-                                                    stroke={isActive && currentSelection ? 'white' : 'none'}
+                                                    stroke={isActive && currentSelectionFilter ? 'white' : 'none'}
                                                     strokeWidth={2}
                                                 />
                                             );
@@ -581,13 +582,13 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                 radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]}
                             >
                                 {effectiveChartData.map((entry, index) => {
-                                    const isActive = !currentSelection || !xField || entry[xField] === currentSelection;
+                                    const isActive = isPayloadSelected(entry, currentSelectionFilter, selectionFields);
                                     return (
                                         <Cell
                                             key={`cell-${index}`}
                                             fill={colors[0]}
                                             fillOpacity={isActive ? 1 : 0.3}
-                                            stroke={isActive && currentSelection ? 'white' : 'none'}
+                                            stroke={isActive && currentSelectionFilter ? 'white' : 'none'}
                                             strokeWidth={2}
                                         />
                                     );
@@ -627,7 +628,7 @@ const BarChartWidget: React.FC<BarChartWidgetProps> = ({
                                         // Dim line dots if not active
                                         dot={(props: any) => {
                                             const { cx, cy, payload } = props;
-                                            const isActive = !currentSelection || !xField || payload[xField] === currentSelection;
+                                            const isActive = isPayloadSelected(payload, currentSelectionFilter, selectionFields);
                                             return (
                                                 <circle
                                                     cx={cx}

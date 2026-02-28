@@ -14,6 +14,7 @@ import { formatBIValue, formatSmartDataLabel, getAdaptiveNumericFormat } from '.
 import ChartLegend from './ChartLegend';
 import { HierarchicalAxisTick } from './HierarchicalAxisTick';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { findSourceSelectionFilter, isPayloadSelected } from '../utils/crossFilterSelection';
 
 interface AreaChartWidgetProps {
     widget: BIWidget;
@@ -124,7 +125,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         if (!xField) return '_autoCategory';
         return xField;
     }, [drillDownState?.mode, xFields.length, chartData, xField]);
-    const selectionField = xField || xFieldDisplay;
+    const selectionField = xFields[xFields.length - 1] || xField || xFieldDisplay;
 
     const effectiveChartData = useMemo(() => {
         if (xField) return chartData;
@@ -278,11 +279,17 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
         }
     };
 
-    const currentSelection = useMemo(() => {
-        const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
-        if (!cf) return undefined;
-        return cf.filters.find(f => f.field === xField)?.value;
-    }, [allDashboardFilters, widget.id, xField]);
+    const selectionFields = useMemo(() => {
+        return Array.from(new Set([selectionField, xField, xFieldDisplay].filter(Boolean)));
+    }, [selectionField, xField, xFieldDisplay]);
+
+    const currentSelectionFilter = useMemo(() => {
+        return findSourceSelectionFilter(allDashboardFilters, widget.id, selectionFields);
+    }, [allDashboardFilters, widget.id, selectionFields]);
+
+    const currentSelectionValue = currentSelectionFilter?.operator === 'equals'
+        ? currentSelectionFilter.value
+        : undefined;
 
     const resolveCategoryLabel = (payload: any) => {
         if (!payload) return '';
@@ -431,9 +438,9 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                             />
                         )}
 
-                        {currentSelection && (
+                        {currentSelectionValue !== undefined && currentSelectionValue !== null && (
                             <ReferenceLine
-                                x={currentSelection}
+                                x={currentSelectionValue}
                                 stroke="white"
                                 strokeDasharray="3 3"
                                 strokeOpacity={0.5}
@@ -466,7 +473,7 @@ const AreaChartWidget: React.FC<AreaChartWidgetProps> = ({
                                         // or show all but dim specific ones?
                                         // Area charts usually don't have dots. Let's only show the dot for the SELECTED item.
 
-                                        if (currentSelection && payload[selectionField] === currentSelection) {
+                                        if (isPayloadSelected(payload, currentSelectionFilter, selectionFields)) {
                                             return (
                                                 <circle
                                                     cx={cx}

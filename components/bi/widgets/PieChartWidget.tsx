@@ -19,6 +19,7 @@ import { DrillDownState } from '../types';
 import { useChartColors } from '../utils/chartColors';
 import ChartLegend from './ChartLegend';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
+import { findSourceSelectionFilter, isPayloadSelected } from '../utils/crossFilterSelection';
 
 interface PieChartWidgetProps {
     widget: BIWidget;
@@ -130,6 +131,7 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
         if (!categoryFieldRaw) return '_autoCategory';
         return categoryFieldRaw;
     }, [drillDownState?.mode, xFields, rawChartData, categoryFieldRaw]);
+    const selectionField = xFields[xFields.length - 1] || categoryFieldRaw || categoryField;
 
     // Map to name/value for Recharts Pie
     const chartData = useMemo(() => {
@@ -141,12 +143,21 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
             const numericValue = typeof rawValue === 'number'
                 ? rawValue
                 : Number.parseFloat(String(rawValue ?? ''));
-            return {
+            const point: Record<string, any> = {
+                ...item,
                 name: alias || originalName || 'Total',
-                value: Number.isFinite(numericValue) ? numericValue : 0
+                value: Number.isFinite(numericValue) ? numericValue : 0,
+                _rawCategory: originalName
             };
+            if (selectionField) {
+                point[selectionField] = item?.[selectionField] ?? originalName;
+            }
+            if (categoryField && !Object.prototype.hasOwnProperty.call(point, categoryField)) {
+                point[categoryField] = originalName;
+            }
+            return point;
         });
-    }, [rawChartData, categoryField, valueField, widget.legendAliases]);
+    }, [rawChartData, categoryField, valueField, widget.legendAliases, selectionField]);
 
     const labelVisibleIndices = useMemo(() => {
         const positiveEntries = chartData
@@ -234,13 +245,13 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
 
     const hasHierarchy = widget.drillDownHierarchy && widget.drillDownHierarchy.length > 0;
 
-    // Get current cross-filter selection for THIS widget
-    const currentSelection = useMemo(() => {
-        const cf = allDashboardFilters.find(f => f.sourceWidgetId === widget.id);
-        if (!cf) return undefined;
-        // Find the filter that matches the CURRENTly displayed field
-        return cf.filters.find(f => f.field === categoryField)?.value;
-    }, [allDashboardFilters, widget.id, categoryField]);
+    const selectionFields = useMemo(() => {
+        return Array.from(new Set([selectionField, categoryFieldRaw, categoryField, '_formattedAxis', '_combinedAxis', '_autoCategory'].filter(Boolean)));
+    }, [selectionField, categoryFieldRaw, categoryField]);
+
+    const currentSelectionFilter = useMemo(() => {
+        return findSourceSelectionFilter(allDashboardFilters, widget.id, selectionFields);
+    }, [allDashboardFilters, widget.id, selectionFields]);
 
     const realDataSource = useMemo(() => {
         return widget.dataSourceId ? getDataSource(widget.dataSourceId) : null;
@@ -321,12 +332,14 @@ const PieChartWidget: React.FC<PieChartWidgetProps> = ({
                             cursor="pointer"
                         >
                             {chartData.map((entry, index) => {
-                                const isSelectedValue = !currentSelection || entry.name === currentSelection;
+                                const isSelectedValue = isPayloadSelected(entry, currentSelectionFilter, selectionFields);
                                 return (
                                     <Cell
                                         key={`cell-${index}`}
                                         fill={colors[index % colors.length]}
                                         fillOpacity={isSelectedValue ? 1 : 0.3}
+                                        stroke={isSelectedValue && currentSelectionFilter ? '#ffffff' : 'none'}
+                                        strokeWidth={isSelectedValue && currentSelectionFilter ? 2 : 0}
                                     />
                                 );
                             })}

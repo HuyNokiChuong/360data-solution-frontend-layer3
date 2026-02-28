@@ -11,12 +11,14 @@ import { useChartColors } from '../utils/chartColors';
 import { formatBIValue } from '../engine/utils';
 import { exportRowsToExcel } from '../utils/widgetExcelExport';
 import { DrillDownService } from '../engine/DrillDownService';
+import { findSourceSelectionFilter, isPayloadSelected } from '../utils/crossFilterSelection';
 
 interface PivotTableWidgetProps {
     widget: BIWidget;
     onEdit?: () => void;
     onDelete?: () => void;
     onDuplicate?: () => void;
+    onDataClick?: (data: any) => void;
     isSelected?: boolean;
     onClickDataTab?: () => void;
     onClick?: (e: React.MouseEvent) => void;
@@ -124,17 +126,20 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
     onEdit,
     onDelete,
     onDuplicate,
+    onDataClick,
     isSelected = false,
     onClickDataTab,
     onClick
 }) => {
     const { isDark } = useChartColors();
-    const { isWidgetFiltered } = useFilterStore();
+    const { crossFilters: allDashboardFilters, isWidgetFiltered } = useFilterStore();
     const rawDrillDownState = useFilterStore(state => state.drillDowns[widget.id]);
     const drillDownState = useMemo(
         () => DrillDownService.resolveStateForWidget(widget, rawDrillDownState || widget.drillDownState || undefined),
         [widget, rawDrillDownState, widget.drillDownState]
     );
+    const currentFields = DrillDownService.getCurrentFields(widget, drillDownState);
+    const selectionField = currentFields[currentFields.length - 1] || widget.pivotRows?.[0] || '';
     const activeDashboard = useDashboardStore(state => state.dashboards.find(d => d.id === state.activeDashboardId));
 
     // Switch to useDirectQuery
@@ -272,6 +277,51 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
         }
         return str;
     };
+
+    const decodePivotToken = (raw: any) => {
+        if (typeof raw !== 'string' || !raw.includes('|||')) return raw;
+        const [sortValue, displayValue] = raw.split('|||');
+        const trimmedSort = String(sortValue || '').trim();
+        if (/^-?\d+(\.\d+)?$/.test(trimmedSort)) {
+            return Number(trimmedSort);
+        }
+        const trimmedDisplay = String(displayValue || '').trim();
+        return trimmedDisplay || trimmedSort;
+    };
+
+    const buildRowPayload = useCallback((node: any) => {
+        const payload: Record<string, any> = {};
+        const hierarchy = widget.pivotRows || [];
+        const parts = String(node?.key || '').split(' > ');
+
+        hierarchy.forEach((field, index) => {
+            if (!field) return;
+            const token = parts[index];
+            if (token === undefined) return;
+            payload[field] = decodePivotToken(token);
+        });
+
+        const nodeDepth = typeof node?.depth === 'number' ? node.depth : (parts.length - 1);
+        const safeDepth = Math.max(0, Math.min(nodeDepth, Math.max(hierarchy.length - 1, 0)));
+        const crossFilterField = hierarchy[safeDepth] || selectionField;
+        if (crossFilterField) {
+            payload.__crossFilterField = crossFilterField;
+            payload._rawAxisValue = payload[crossFilterField] ?? decodePivotToken(parts[safeDepth]);
+        }
+
+        payload.name = node?.label;
+        payload._autoCategory = node?.label;
+        return payload;
+    }, [widget.pivotRows, selectionField]);
+
+    const selectionFields = useMemo(() => {
+        const hierarchy = widget.pivotRows || [];
+        return Array.from(new Set([selectionField, ...hierarchy].filter(Boolean)));
+    }, [selectionField, widget.pivotRows]);
+
+    const currentSelectionFilter = useMemo(() => {
+        return findSourceSelectionFilter(allDashboardFilters, widget.id, selectionFields);
+    }, [allDashboardFilters, widget.id, selectionFields]);
 
     const getNodeRowTotalByMeasureKey = (node: any, measureKey: string) => {
         let total = 0;
@@ -650,11 +700,22 @@ const PivotTableWidget: React.FC<PivotTableWidgetProps> = ({
 
                             const isLeafNode = Object.keys(node.children || {}).length === 0;
                             const isExpanded = expandedKeys.has(node.key);
+                            const rowPayload = buildRowPayload(node);
+                            const isRowSelected = Boolean(currentSelectionFilter) && isPayloadSelected(rowPayload, currentSelectionFilter, selectionFields);
+                            const isRowDimmed = Boolean(currentSelectionFilter) && !isRowSelected;
 
                             return (
-                                <tr key={node.key} className="group hover:bg-indigo-500/5 dark:hover:bg-indigo-500/10 transition-colors odd:bg-transparent even:bg-slate-50/60 dark:even:bg-white/[0.02]">
+                                <tr
+                                    key={node.key}
+                                    onClick={() => {
+                                        if (onDataClick && widget.enableCrossFilter !== false) {
+                                            onDataClick(rowPayload);
+                                        }
+                                    }}
+                                    className={`group transition-colors odd:bg-transparent even:bg-slate-50/60 dark:even:bg-white/[0.02] ${onDataClick && widget.enableCrossFilter !== false ? 'cursor-pointer' : ''} ${isRowSelected ? 'bg-indigo-500/15 dark:bg-indigo-500/20' : 'hover:bg-indigo-500/5 dark:hover:bg-indigo-500/10'} ${isRowDimmed ? 'opacity-60' : ''}`}
+                                >
                                     <td
-                                        className="p-2 px-3 border-b border-r border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-medium sticky left-0 bg-white dark:bg-slate-950/95 backdrop-blur-sm group-hover:bg-slate-50 dark:group-hover:bg-slate-900 transition-colors z-10 overflow-hidden text-ellipsis align-middle"
+                                        className={`p-2 px-3 border-b border-r border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-medium sticky left-0 bg-white dark:bg-slate-950/95 backdrop-blur-sm transition-colors z-10 overflow-hidden text-ellipsis align-middle ${isRowSelected ? 'ring-1 ring-inset ring-indigo-400/50' : 'group-hover:bg-slate-50 dark:group-hover:bg-slate-900'}`}
                                         style={{ maxWidth: rowHeaderWidth, paddingLeft: `${node.depth * 16 + 12}px` }}
                                     >
                                         <div className="flex items-center gap-2">
